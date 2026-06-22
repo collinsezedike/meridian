@@ -1,0 +1,48 @@
+{
+    "header": {
+        "title": "Meridian"
+    },
+
+    "walletConnect": {
+        "connectWallet": "Connect Wallet",
+        "connecting": "Connecting...",
+        "disconnect": "Disconnect",
+        "copyAddress": "Copy Address",
+        "copied": "Copied",
+        "installFreighter": "Install Freighter",
+        "walletDisconnected": "Wallet Disconnected",
+        "walletConnected": "Wallet Connected"
+    },
+
+    "vaultPanel": {
+        "deposit": "Deposit",
+        "withdraw": "Withdraw",
+        "network": "Network",
+        "apy": "APY",
+        "tvl": "TVL",
+        "route": "Route",
+        "protocol": "Protocol",
+        "noLiveRateData": "No live rate data.",
+        "yourPosition": "Your Position",
+        "earned": "Earned",
+        "ConnectUSDC": "Connect your Freighter wallet to deposit USDC and start earning yield automatically.",
+        "installFreighter": "Install Freighter",
+        "amount": "Amount",
+        "balance": "Balance",
+        "addAssets": "Add vault assets to wallet",
+        "position": "You have no active position to withdraw from.",
+        "shares": "Shares",
+        "waiting": "Waiting for signature...",
+        "connectWallet":"Connect Wallet",
+        "connecting":"Connecting..."
+    },
+
+    "vaultActions": {
+        "failedAssets": "Failed to add vault assets",
+        "depositFailed": "Deposit failed",
+        "assetsAdded": "Vault assets added to wallet",
+        "withdrawalFailed": "Withdrawal failed",
+        "withdrew": "Withdrew",
+        "deposited": "Deposited"
+    }
+}

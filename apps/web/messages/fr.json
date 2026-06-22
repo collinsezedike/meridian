@@ -1,0 +1,48 @@
+{
+  "header": {
+    "title": "Meridian"
+  },
+
+  "walletConnect": {
+    "connectWallet": "Connecter le portefeuille",
+    "connecting": "Connexion...",
+    "disconnect": "Déconnecter",
+    "copyAddress": "Copier l'adresse",
+    "copied": "Copié",
+    "installFreighter": "Installer Freighter",
+    "walletDisconnected": "Portefeuille déconnecté",
+    "walletConnected": "Portefeuille connecté"
+  },
+
+  "vaultPanel": {
+    "deposit": "Déposer",
+    "withdraw": "Retirer",
+    "network": "Réseau",
+    "apy": "Rendement annuel",
+    "tvl": "TVL",
+    "route": "Route",
+    "protocol": "Protocole",
+    "noLiveRateData": "Aucune donnée de rendement disponible.",
+    "yourPosition": "Votre position",
+    "earned": "Gains",
+    "ConnectUSDC": "Connectez votre portefeuille Freighter pour déposer des USDC et commencer à générer du rendement automatiquement.",
+    "installFreighter": "Installer Freighter",
+    "amount": "Montant",
+    "balance": "Solde",
+    "addAssets": "Ajouter les actifs du coffre au portefeuille",
+    "position": "Vous n'avez aucune position active à retirer.",
+    "shares": "Parts",
+    "waiting": "En attente de signature...",
+    "connectWallet": "Connecter le portefeuille",
+    "connecting": "Connexion..."
+  },
+
+  "vaultActions": {
+    "failedAssets": "Échec de l'ajout des actifs du coffre",
+    "depositFailed": "Échec du dépôt",
+    "assetsAdded": "Actifs du coffre ajoutés au portefeuille",
+    "withdrawalFailed": "Échec du retrait",
+    "withdrew": "Retiré",
+    "deposited": "Déposé"
+  }
+}

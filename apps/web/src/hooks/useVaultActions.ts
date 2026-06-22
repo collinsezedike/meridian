@@ -5,12 +5,14 @@ import { useWalletStore } from "../store/wallet";
 import { signTransaction } from "../lib/wallet";
 import { api } from "../lib/api";
 import { useToastStore } from "../store/toast";
+import { useTranslation } from "react-i18next";
 
 function isMissingTrustline(msg: string) {
   return msg.toLowerCase().includes("trustline");
 }
 
 export function useVaultActions() {
+  const { t } = useTranslation();
   const { publicKey, network } = useWalletStore();
   const queryClient = useQueryClient();
   const { push } = useToastStore();
@@ -31,10 +33,10 @@ export function useVaultActions() {
       const { xdr } = await api.addTrustline(publicKey);
       await signAndSubmit(xdr);
       setNeedsTrustline(false);
-      push("success", "Vault assets added to wallet");
+      push("success", `${t("vaultActions.assetsAdded")}`);
       return true;
     } catch (err) {
-      push("error", err instanceof Error ? err.message : "Failed to add vault assets");
+      push("error", err instanceof Error ? err.message : `${t("vaultActions.failedAssets")}`);
       return false;
     }
   }
@@ -47,10 +49,10 @@ export function useVaultActions() {
       await signAndSubmit(xdr);
       setNeedsTrustline(false);
       queryClient.invalidateQueries({ queryKey: ["positions", publicKey] });
-      push("success", `Deposited ${amount} ${asset}`);
+      push("success", `${t("vaultActions.deposited")} ${amount} ${asset}`);
       return true;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Deposit failed";
+      const msg = err instanceof Error ? err.message : `${t("vaultActions.depositFailed")}`;
       if (isMissingTrustline(msg)) {
         setNeedsTrustline(true);
       }
@@ -68,10 +70,10 @@ export function useVaultActions() {
       const { xdr } = await api.buildWithdraw({ walletAddress: publicKey, vaultId, shares });
       await signAndSubmit(xdr);
       queryClient.invalidateQueries({ queryKey: ["positions", publicKey] });
-      push("success", `Withdrew ${shares} ${asset}`);
+      push("success", `${t("vaultActions.withdrew")} ${shares} ${asset}`);
       return true;
     } catch (err) {
-      push("error", err instanceof Error ? err.message : "Withdrawal failed");
+      push("error", err instanceof Error ? err.message : `${t("vaultActions.withdrawalFailed")}`);
       return false;
     } finally {
       setIsWithdrawing(false);
