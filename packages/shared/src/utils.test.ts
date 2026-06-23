@@ -77,4 +77,29 @@ describe("withRetry", () => {
     await assertion;
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  it("stops after first failure when shouldRetry returns false", async () => {
+    const fn = vi.fn().mockRejectedValue(new Error("timeout"));
+    const shouldRetry = vi.fn().mockReturnValue(false);
+    const promise = withRetry(fn, 3, 0, shouldRetry);
+    const assertion = expect(promise).rejects.toThrow("timeout");
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(shouldRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries transient errors but not excluded error types", async () => {
+    class TimeoutError extends Error {}
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("transient"))
+      .mockRejectedValueOnce(new TimeoutError("deadline"))
+      .mockResolvedValue("ok");
+    const promise = withRetry(fn, 3, 0, (err) => !(err instanceof TimeoutError));
+    const assertion = expect(promise).rejects.toBeInstanceOf(TimeoutError);
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
 });

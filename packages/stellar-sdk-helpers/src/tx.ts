@@ -20,11 +20,18 @@ import { buildHorizonServer } from "./horizon";
 // the Vercel function-level deadline fires.
 const SOROBAN_RPC_TIMEOUT_MS = 10_000;
 
+export class SorobanTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`Soroban RPC timed out after ${ms}ms`);
+    this.name = "SorobanTimeoutError";
+  }
+}
+
 function withSorobanTimeout<T>(fn: () => Promise<T>, ms = SOROBAN_RPC_TIMEOUT_MS): Promise<T> {
   return Promise.race([
     fn(),
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Soroban RPC timed out after ${ms}ms`)), ms)
+      setTimeout(() => reject(new SorobanTimeoutError(ms)), ms)
     ),
   ]);
 }
@@ -107,7 +114,12 @@ export async function prepareSorobanTx(
 ): Promise<{ xdr: string; fee: string }> {
   const passphrase = passphraseFor(network);
   const server = new rpc.Server(network.rpcUrl, { timeout: 8_000 });
-  const account = await withRetry(() => withSorobanTimeout(() => server.getAccount(caller)));
+  const account = await withRetry(
+    () => withSorobanTimeout(() => server.getAccount(caller)),
+    3,
+    200,
+    (err) => !(err instanceof SorobanTimeoutError)
+  );
   const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: passphrase })
     .addOperation(op)
     .setTimeout(300)
