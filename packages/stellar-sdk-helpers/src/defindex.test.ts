@@ -72,12 +72,13 @@ describe("fetchDefindexPosition", () => {
   const VAULT_ID = "CVAULT000000000000000000000000000000000000000000000000000";
   const PUBKEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 
-  beforeEach(() => vi.clearAllMocks());
-  afterEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedServerArgs.length = 0;
+  });
 
   it("constructs rpc.Server with a 12 s HTTP timeout so the outer race fires first", async () => {
     vi.mocked(simulateView).mockResolvedValue(0n);
-    capturedServerArgs.length = 0;
 
     await fetchDefindexPosition(network, VAULT_ID, "defindex-usdc", PUBKEY);
 
