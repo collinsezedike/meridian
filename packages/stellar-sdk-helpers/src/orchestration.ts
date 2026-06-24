@@ -38,8 +38,7 @@ export async function buildDepositTx(
 
 /**
  * Fetches all positions for `publicKey` across Blend reserves and (optionally)
- * the DeFindex vault. The DeFindex call is isolated — a failure there is logged
- * and swallowed so the Blend positions are always returned.
+ * the DeFindex vault. Errors from either protocol propagate to the caller.
  */
 export async function resolvePositions(
   publicKey: string,
@@ -52,12 +51,8 @@ export async function resolvePositions(
   ]);
 
   if (addresses.defindexVault) {
-    try {
-      const dfx = await fetchDefindexPosition(network, addresses.defindexVault, "defindex-usdc", publicKey);
-      positions.push(...dfx);
-    } catch (err) {
-      console.warn("[positions] defindex read failed:", err);
-    }
+    const dfx = await fetchDefindexPosition(network, addresses.defindexVault, "defindex-usdc", publicKey);
+    positions.push(...dfx);
   }
 
   return positions;
