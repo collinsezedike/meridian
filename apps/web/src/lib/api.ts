@@ -7,16 +7,22 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-  const body: unknown = await res.json().catch(() => null);
-  const msg =
-    (body !== null &&
-      typeof body === "object" &&
-      "error" in body &&
-      typeof (body as Record<string, unknown>).error === "string"
-        ? (body as Record<string, unknown>).error as string
-        : res.statusText) || `Request failed (${res.status})`;
-  throw new Error(msg);
-}
+    const body: unknown = await res.json().catch(() => null);
+    let msg = res.statusText;
+    if (body !== null && typeof body === "object") {
+      const b = body as Record<string, unknown>;
+      if (typeof b.error === "string") {
+        msg = b.error;
+      } else if (typeof b.error === "object" && b.error !== null &&
+        typeof (b.error as Record<string, unknown>).message === "string") {
+        msg = (b.error as Record<string, unknown>).message as string;
+      } else if (typeof b.message === "string") {
+        msg = b.message;
+      }
+    }
+    msg = msg || `Request failed (${res.status})`;
+    throw new Error(msg);
+  }
   return res.json() as Promise<T>;
 }
 

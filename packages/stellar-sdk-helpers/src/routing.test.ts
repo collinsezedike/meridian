@@ -2,10 +2,10 @@ import { describe, it, expect } from "vitest";
 import { selectBestVault } from "./routing";
 import type { ApiVault } from "./vaults";
 
-function vault(p: Partial<ApiVault>): ApiVault {
+function vault(p: Partial<Omit<ApiVault, "protocol">> & { protocol?: string }): ApiVault {
   return {
     id: p.id ?? "v",
-    protocol: p.protocol ?? "blend",
+    protocol: (p.protocol ?? "blend") as ApiVault["protocol"],
     asset: "USDC",
     name: "n",
     label: "l",
@@ -34,7 +34,7 @@ describe("selectBestVault", () => {
   it("excludes non-depositable protocols even when they have the best APY", () => {
     const best = selectBestVault(
       [
-        vault({ id: "ondo", protocol: "ondo" as unknown as "blend" | "defindex", apy: 12 }),
+        vault({ id: "ondo", protocol: "ondo", apy: 12 }),
         vault({ id: "blend", protocol: "blend", apy: 5 }),
       ],
       opts
@@ -76,7 +76,7 @@ describe("selectBestVault", () => {
   });
 
   it("returns null when nothing is routable", () => {
-    expect(selectBestVault([vault({ protocol: "ondo" as unknown as "blend" | "defindex" })], opts)).toBeNull();
+    expect(selectBestVault([vault({ protocol: "ondo" })], opts)).toBeNull();
     expect(selectBestVault([], opts)).toBeNull();
   });
 

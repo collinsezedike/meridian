@@ -256,7 +256,7 @@ export function VaultPanel() {
                       step="any"
                       placeholder="0.00"
                       value={amount}
-                      onChange={(e) => setAmount(e.target.value)}
+                      onChange={(e) => setAmount((e.target as HTMLInputElement).value)}
                       onKeyDown={onAmountKeyDown}
                       className="flex-1 min-w-0 bg-transparent text-white text-xl font-semibold outline-none placeholder:text-gray-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
