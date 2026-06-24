@@ -29,9 +29,11 @@ export function isVaultCacheWarm(): boolean {
   return vaultCache !== null && Date.now() < vaultCache.expiresAt;
 }
 
-// Every vault in the list is backed by live DeFiLlama market data. Protocols
-// without a real on-chain rate feed wired up yet are intentionally omitted
-// rather than shown with placeholder figures.
+/**
+ * Fetch vaults from DeFiLlama and return those backed by known on-chain pools.
+ * Results are cached for 60 s. If DeFiLlama returns no usable pools, the
+ * previous cache is served rather than returning an empty list.
+ */
 export async function fetchAllVaults(): Promise<ApiVault[]> {
   const now = Date.now();
   if (vaultCache && now < vaultCache.expiresAt) return vaultCache.vaults;

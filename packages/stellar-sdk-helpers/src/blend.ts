@@ -28,9 +28,10 @@ export interface BlendPoolConfig {
   network: StellarNetwork;
 }
 
-// Map a Meridian vault id (e.g. "blend-usdc-fixed") to the reserve asset whose
-// Stellar Asset Contract the deposit supplies. Pure so the routing is testable
-// without touching the network.
+/**
+ * Map a Meridian vault ID (e.g. "blend-usdc-fixed") to the reserve asset whose
+ * Stellar Asset Contract the deposit supplies. Pure function, no I/O.
+ */
 export function blendAssetForVault(vaultId: string): "usdc" | "eurc" {
   if (vaultId.includes("-usdc")) return "usdc";
   if (vaultId.includes("-eurc")) return "eurc";

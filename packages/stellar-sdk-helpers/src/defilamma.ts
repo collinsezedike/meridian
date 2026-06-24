@@ -48,6 +48,10 @@ const POOLS_URL = "https://yields.llama.fi/pools";
 const MIN_TVL_USD = 1_000;
 const MIN_APY = 0.01;
 
+/**
+ * Fetch all Stellar stablecoin pools from DeFiLlama and return the ones that
+ * meet the minimum TVL and APY thresholds. Retries up to 3 times on failure.
+ */
 export async function getStellarStablecoinPools(): Promise<DefiLlamaPool[]> {
   return withRetry(async () => {
     const res = await fetch(POOLS_URL, { signal: AbortSignal.timeout(8_000) });

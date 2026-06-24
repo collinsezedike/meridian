@@ -11,6 +11,12 @@ export interface ProtocolAddresses {
   defindexVault: string;
 }
 
+/**
+ * Build an unsigned deposit transaction for the vault identified by `vaultId`.
+ * Routes to Blend or DeFindex based on the vault ID prefix and returns the
+ * unsigned XDR and estimated fee. Throws if the vault protocol is unrecognised
+ * or the required contract address is not configured.
+ */
 export async function buildDepositTx(
   vaultId: string,
   walletAddress: string,
@@ -58,6 +64,12 @@ export async function resolvePositions(
   return positions;
 }
 
+/**
+ * Build an unsigned withdrawal transaction for the vault identified by `vaultId`.
+ * `shares` is the protocol share count to burn: bToken collateral for Blend,
+ * dfToken count for DeFindex. Routes and throws on the same conditions as
+ * `buildDepositTx`.
+ */
 export async function buildWithdrawTx(
   vaultId: string,
   walletAddress: string,

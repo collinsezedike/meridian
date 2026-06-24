@@ -76,18 +76,25 @@ function hasAssetTrustline(
   );
 }
 
+/** Convert a decimal string (up to 7 fractional digits) to stroops as a bigint. */
 export function toStroops(value: string): bigint {
   const [whole = "0", frac = ""] = value.split(".");
   const fracPadded = frac.padEnd(7, "0").slice(0, 7);
   return BigInt(whole) * 10_000_000n + BigInt(fracPadded);
 }
 
+/** Resolve the protocol name ("Blend" or "DeFindex") from a vault ID prefix. Throws for unrecognised prefixes. */
 export function resolveProtocol(vaultId: string): "Blend" | "DeFindex" {
   if (vaultId.startsWith("blend-")) return "Blend";
   if (vaultId.startsWith("defindex-")) return "DeFindex";
   throw new Error(`No protocol mapping for vault: ${vaultId}`);
 }
 
+/**
+ * Execute a read-only Soroban contract call via simulation and return the
+ * decoded native value. Returns `null` when the simulation succeeds but
+ * produces no return value. Throws on simulation errors.
+ */
 export async function simulateView(
   server: rpc.Server,
   contractId: string,
@@ -107,6 +114,11 @@ export async function simulateView(
   return scValToNative(sim.result.retval);
 }
 
+/**
+ * Fetch the caller's account, simulate the operation to obtain the resource
+ * footprint and fee, assemble the transaction, and return the unsigned XDR
+ * and minimum resource fee. Throws if simulation fails.
+ */
 export async function prepareSorobanTx(
   network: StellarNetwork,
   caller: string,
@@ -130,6 +142,11 @@ export async function prepareSorobanTx(
   return { xdr: prepared.toEnvelope().toXDR("base64"), fee: sim.minResourceFee };
 }
 
+/**
+ * Build an unsigned Stellar transaction that adds USDC and mUSDC trustlines
+ * for `walletAddress`. Skips any trustline that already exists. Throws if all
+ * required trustlines are already present.
+ */
 export async function buildAddTrustlineTx(
   walletAddress: string,
   network: StellarNetwork
@@ -217,9 +234,11 @@ export async function waitForTransaction(
   }
 }
 
-// Soroban simulation errors can be multi-line diagnostics. The first line is
-// the actionable summary (e.g. "HostError: Error(Contract, #1)"); subsequent
-// lines are stack frames that belong in server logs, not user-facing messages.
+/**
+ * Extract the first-line summary from a Soroban simulation error string.
+ * Subsequent lines are stack frames that belong in logs, not user-facing
+ * messages. Returns a generic fallback when the string is empty.
+ */
 export function simErrorMessage(raw: string): string {
   return raw.split("\n")[0].trim() || "Simulation failed (no detail)";
 }
