@@ -4,6 +4,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/dist"
 
+echo "▶ Bundling workspace packages for Vercel runtime..."
+mkdir -p "$ROOT/packages/shared/dist" "$ROOT/packages/stellar-sdk-helpers/dist"
+esbuild "$ROOT/packages/shared/src/index.ts" \
+  --bundle --platform=node --format=esm --packages=external \
+  --outfile="$ROOT/packages/shared/dist/index.js"
+esbuild "$ROOT/packages/stellar-sdk-helpers/src/index.ts" \
+  --bundle --platform=node --format=esm --packages=external \
+  --outfile="$ROOT/packages/stellar-sdk-helpers/dist/index.js"
+
 echo "▶ Cleaning output directory…"
 rm -rf "$OUT"
 mkdir -p "$OUT"
