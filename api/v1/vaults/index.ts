@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { fetchAllVaults, selectBestVault, isVaultCacheWarm } from "@meridian/stellar-sdk-helpers";
 import { APP_ADDRESSES } from "@meridian/shared";
-import { applyCors, checkRateLimit } from "../../_lib/middleware";
+import { applyCors, checkRateLimit } from "../../_lib/middleware.js";
 
 // Cache the aggregated vault list at the Vercel CDN. APY/TVL move slowly, so a
 // short fresh window keeps DeFiLlama call volume low, and the stale-while-

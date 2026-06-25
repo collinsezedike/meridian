@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { buildAddTrustlineTx } from "@meridian/stellar-sdk-helpers";
 import { APP_NETWORK, TrustlineRequestSchema, formatZodError, sanitizeTxError } from "@meridian/shared";
-import { applyCors, checkRateLimit } from "../../_lib/middleware";
+import { applyCors, checkRateLimit } from "../../_lib/middleware.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (applyCors(req, res)) return;

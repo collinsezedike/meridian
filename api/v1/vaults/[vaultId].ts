@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { fetchAllVaults } from "@meridian/stellar-sdk-helpers";
-import { applyCors } from "../../_lib/middleware";
+import { applyCors } from "../../_lib/middleware.js";
 
 const CACHE_CONTROL = "public, s-maxage=60, stale-while-revalidate=300";
 
