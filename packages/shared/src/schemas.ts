@@ -33,6 +33,6 @@ export type TrustlineRequest = z.infer<typeof TrustlineRequestSchema>;
 export type SubmitRequest = z.infer<typeof SubmitRequestSchema>;
 
 export function formatZodError(err: z.ZodError): string {
-  const fields = err.flatten().fieldErrors;
+  const fields = err.flatten().fieldErrors as Record<string, string[] | undefined>;
   return Object.entries(fields).map(([k, v]) => `${k}: ${v?.join(", ")}`).join("; ") || "Invalid request";
 }

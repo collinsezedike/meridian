@@ -72,7 +72,7 @@ describe("POST /api/v1/tx/deposit", () => {
     const res = makeRes();
     await depositHandler(fakeReq({ method: "POST", body: { walletAddress: PUBKEY } }), res);
     expect(res.statusCode).toBe(400);
-    expect(res.body).toEqual({ error: "vaultId: Required; amount: Required" });
+    expect(res.body).toEqual({ error: "vaultId: Invalid input: expected string, received undefined; amount: Invalid input: expected string, received undefined" });
   });
 
   it("builds the deposit transaction and returns the XDR", async () => {
@@ -103,7 +103,7 @@ describe("POST /api/v1/tx/withdraw", () => {
     const res = makeRes();
     await withdrawHandler(fakeReq({ method: "POST", body: { walletAddress: PUBKEY, vaultId: "v" } }), res);
     expect(res.statusCode).toBe(400);
-    expect(res.body).toEqual({ error: "shares: Required" });
+    expect(res.body).toEqual({ error: "shares: Invalid input: expected string, received undefined" });
   });
 
   it("builds the withdraw transaction", async () => {
