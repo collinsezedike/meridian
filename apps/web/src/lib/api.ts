@@ -13,9 +13,11 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
       const b = body as Record<string, unknown>;
       if (typeof b.error === "string") {
         msg = b.error;
-      } else if (typeof b.error === "object" && b.error !== null &&
-        typeof (b.error as Record<string, unknown>).message === "string") {
-        msg = (b.error as Record<string, unknown>).message as string;
+      } else if (typeof b.error === "object" && b.error !== null) {
+        const errObj = b.error as Record<string, unknown>;
+        if (typeof errObj.message === "string") {
+          msg = errObj.message;
+        }
       } else if (typeof b.message === "string") {
         msg = b.message;
       }
