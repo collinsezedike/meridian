@@ -19,29 +19,39 @@ Called once at deployment. Sets the admin, USDC contract address, and mUSDC cont
 
 ### `deposit(caller, amount, route_to) -> i128`
 
-Transfers `amount` USDC from the caller into the vault, mints proportional mUSDC shares, and records the routing protocol.
+Transfers `amount` USDC from the caller into the vault, mints proportional mUSDC shares, and records the routing protocol. Panics if deposits are paused.
 
 ```
-shares_minted = amount * total_shares / vault_balance
+shares_minted = amount * (total_shares + OFFSET) / (vault_balance + OFFSET)
 ```
 
-At genesis (no outstanding shares), `shares = amount` (1:1). Returns the number of shares minted.
+At genesis (no outstanding shares), `shares = amount` (1:1). The virtual `OFFSET` (1,000 stroops) neutralises the first-depositor inflation attack: an attacker who donates USDC to inflate the share price before a victim deposits recovers only a negligible fraction of the donation, making the skim strictly unprofitable. Returns the number of shares minted.
 
 `route_to` is a `Protocol` enum value (`Blend` or `DeFindex`), passed by the API based on the current best rate. It is stored in contract instance storage so any observer can read where funds currently sit.
+
+Stamps `Entry(caller)` with the current ledger timestamp on the caller's first deposit. Top-ups do not reset the original entry time. Accumulates `Principal(caller)` with `amount` on every deposit.
 
 ### `withdraw(caller, shares) -> i128`
 
 Burns `shares` mUSDC from the caller and returns proportional USDC.
 
 ```
-usdc_out = shares * vault_balance / total_shares
+usdc_out = shares * (vault_balance + OFFSET) / (total_shares + OFFSET)
 ```
 
-The caller must hold at least `shares` mUSDC or the transaction panics with "insufficient shares".
+The caller must hold at least `shares` mUSDC or the transaction panics with "insufficient shares". Reduces `Principal(caller)` proportionally. A full exit clears both `Entry(caller)` and `Principal(caller)`.
 
 ### `get_position(address) -> i128`
 
 Returns the mUSDC balance recorded for `address` in persistent contract storage.
+
+### `get_entry_time(address) -> u64`
+
+Returns the ledger timestamp of the address's current deposit, or `0` if it holds no position. Cleared on a full withdrawal so a later re-deposit starts a fresh clock.
+
+### `get_principal(address) -> i128`
+
+Returns the address's cost basis: the net USDC it has deposited and not yet withdrawn. Yield earned off-chain is computed as `current_share_value - principal`.
 
 ### `get_active_protocol() -> Protocol`
 
@@ -54,6 +64,22 @@ Returns the vault's current USDC balance in stroops.
 ### `get_total_shares() -> i128`
 
 Returns total outstanding mUSDC shares.
+
+### `set_paused(paused: bool)` (admin only)
+
+Emergency switch. While paused, new deposits are rejected. Withdrawals remain open so a pause can never trap user funds.
+
+### `is_paused() -> bool`
+
+Returns whether deposits are currently paused.
+
+### `set_admin(new_admin)` (admin only)
+
+Rotates the admin key. Lets a compromised or retired admin key be replaced without redeploying the vault.
+
+### `get_admin() -> Address`
+
+Returns the current admin address.
 
 ## Share price example
 
@@ -68,7 +94,7 @@ USDC on Stellar uses 7 decimal places. 1 USDC = `10_000_000` stroops. All contra
 
 ## Authorization
 
-`caller.require_auth()` is called at the start of both `deposit` and `withdraw`. Soroban's auth framework enforces that the caller's signature covers the exact function call, preventing replay and impersonation attacks.
+`caller.require_auth()` is called at the start of both `deposit` and `withdraw`. Soroban's auth framework enforces that the caller's signature covers the exact function call, preventing replay and impersonation attacks. Admin functions call an internal `require_admin` helper that reads the stored admin address and calls `require_auth()` on it.
 
 ## Contract storage
 
@@ -79,4 +105,7 @@ USDC on Stellar uses 7 decimal places. 1 USDC = `10_000_000` stroops. All contra
 | `MUSDC` | Instance | mUSDC contract `Address` |
 | `PROTOCOL` | Instance | Last-used `Protocol` enum |
 | `TOTAL_SH` | Instance | Total mUSDC shares outstanding (`i128`) |
+| `PAUSED` | Instance | Deposit pause flag (`bool`) |
 | `Balance(address)` | Persistent | Per-address mUSDC share balance (`i128`) |
+| `Entry(address)` | Persistent | Per-address deposit entry timestamp (`u64`) |
+| `Principal(address)` | Persistent | Per-address net USDC deposited, not yet withdrawn (`i128`) |

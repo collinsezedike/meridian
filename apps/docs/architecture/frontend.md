@@ -4,8 +4,8 @@
 
 | Concern | Library |
 |---|---|
-| Bundler | Vite 6 |
-| UI | React 18 |
+| Bundler | Vite 8 |
+| UI | React 19 |
 | Styling | Tailwind CSS |
 | Server state | TanStack Query v5 |
 | Client state | Zustand |

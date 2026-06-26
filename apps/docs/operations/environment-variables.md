@@ -10,16 +10,16 @@
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `VAULT_CONTRACT_ID` | Yes (for tx routes) | `""` | Deployed `MeridianVault` contract address on Stellar. Without this, deposit and withdraw return 500 "Vault contract not yet deployed". |
+| `DEFINDEX_VAULT_ID` | No | `""` | Overrides the DeFindex vault contract address at runtime. When empty, the address from `CONTRACT_ADDRESSES.testnet.defindex.vault` in `packages/shared/src/constants.ts` is used. Blend and vault contract addresses are always sourced from constants. |
 | `PORT` | No | `3001` | Fastify server port (local dev only). |
-| `ALLOWED_ORIGIN` | No | `"*"` | CORS allowed origin for the Fastify server. Set to your frontend domain in production if running Fastify as a standalone server. |
+| `ALLOWED_ORIGIN` | No | `"https://usemeridian.vercel.app"` | CORS allowed origin for the Fastify server. Set to your frontend domain in production if running Fastify as a standalone server. |
 
 ## Vercel
 
 Set environment variables in the Vercel dashboard under **Project Settings > Environment Variables**, or via the CLI:
 
 ```bash
-vercel env add VAULT_CONTRACT_ID
+vercel env add DEFINDEX_VAULT_ID
 ```
 
 Variables prefixed with `VITE_` are inlined at build time and exposed to the browser. Do not put secrets in `VITE_` variables.
@@ -31,7 +31,7 @@ Create `.env` files at the package level if needed:
 ```bash
 # apps/api/.env
 PORT=3001
-VAULT_CONTRACT_ID=C...   # optional, leave empty if contract not yet deployed
+DEFINDEX_VAULT_ID=C...   # optional, leave empty to use the address in constants.ts
 ```
 
 The Fastify server loads `.env` via the `dotenv` package on startup.

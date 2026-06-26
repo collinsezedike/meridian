@@ -29,12 +29,13 @@ Returns all available vaults with live APY and TVL.
       "riskLevel": "safe"
     }
   ],
+  "recommendedVaultId": "blend-usdc-variable",
   "updatedAt": "2026-05-26T12:00:00.000Z",
   "cached": false
 }
 ```
 
-APY data is sourced from DeFiLlama's `/pools` endpoint filtered to Stellar stablecoins. Pools are matched against a curated registry (`known-pools.ts`) that maps DeFiLlama pool UUIDs to protocol metadata.
+APY data is sourced from DeFiLlama's `/pools` endpoint filtered to Stellar stablecoins. Pools are matched against a curated registry (`known-pools.ts`) that maps DeFiLlama pool UUIDs to protocol metadata. `recommendedVaultId` is the vault with the highest APY, or `null` if none qualifies.
 
 ### `GET /api/v1/vaults/:vaultId`
 
@@ -99,6 +100,20 @@ Builds an unsigned Soroban withdraw transaction.
 
 **Response:** same shape as deposit: `{ xdr, fee }`.
 
+### `POST /api/v1/tx/add-trustline`
+
+Builds an unsigned transaction that adds the mUSDC trustline to the caller's account. Must be submitted before a first deposit.
+
+**Request**
+```json
+{ "walletAddress": "G..." }
+```
+
+**Response**
+```json
+{ "xdr": "AAAAAgAAAAA..." }
+```
+
 ### `POST /api/v1/tx/submit`
 
 Submits a Freighter-signed XDR to the Stellar network.
@@ -117,9 +132,11 @@ A `PENDING` or `DUPLICATE` status from the Stellar RPC is treated as success and
 
 ## Serverless vs Fastify
 
-The Vercel serverless functions (`api/v1/`) cannot import from workspace packages (`@meridian/shared`, `@meridian/stellar-sdk-helpers`). All logic is inlined in `_shared.ts` files alongside each route group. This constraint was introduced to avoid build-time workspace resolution issues on Vercel.
+Both implementations share the same handler logic and import from the same workspace packages (`@meridian/shared`, `@meridian/stellar-sdk-helpers`).
 
-The Fastify server (`apps/api/`) has no such restriction and imports freely from workspace packages. It is only used during local development.
+The Vercel functions (`api/v1/`) import workspace packages that are pre-built into self-contained JS bundles by `scripts/build-vercel.sh` before deployment. The build script runs esbuild on each package's entry point with `--bundle --packages=external`, inlining all relative imports while leaving npm packages external. Vercel then bundles the resulting `dist/index.js` files alongside the function handlers at deploy time.
+
+The Fastify server (`apps/api/`) runs the same packages directly via `tsx`, which handles TypeScript natively in the development process.
 
 ## Vault ID to protocol mapping
 
@@ -130,4 +147,4 @@ When building a deposit transaction, the `vaultId` is mapped to the `Protocol` e
 | `blend-` | `Blend` |
 | `defindex-` | `DeFindex` |
 
-Any other prefix returns a 500 with a clear mapping error. The Ondo protocol (`ondo-`) is not currently supported by the vault contract.
+Any other prefix returns a 500 with a clear mapping error.

@@ -30,19 +30,25 @@ This produces `target/wasm32-unknown-unknown/release/meridian_vault.wasm`.
 
 ## Deploy USDC and mUSDC (testnet only)
 
-On testnet, deploy mock SAC (Stellar Asset Contract) instances for USDC and mUSDC. On mainnet, use the real USDC contract address from `CONTRACT_ADDRESSES.testnet.usdc`.
+On testnet, deploy mock Stellar Asset Contracts (SAC) for USDC and mUSDC. On mainnet, use the real USDC contract address already present in `CONTRACT_ADDRESSES.testnet.usdc`.
+
+To deploy a SAC you first need a funded keypair to act as the asset issuer, then wrap that classic asset as a Soroban contract:
 
 ```bash
-# Deploy mock USDC
-stellar contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/meridian_vault.wasm \
+# Generate an issuer keypair
+stellar keys generate --network testnet issuer
+curl "https://friendbot.stellar.org/?addr=$(stellar keys address issuer)"
+
+# Deploy a SAC for mock USDC
+stellar contract asset deploy \
+  --asset USDC:$(stellar keys address issuer) \
   --network testnet \
   --source deployer
 ```
 
 Record the returned contract ID as `USDC_CONTRACT_ID`.
 
-Repeat for mUSDC and record as `MUSDC_CONTRACT_ID`.
+Repeat with a different asset code (e.g. `MUSDC`) for the share token and record as `MUSDC_CONTRACT_ID`.
 
 ## Deploy the vault contract
 
@@ -76,34 +82,34 @@ The vault must be the admin of the mUSDC asset in order to mint and burn share t
 stellar contract invoke \
   --id $MUSDC_CONTRACT_ID \
   --network testnet \
-  --source deployer \
+  --source issuer \
   -- set_admin \
   --new_admin $VAULT_CONTRACT_ID
 ```
 
 ## Update contract addresses
 
-Add the deployed `VAULT_CONTRACT_ID` to `packages/shared/src/constants.ts`:
+Add the deployed contract IDs to `packages/shared/src/constants.ts`:
 
 ```typescript
 export const CONTRACT_ADDRESSES = {
   testnet: {
-    vault: "C...", // paste VAULT_CONTRACT_ID here
-    usdc: "C...",
-    musdc: "C...",
-    // ...
+    blend: {
+      pool: "C...",
+    },
+    defindex: {
+      factory: "C...",
+      vault: "",
+    },
+    usdc: "C...",   // USDC_CONTRACT_ID
+    eurc: "C...",
+    musdc: "C...",  // MUSDC_CONTRACT_ID
+    vault: "C...",  // VAULT_CONTRACT_ID
   },
-};
+} as const;
 ```
 
-## Set the Vercel environment variable
-
-```bash
-vercel env add VAULT_CONTRACT_ID
-# paste the deployed contract ID when prompted
-```
-
-Or set it in the Vercel dashboard under **Project Settings > Environment Variables**.
+The vault contract address is read from constants at build time. There is no runtime environment variable for it.
 
 ## Verify the deployment
 
@@ -120,7 +126,7 @@ A return value of `0` confirms the contract is initialized and responding.
 
 ## Run the signing flow end-to-end
 
-With the contract deployed and `VAULT_CONTRACT_ID` set:
+With the contract deployed and constants updated:
 
 1. Open the app, connect Freighter (testnet mode).
 2. Enter a USDC amount and click **Deposit**.

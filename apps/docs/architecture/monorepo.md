@@ -5,21 +5,22 @@ Meridian is a pnpm workspace managed by Turborepo.
 ```
 meridian/
 ├── api/                          # Vercel serverless functions (production API)
+│   ├── _lib/
+│   │   └── middleware.ts         # CORS + rate-limit helpers shared by handlers
 │   └── v1/
 │       ├── vaults/               # GET /api/v1/vaults, GET /api/v1/vaults/:id
 │       │   ├── index.ts
-│       │   ├── [vaultId].ts
-│       │   └── _shared.ts        # DeFiLlama fetcher, pool risk logic
-│       ├── tx/                   # POST /api/v1/tx/deposit|withdraw|submit
+│       │   └── [vaultId].ts
+│       ├── tx/                   # POST /api/v1/tx/*
 │       │   ├── deposit.ts
 │       │   ├── withdraw.ts
-│       │   ├── submit.ts
-│       │   └── _shared.ts        # Soroban XDR builder
+│       │   ├── add-trustline.ts
+│       │   └── submit.ts
 │       └── positions/
 │           └── [publicKey].ts    # GET /api/v1/positions/:publicKey
 │
 ├── apps/
-│   ├── web/                      # Vite + React 18 dashboard
+│   ├── web/                      # Vite + React 19 dashboard
 │   │   └── src/
 │   │       ├── components/
 │   │       │   ├── dashboard/VaultPanel.tsx   # Main deposit/withdraw UI
@@ -52,7 +53,12 @@ meridian/
 │   │       ├── defindex.ts       # DeFindex helpers
 │   │       ├── defilamma.ts      # DeFiLlama pool fetcher
 │   │       ├── horizon.ts        # Horizon server helper
-│   │       └── known-pools.ts    # Curated pool registry
+│   │       ├── internal.ts       # Shared internal utilities
+│   │       ├── known-pools.ts    # Curated pool registry
+│   │       ├── orchestration.ts  # Cross-protocol routing orchestration
+│   │       ├── positions.ts      # On-chain position fetching
+│   │       ├── routing.ts        # Best-rate routing logic
+│   │       └── types.ts          # Shared TypeScript types
 │   │
 │   ├── shared/                   # Cross-package types and constants
 │   │   └── src/
@@ -73,8 +79,8 @@ meridian/
 
 | Boundary | Rule |
 |---|---|
-| `api/` serverless functions | No workspace package imports. All logic is self-contained or uses npm packages only. |
-| `apps/api` Fastify server | Can import from `@meridian/shared` and `@meridian/stellar-sdk-helpers`. Used for local development. |
+| `api/` serverless functions | Imports from `@meridian/shared` and `@meridian/stellar-sdk-helpers` via pre-built `dist/` bundles. `scripts/build-vercel.sh` runs esbuild on each package before the Vercel build so the handlers can import compiled JS rather than TypeScript source. |
+| `apps/api` Fastify server | Imports the same workspace packages directly via `tsx` (TypeScript-native). Used for local development only. |
 | `apps/web` | No direct Soroban SDK usage. All blockchain interaction goes through the API. |
 | `packages/contracts` | Rust only. No TypeScript. |
 
