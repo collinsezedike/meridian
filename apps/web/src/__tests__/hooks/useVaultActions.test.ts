@@ -22,6 +22,23 @@ vi.mock("../../lib/api", () => ({
   },
 }));
 
+vi.mock("react-i18next", () => {
+  const translations: Record<string, string> = {
+    "vaultActions.deposited": "Deposited",
+    "vaultActions.withdrew": "Withdrew",
+    "vaultActions.assetsAdded": "Vault assets added to wallet",
+    "vaultActions.depositFailed": "Deposit failed",
+    "vaultActions.withdrawalFailed": "Withdrawal failed",
+    "vaultActions.failedAssets": "Failed to add vault assets",
+  };
+
+  return {
+    useTranslation: () => ({
+      t: (key: string) => translations[key] ?? key,
+    }),
+  };
+});
+
 import { api } from "../../lib/api";
 import { signTransaction } from "../../lib/wallet";
 

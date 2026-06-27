@@ -9,6 +9,25 @@ vi.mock("../../lib/wallet", () => ({
   connectFreighter: vi.fn(),
 }));
 
+vi.mock("react-i18next", () => {
+  const translations: Record<string, string> = {
+    "walletConnect.connectWallet": "Connect Wallet",
+    "walletConnect.connecting": "Connecting...",
+    "walletConnect.disconnect": "Disconnect",
+    "walletConnect.copyAddress": "Copy Address",
+    "walletConnect.copied": "Copied",
+    "walletConnect.installFreighter": "Install Freighter",
+    "walletConnect.walletConnected": "Wallet Connected",
+    "walletConnect.walletDisconnected": "Wallet Disconnected",
+  };
+
+  return {
+    useTranslation: () => ({
+      t: (key: string) => translations[key] ?? key,
+    }),
+  };
+});
+
 import { isFreighterInstalled, connectFreighter } from "../../lib/wallet";
 
 const KEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
