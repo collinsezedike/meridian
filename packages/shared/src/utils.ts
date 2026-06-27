@@ -52,4 +52,37 @@ export async function withRetry<T>(
   }
   throw lastErr;
 }
+/**
+ * Converts a stroops value to a decimal XLM string.
+ * 1 XLM = 10,000,000 stroops.
+ */
+export function fromStroops(stroops: bigint): string {
+  const whole = stroops / 10_000_000n;
+  const remainder = stroops % 10_000_000n;
+  if (remainder === 0n) return whole.toString();
+  const decimal = remainder.toString().padStart(7, "0").replace(/0+$/, "");
+  return `${whole}.${decimal}`;
+}
 
+/**
+ * Formats a number as a USD currency string.
+ * e.g. 1234.5 -> "$1,234.50"
+ */
+export function formatUsdAmount(amount: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amount);
+}
+
+/**
+ * Parses a USD-formatted string back to a number.
+ * Reverse of formatUsdAmount.
+ * e.g. "$1,234.50" -> 1234.5
+ */
+export function parseUsdAmount(value: string): number {
+  const cleaned = value.replace(/[^0-9.-]/g, "");
+  return parseFloat(cleaned);
+}
