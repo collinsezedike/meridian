@@ -14,6 +14,7 @@
         "walletConnected": "Wallet Connected"
     },
 
+    
     "vaultPanel": {
         "deposit": "Deposit",
         "withdraw": "Withdraw",
@@ -25,7 +26,7 @@
         "noLiveRateData": "No live rate data.",
         "yourPosition": "Your Position",
         "earned": "Earned",
-        "ConnectUSDC": "Connect your Freighter wallet to deposit USDC and start earning yield automatically.",
+        "connectUSDC": "Connect your Freighter wallet to deposit USDC and start earning yield automatically.",
         "installFreighter": "Install Freighter",
         "amount": "Amount",
         "balance": "Balance",

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { VaultPanel } from "./components/dashboard/VaultPanel";
 import { WalletConnect } from "./components/onboarding/WalletConnect";
@@ -9,12 +9,12 @@ import { useTranslation } from "react-i18next";
 const queryClient = new QueryClient();
 
 function Dashboard() {
-  const { t,i18n } = useTranslation();
-  function toggleLanguage() {
+  const { t, i18n } = useTranslation();
+  const toggleLanguage = useCallback(() => { 
     const newLang = i18n.language === "en" ? "fr" : "en";
     i18n.changeLanguage(newLang);
     localStorage.setItem("language", newLang);
-  }
+  }, [i18n]);
 
   return (
     <div className="min-h-screen bg-[#0d1117] text-white">
@@ -24,7 +24,7 @@ function Dashboard() {
           <div className="flex items-center gap-2">
             <WalletConnect />
             <button 
-              onClick= {toggleLanguage}
+              onClick={toggleLanguage}
               className="text-sm border border-gray-700 rounded-lg px-3 py-1.5 text-gray-300 hover:border-gray-600 hover:text-white transition-colors duration-150"
             >
               {i18n.language === "en" ? "FR" : "EN"}

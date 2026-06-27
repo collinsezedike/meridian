@@ -5,16 +5,16 @@ import { useVaultActions } from "../../hooks/useVaultActions";
 import { useWalletStore } from "../../store/wallet";
 import { useWalletConnect } from "../../hooks/useWalletConnect";
 import { useTranslation } from "react-i18next";
-import i18n from "../../i18n";
 
 const PROTOCOL_LABEL: Record<string, string> = {
   blend: "Blend Capital",
   defindex: "DeFindex",
 };
 
-function formatUsd(value: number): string {
+
+function formatUsd(value: number , locale : string) {
   return value.toLocaleString(
-    i18n.language === "fr" ? "fr-FR" : "en-US",
+    locale === "fr" ? "fr-FR" : "en-US",
     {
     style: "currency",
     currency: "USD",
@@ -34,7 +34,7 @@ type Tab = "deposit" | "withdraw";
 export function VaultPanel() {
   const { data, isLoading: vaultsLoading } = useVaults();
   const vaults = data?.vaults;
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { connected, publicKey } = useWalletStore();
   const { handleConnect, status: connectStatus } = useWalletConnect();
   const { data: positions = [] } = usePositions(publicKey);
@@ -141,11 +141,11 @@ export function VaultPanel() {
         <div className="mx-7 my-5 rounded-xl border border-gray-800 bg-gray-900/50 px-4 py-3.5 flex items-center justify-between">
           <div>
             <p className="text-xs text-gray-500 mb-1">{t("vaultPanel.yourPosition")}</p>
-            <p className="text-base font-bold text-white">{formatUsd(position.deposited)}</p>
+            <p className="text-base font-bold text-white">{formatUsd(position.deposited, i18n.language)}</p>
           </div>
           <div className="text-right">
             <p className="text-xs text-gray-500 mb-1">{t("vaultPanel.earned")}</p>
-            <p className="text-base font-bold text-emerald-400">+{formatUsd(position.earned)}</p>
+            <p className="text-base font-bold text-emerald-400">+{formatUsd(position.earned, i18n.language)}</p>
           </div>
         </div>
       )}
@@ -174,7 +174,7 @@ export function VaultPanel() {
         {!connected ? (
           <div className="space-y-4">
             <p className="text-sm text-gray-400 leading-relaxed">
-              {t("vaultPanel.ConnectUSDC")}
+              {t("vaultPanel.connectUSDC")}
             </p>
             {connectStatus === "no-extension" ? (
               <a
@@ -202,7 +202,7 @@ export function VaultPanel() {
                 <span className="text-xs font-medium text-gray-500">{t("vaultPanel.amount")}</span>
                 {hasPosition && (
                   <span className="text-xs text-gray-600">
-                    {t("vaultPanel.balance")}: {formatUsd(position.deposited)}
+                    {t("vaultPanel.balance")}: {formatUsd(position.deposited, i18n.language)}
                   </span>
                 )}
               </div>

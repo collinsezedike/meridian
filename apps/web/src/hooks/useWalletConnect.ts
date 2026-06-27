@@ -24,7 +24,7 @@ export function useWalletConnect() {
       const key = await connectFreighter();
       connect(key);
       setStatus("idle");
-      push("success", `${t("walletConnect.walletConnected")}`);
+      push("success", t("walletConnect.walletConnected"));
     } catch (err) {
       const message = err instanceof Error ? err.message : "";
       // User closed the popup — not an error worth surfacing

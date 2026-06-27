@@ -33,10 +33,10 @@ export function useVaultActions() {
       const { xdr } = await api.addTrustline(publicKey);
       await signAndSubmit(xdr);
       setNeedsTrustline(false);
-      push("success", `${t("vaultActions.assetsAdded")}`);
+      push("success", t("vaultActions.assetsAdded"));
       return true;
     } catch (err) {
-      push("error", err instanceof Error ? err.message : `${t("vaultActions.failedAssets")}`);
+      push("error", err instanceof Error ? err.message : t("vaultActions.failedAssets"));
       return false;
     }
   }
@@ -52,7 +52,7 @@ export function useVaultActions() {
       push("success", `${t("vaultActions.deposited")} ${amount} ${asset}`);
       return true;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : `${t("vaultActions.depositFailed")}`;
+      const msg = err instanceof Error ? err.message : t("vaultActions.depositFailed");
       if (isMissingTrustline(msg)) {
         setNeedsTrustline(true);
       }
@@ -73,7 +73,7 @@ export function useVaultActions() {
       push("success", `${t("vaultActions.withdrew")} ${shares} ${asset}`);
       return true;
     } catch (err) {
-      push("error", err instanceof Error ? err.message : `${t("vaultActions.withdrawalFailed")}`);
+      push("error", err instanceof Error ? err.message : t("vaultActions.withdrawalFailed"));
       return false;
     } finally {
       setIsWithdrawing(false);
