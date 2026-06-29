@@ -8,15 +8,14 @@ import {
 import { simulateView, prepareSorobanTx } from "./tx";
 import type { StellarNetwork } from "./types";
 import type { PositionInfo } from "./positions";
-import { toBigInt } from "./internal";
-
-const STROOPS = 10_000_000n;
+import { toBigInt, STROOPS_PER_UNIT } from "./internal";
 
 // Converts a stroop-denominated bigint to a floating-point unit value without
 // precision loss: the whole-unit part stays in bigint space until it fits
 // safely in a Number, then the sub-unit remainder is added as a fraction.
 export function stroopsToUnits(stroops: bigint): number {
-  return Number(stroops / STROOPS) + Number(stroops % STROOPS) / 1e7;
+  const s = BigInt(STROOPS_PER_UNIT);
+  return Number(stroops / s) + Number(stroops % s) / STROOPS_PER_UNIT;
 }
 
 export interface DefindexVaultConfig {
