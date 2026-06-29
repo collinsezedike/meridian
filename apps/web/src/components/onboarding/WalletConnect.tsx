@@ -62,7 +62,7 @@ export function WalletConnect() {
         rel="noopener noreferrer"
         className="text-sm border border-amber-800 rounded-lg px-4 py-2 font-medium text-amber-400 hover:border-amber-600 hover:text-amber-300 transition-colors duration-150"
       >
-        {t("walletConnect.installFreighter")}
+        {t("common.installFreighter")}
       </a>
     );
   }
@@ -73,7 +73,7 @@ export function WalletConnect() {
       disabled={status === "connecting"}
       className="text-sm border border-gray-700 rounded-lg px-4 py-2 font-medium text-gray-300 hover:border-gray-600 hover:text-white transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
     >
-      {status === "connecting" ? t("walletConnect.connecting") : t("walletConnect.connectWallet")}
+      {status === "connecting" ? t("common.connecting") : t("common.connectWallet")}
     </button>
   );
 }

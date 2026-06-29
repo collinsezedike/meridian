@@ -11,13 +11,12 @@ vi.mock("../../lib/wallet", () => ({
 
 vi.mock("react-i18next", () => {
   const translations: Record<string, string> = {
-    "walletConnect.connectWallet": "Connect Wallet",
-    "walletConnect.connecting": "Connecting...",
     "walletConnect.disconnect": "Disconnect",
     "walletConnect.copyAddress": "Copy Address",
     "walletConnect.copied": "Copied",
-    "walletConnect.installFreighter": "Install Freighter",
-    "walletConnect.walletConnected": "Wallet Connected",
+    "common.installFreighter": "Install Freighter",
+    "common.connectWallet": "Connect Wallet",
+    "common.connecting": "Connecting...",
     "walletConnect.walletDisconnected": "Wallet Disconnected",
   };
 

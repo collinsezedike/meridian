@@ -4,12 +4,9 @@
   },
 
   "walletConnect": {
-    "connectWallet": "Connecter le portefeuille",
-    "connecting": "Connexion...",
     "disconnect": "Déconnecter",
     "copyAddress": "Copier l'adresse",
     "copied": "Copié",
-    "installFreighter": "Installer Freighter",
     "walletDisconnected": "Portefeuille déconnecté",
     "walletConnected": "Portefeuille connecté"
   },
@@ -26,15 +23,12 @@
     "yourPosition": "Votre position",
     "earned": "Gains",
     "connectUSDC": "Connectez votre portefeuille Freighter pour déposer des USDC et commencer à générer du rendement automatiquement.",
-    "installFreighter": "Installer Freighter",
     "amount": "Montant",
     "balance": "Solde",
     "addAssets": "Ajouter les actifs du coffre au portefeuille",
     "position": "Vous n'avez aucune position active à retirer.",
     "shares": "Parts",
-    "waiting": "En attente de signature...",
-    "connectWallet": "Connecter le portefeuille",
-    "connecting": "Connexion..."
+    "waiting": "En attente de signature..."
   },
 
   "vaultActions": {
@@ -44,5 +38,12 @@
     "withdrawalFailed": "Échec du retrait",
     "withdrew": "Retiré",
     "deposited": "Déposé"
+  },
+
+  "common": {
+    "connectWallet": "Connecter le portefeuille",
+    "connecting":"Connexion...",
+    "installFreighter": "Installer Freighter"
   }
+
 }

@@ -183,7 +183,7 @@ export function VaultPanel() {
                 rel="noopener noreferrer"
                 className="flex items-center justify-center w-full rounded-xl border border-amber-800/70 bg-amber-950/20 hover:border-amber-700 text-amber-400 hover:text-amber-300 text-sm font-medium py-3 transition-colors duration-150"
               >
-                {t("vaultPanel.installFreighter")}
+                {t("common.installFreighter")}
               </a>
             ) : (
               <button
@@ -191,7 +191,7 @@ export function VaultPanel() {
                 disabled={connectStatus === "connecting"}
                 className="w-full rounded-xl border border-gray-700 bg-gray-900/50 hover:border-gray-500 hover:bg-gray-900 hover:text-white text-gray-300 text-sm font-semibold py-3 transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {connectStatus === "connecting" ? t("vaultPanel.connecting") : t("vaultPanel.connectWallet")}
+                {connectStatus === "connecting" ? t("common.connecting") : t("common.connectWallet")}
               </button>
             )}
           </div>
