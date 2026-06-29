@@ -21,5 +21,6 @@ export async function signTransaction(
 ): Promise<string> {
   const result = await freighterSign(xdr, { networkPassphrase });
   if (result.error) throw new Error(result.error.message);
+  if (!result.signedTxXdr) throw new Error("Signing cancelled");
   return result.signedTxXdr;
 }
