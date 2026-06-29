@@ -43,6 +43,10 @@ export const STELLAR_NETWORKS = {
 export const APP_NETWORK = STELLAR_NETWORKS.testnet;
 export const APP_ADDRESSES = CONTRACT_ADDRESSES.testnet;
 
+export function isDefindexConfigured(): boolean {
+  return Boolean(process.env.DEFINDEX_VAULT_ID ?? APP_ADDRESSES.defindex.vault);
+}
+
 /** Build the ProtocolAddresses object consumed by stellar-sdk-helpers, allowing
  *  the DeFindex vault id to be overridden at runtime via DEFINDEX_VAULT_ID. */
 export function buildTxAddresses(defindexOverride?: string) {
