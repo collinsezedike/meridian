@@ -1,3 +1,5 @@
+export const DEFAULT_ALLOWED_ORIGIN = "https://usemeridian.vercel.app";
+
 export const SUPPORTED_STABLECOINS = ["USDC", "EURC"] as const;
 export type SupportedStablecoin = (typeof SUPPORTED_STABLECOINS)[number];
 

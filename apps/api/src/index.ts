@@ -8,13 +8,14 @@ config({ path: resolve(process.cwd(), "../../.env") });
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
+import { DEFAULT_ALLOWED_ORIGIN } from "@meridian/shared";
 import { vaultsRoute } from "./routes/vaults";
 import { positionsRoute } from "./routes/positions";
 import { txRoute } from "./routes/tx";
 
 const app = Fastify({ logger: true });
 
-await app.register(cors, { origin: process.env.ALLOWED_ORIGIN ?? "https://usemeridian.vercel.app" });
+await app.register(cors, { origin: process.env.ALLOWED_ORIGIN ?? DEFAULT_ALLOWED_ORIGIN });
 await app.register(rateLimit, { max: 100, timeWindow: "1 minute" });
 
 app.register(vaultsRoute, { prefix: "/api/v1/vaults" });

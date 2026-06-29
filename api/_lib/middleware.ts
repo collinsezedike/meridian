@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { DEFAULT_ALLOWED_ORIGIN } from "@meridian/shared";
 
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? "https://usemeridian.vercel.app";
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? DEFAULT_ALLOWED_ORIGIN;
 
 /**
  * Set CORS headers and handle preflight. Returns true when the request was a
