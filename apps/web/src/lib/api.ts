@@ -1,3 +1,8 @@
+import type { ApiVault, PositionInfo } from "@meridian/stellar-sdk-helpers";
+
+export type { ApiVault };
+export type ApiPosition = PositionInfo;
+
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -28,26 +33,6 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-// JSON-safe vault shape (bigints serialised as numbers by the API)
-export interface ApiVault {
-  id: string;
-  protocol: "blend" | "defindex";
-  asset: string;
-  name: string;
-  label: string;
-  apy: number;
-  tvl: number;
-  userBalance: number;
-  riskLevel: "safe" | "caution" | "risky";
-}
-
-export interface ApiPosition {
-  vaultId: string;
-  shares: number;
-  deposited: number;
-  earned: number;
-  entryTime: number;
-}
 
 export const api = {
   getVaults: () =>
