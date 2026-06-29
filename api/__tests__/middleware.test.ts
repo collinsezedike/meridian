@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { applyCors, checkRateLimit, resetRateLimitForTesting } from "../_lib/middleware";
+import { applyCors, checkRateLimit, resetRateLimitForTesting } from "../_lib/middleware.js";
 
 // Minimal fake request / response ------------------------------------------------
 
