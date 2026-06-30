@@ -13,10 +13,19 @@ import { vaultsRoute } from "./routes/vaults";
 import { positionsRoute } from "./routes/positions";
 import { txRoute } from "./routes/tx";
 
-const app = Fastify({ logger: true });
+// Rate limits: global 100 req/min; /tx/deposit and /tx/withdraw 10 req/min per IP.
+// Body limit: 10 KB on all routes to block oversized payload attacks.
+// Security headers: X-Content-Type-Options and X-Frame-Options on every response.
+const app = Fastify({ logger: true, bodyLimit: 10 * 1024 });
 
 await app.register(cors, { origin: process.env.ALLOWED_ORIGIN ?? DEFAULT_ALLOWED_ORIGIN });
 await app.register(rateLimit, { max: 100, timeWindow: "1 minute" });
+
+app.addHook("onSend", (_req, reply, _payload, done) => {
+  reply.header("X-Content-Type-Options", "nosniff");
+  reply.header("X-Frame-Options", "DENY");
+  done();
+});
 
 app.register(vaultsRoute, { prefix: "/api/v1/vaults" });
 app.register(positionsRoute, { prefix: "/api/v1/positions" });

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Fastify from "fastify";
+import rateLimit from "@fastify/rate-limit";
 import { positionsRoute } from "../routes/positions.js";
 import { txRoute } from "../routes/tx.js";
 import { vaultsRoute } from "../routes/vaults.js";
@@ -256,6 +257,32 @@ describe("GET /api/v1/vaults", () => {
 
     const res = await app.inject({ method: "GET", url: "/api/v1/vaults" });
     expect(res.statusCode).toBe(500);
+  });
+});
+
+describe("rate limiting on /api/v1/tx/deposit", () => {
+  it("returns 429 after 10 requests within a minute", async () => {
+    const app = Fastify({ logger: false });
+    await app.register(rateLimit, { max: 1000, timeWindow: "1 minute" });
+    app.register(txRoute, { prefix: "/api/v1/tx" });
+    await app.ready();
+
+    vi.mocked(buildDepositTx).mockResolvedValue({ xdr: "TXXDR", fee: "100" });
+
+    const opts = {
+      method: "POST" as const,
+      url: "/api/v1/tx/deposit",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ walletAddress: WALLET, vaultId: "blend-usdc-fixed", amount: "10" }),
+    };
+
+    for (let i = 0; i < 10; i++) {
+      const res = await app.inject(opts);
+      expect(res.statusCode).toBe(200);
+    }
+
+    const over = await app.inject(opts);
+    expect(over.statusCode).toBe(429);
   });
 });
 

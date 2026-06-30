@@ -17,7 +17,7 @@ import {
 } from "@meridian/stellar-sdk-helpers";
 
 export const txRoute: FastifyPluginAsync = async (app) => {
-  app.post("/deposit", async (req, reply) => {
+  app.post("/deposit", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = DepositRequestSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: formatZodError(parsed.error) });
 
@@ -34,7 +34,7 @@ export const txRoute: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/withdraw", async (req, reply) => {
+  app.post("/withdraw", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = WithdrawRequestSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: formatZodError(parsed.error) });
 
