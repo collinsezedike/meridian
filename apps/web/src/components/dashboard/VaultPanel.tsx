@@ -54,7 +54,7 @@ export function VaultPanel() {
   const bestVault = vaults?.find((v) => v.id === data?.recommendedVaultId);
   // Single-vault architecture: the user holds at most one position. Revisit if multi-vault is added.
   const position = positions[0];
-  const hasPosition = position && position.deposited > 0;
+  const hasPosition = position && Number.isFinite(position.deposited) && position.deposited > 0;
 
   async function handleDeposit() {
     if (!amount || !bestVault) return;
