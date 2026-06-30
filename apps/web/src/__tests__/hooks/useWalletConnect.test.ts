@@ -18,7 +18,7 @@ vi.mock("react-i18next", () => {
     "common.connectWallet": "Connect Wallet",
     "common.connecting": "Connecting...",
     "walletConnect.walletDisconnected": "Wallet Disconnected",
-    "walletConnect.walletConnected" : "Walled Connected",
+    "walletConnect.walletConnected" : "Wallet Connected",
   };
 
   return {
