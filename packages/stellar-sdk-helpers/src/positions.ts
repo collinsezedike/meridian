@@ -1,4 +1,4 @@
-import { STROOPS_PER_UNIT } from "./internal";
+import { stroopsToUnits } from "./defindex";
 
 export interface PositionInfo {
   vaultId: string;
@@ -40,9 +40,9 @@ export function computePosition(vaultId: string, raw: RawPosition): PositionInfo
   return [
     {
       vaultId,
-      shares: Number(raw.shares) / STROOPS_PER_UNIT,
-      deposited: Number(currentValue) / STROOPS_PER_UNIT,
-      earned: Number(earned) / STROOPS_PER_UNIT,
+      shares: stroopsToUnits(raw.shares),
+      deposited: stroopsToUnits(currentValue),
+      earned: stroopsToUnits(earned),
       entryTime: Number(raw.entryTime),
     },
   ];
