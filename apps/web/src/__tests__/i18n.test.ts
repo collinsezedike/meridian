@@ -3,6 +3,10 @@ import { describe, it, expect } from "vitest";
 import en from "../../messages/en.json";
 import fr from "../../messages/fr.json";
 
+const locales = {
+  fr,
+};
+
 function flatten(obj: Record<string, unknown>, prefix = ""): string[] {
   return Object.entries(obj).flatMap(([key, value]) =>
     value !== null && typeof value === "object"
@@ -12,7 +16,11 @@ function flatten(obj: Record<string, unknown>, prefix = ""): string[] {
 }
 
 describe("i18n", () => {
-  it("english and french translations have identical keys", () => {
-    expect(flatten(en).sort()).toEqual(flatten(fr).sort());
-  });
+  const englishKeys = flatten(en).sort();
+
+  Object.entries(locales).forEach(([locale, translations]) => {
+    it(`${locale} has the same keys as english`, () => {
+      expect(flatten(translations).sort()).toEqual(englishKeys);
+    })
+  })
 });
