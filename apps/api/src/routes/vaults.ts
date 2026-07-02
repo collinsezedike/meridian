@@ -1,16 +1,19 @@
 import type { FastifyPluginAsync } from "fastify";
-import { selectBestVault, isVaultCacheWarm } from "@meridian/stellar-sdk-helpers";
-import { APP_ADDRESSES } from "@meridian/shared";
+import {
+  selectBestVault,
+  isVaultCacheWarm,
+} from "@meridian/stellar-sdk-helpers";
+import { isDefindexConfigured, APP_NETWORK } from "@meridian/shared";
 import { fetchAllVaults } from "../services/vaults.js";
-
-const defindexConfigured = Boolean(process.env.DEFINDEX_VAULT_ID ?? APP_ADDRESSES.defindex.vault);
 
 export const vaultsRoute: FastifyPluginAsync = async (app) => {
   app.get("/", async (_req, reply) => {
     try {
       const cached = isVaultCacheWarm();
-      const vaults = await fetchAllVaults();
-      const best = selectBestVault(vaults, { defindexConfigured });
+      const vaults = await fetchAllVaults(APP_NETWORK.network);
+      const best = selectBestVault(vaults, {
+        defindexConfigured: isDefindexConfigured(),
+      });
       return reply.send({
         vaults,
         recommendedVaultId: best?.id ?? null,
@@ -26,9 +29,10 @@ export const vaultsRoute: FastifyPluginAsync = async (app) => {
   app.get("/:vaultId", async (req, reply) => {
     try {
       const { vaultId } = req.params as { vaultId: string };
-      const vaults = await fetchAllVaults();
+      const vaults = await fetchAllVaults(APP_NETWORK.network);
       const vault = vaults.find((v) => v.id === vaultId);
-      if (!vault) return reply.code(404).send({ error: "vault not found", vaultId });
+      if (!vault)
+        return reply.code(404).send({ error: "vault not found", vaultId });
       return reply.send(vault);
     } catch (err) {
       app.log.error(err, "[vaults] failed to fetch vault by id");

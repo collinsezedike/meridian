@@ -2,10 +2,10 @@
 
 Meridian has two API implementations that share the same interface:
 
-| Implementation | Used in | Location |
-|---|---|---|
-| Vercel serverless functions | Production | `api/v1/` |
-| Fastify server | Local development | `apps/api/` |
+| Implementation              | Used in           | Location    |
+| --------------------------- | ----------------- | ----------- |
+| Vercel serverless functions | Production        | `api/v1/`   |
+| Fastify server              | Local development | `apps/api/` |
 
 ## Endpoints
 
@@ -14,6 +14,7 @@ Meridian has two API implementations that share the same interface:
 Returns all available vaults with live APY and TVL.
 
 **Response**
+
 ```json
 {
   "vaults": [
@@ -46,13 +47,14 @@ Returns a single vault or 404.
 Returns the user's on-chain position.
 
 **Response**
+
 ```json
 {
   "positions": [
     {
       "vaultId": "blend-usdc-variable",
       "shares": 100.0,
-      "deposited": 100.00,
+      "deposited": 100.0,
       "earned": 2.34,
       "entryTime": 1716729600
     }
@@ -67,6 +69,7 @@ Reads position data directly from the vault contract via `simulateTransaction`. 
 Builds an unsigned Soroban deposit transaction.
 
 **Request**
+
 ```json
 {
   "walletAddress": "G...",
@@ -76,6 +79,7 @@ Builds an unsigned Soroban deposit transaction.
 ```
 
 **Response**
+
 ```json
 {
   "xdr": "AAAAAgAAAAA...",
@@ -90,6 +94,7 @@ The `xdr` field is a base64-encoded unsigned `TransactionEnvelope`. The `fee` is
 Builds an unsigned Soroban withdraw transaction.
 
 **Request**
+
 ```json
 {
   "walletAddress": "G...",
@@ -105,11 +110,13 @@ Builds an unsigned Soroban withdraw transaction.
 Builds an unsigned transaction that adds the mUSDC trustline to the caller's account. Must be submitted before a first deposit.
 
 **Request**
+
 ```json
 { "walletAddress": "G..." }
 ```
 
 **Response**
+
 ```json
 { "xdr": "AAAAAgAAAAA..." }
 ```
@@ -119,11 +126,13 @@ Builds an unsigned transaction that adds the mUSDC trustline to the caller's acc
 Submits a Freighter-signed XDR to the Stellar network.
 
 **Request**
+
 ```json
 { "xdr": "AAAAAgAAAAA..." }
 ```
 
 **Response**
+
 ```json
 { "hash": "abc123..." }
 ```
@@ -142,9 +151,9 @@ The Fastify server (`apps/api/`) runs the same packages directly via `tsx`, whic
 
 When building a deposit transaction, the `vaultId` is mapped to the `Protocol` enum expected by the vault contract:
 
-| Vault ID prefix | Protocol |
-|---|---|
-| `blend-` | `Blend` |
-| `defindex-` | `DeFindex` |
+| Vault ID prefix | Protocol   |
+| --------------- | ---------- |
+| `blend-`        | `Blend`    |
+| `defindex-`     | `DeFindex` |
 
 Any other prefix returns a 500 with a clear mapping error.

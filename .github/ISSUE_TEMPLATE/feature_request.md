@@ -3,7 +3,7 @@ name: Feature Request
 about: Propose a new feature or improvement for Meridian
 title: "[Feature] "
 labels: enhancement
-assignees: ''
+assignees: ""
 ---
 
 ## Summary
@@ -20,12 +20,12 @@ assignees: ''
 
 ## Scope
 
-| Field | Value |
-| --- | --- |
-| Area | <!-- Frontend / API / SDK / Contracts / Docs / CI --> |
-| Protocol affected | <!-- Blend / DeFindex / Both / None --> |
-| Network | <!-- testnet / mainnet / both --> |
-| Breaking change? | <!-- Yes / No --> |
+| Field             | Value                                                 |
+| ----------------- | ----------------------------------------------------- |
+| Area              | <!-- Frontend / API / SDK / Contracts / Docs / CI --> |
+| Protocol affected | <!-- Blend / DeFindex / Both / None -->               |
+| Network           | <!-- testnet / mainnet / both -->                     |
+| Breaking change?  | <!-- Yes / No -->                                     |
 
 ## Alternatives Considered
 

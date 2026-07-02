@@ -27,16 +27,16 @@ export type RiskLevel = "safe" | "caution" | "risky";
 export function assessPoolRisk(pool: DefiLlamaPool): RiskLevel {
   let score = 0;
 
-  if (pool.tvlUsd < 10_000)           score += 3;
-  else if (pool.tvlUsd < 100_000)     score += 2;
-  else if (pool.tvlUsd < 2_000_000)   score += 1;
+  if (pool.tvlUsd < 10_000) score += 3;
+  else if (pool.tvlUsd < 100_000) score += 2;
+  else if (pool.tvlUsd < 2_000_000) score += 1;
 
   const vol7d = Math.abs(pool.apyPct7D ?? 0);
-  if (vol7d > 30)     score += 3;
+  if (vol7d > 30) score += 3;
   else if (vol7d > 5) score += 2;
   else if (vol7d > 1) score += 1;
 
-  if (pool.apy > 20)      score += 2;
+  if (pool.apy > 20) score += 2;
   else if (pool.apy > 12) score += 1;
 
   if (score >= 4) return "risky";
@@ -58,7 +58,11 @@ export async function getStellarStablecoinPools(): Promise<DefiLlamaPool[]> {
     if (!res.ok) throw new Error(`DeFiLlama /pools HTTP ${res.status}`);
     const json = (await res.json()) as { data: DefiLlamaPool[] };
     return json.data.filter(
-      (p) => p.chain === "Stellar" && p.stablecoin && p.apy >= MIN_APY && p.tvlUsd >= MIN_TVL_USD
+      (p) =>
+        p.chain === "Stellar" &&
+        p.stablecoin &&
+        p.apy >= MIN_APY &&
+        p.tvlUsd >= MIN_TVL_USD
     );
   });
 }

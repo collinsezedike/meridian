@@ -1,22 +1,15 @@
-import {
-  Address,
-  Contract,
-  nativeToScVal,
-  rpc,
-  xdr,
-} from "@stellar/stellar-sdk";
+import { Address, Contract, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import { simulateView, prepareSorobanTx } from "./tx";
 import type { StellarNetwork } from "./types";
 import type { PositionInfo } from "./positions";
-import { toBigInt } from "./internal";
-
-const STROOPS = 10_000_000n;
+import { toBigInt, STROOPS_PER_UNIT, getRpcServer } from "./internal";
 
 // Converts a stroop-denominated bigint to a floating-point unit value without
 // precision loss: the whole-unit part stays in bigint space until it fits
 // safely in a Number, then the sub-unit remainder is added as a fraction.
 export function stroopsToUnits(stroops: bigint): number {
-  return Number(stroops / STROOPS) + Number(stroops % STROOPS) / 1e7;
+  const s = BigInt(STROOPS_PER_UNIT);
+  return Number(stroops / s) + Number(stroops % s) / STROOPS_PER_UNIT;
 }
 
 export interface DefindexVaultConfig {
@@ -51,12 +44,17 @@ export async function buildDefindexDepositTx(
   if (amount <= 0n) throw new Error("amount must be positive");
   const minAmount = amount - (amount * slippageBps) / 10_000n;
   const contract = new Contract(config.vaultId);
-  return prepareSorobanTx(config.network, depositor, contract.call("deposit",
-    xdr.ScVal.scvVec([i128(amount)]),
-    xdr.ScVal.scvVec([i128(minAmount)]),
-    Address.fromString(depositor).toScVal(),
-    xdr.ScVal.scvBool(true),
-  ));
+  return prepareSorobanTx(
+    config.network,
+    depositor,
+    contract.call(
+      "deposit",
+      xdr.ScVal.scvVec([i128(amount)]),
+      xdr.ScVal.scvVec([i128(minAmount)]),
+      Address.fromString(depositor).toScVal(),
+      xdr.ScVal.scvBool(true)
+    )
+  );
 }
 
 /**
@@ -74,11 +72,16 @@ export async function buildDefindexWithdrawTx(
 ): Promise<{ xdr: string; fee: string }> {
   if (shares <= 0n) throw new Error("shares must be positive");
   const contract = new Contract(config.vaultId);
-  return prepareSorobanTx(config.network, withdrawer, contract.call("withdraw",
-    i128(shares),
-    xdr.ScVal.scvVec([i128(0n)]),
-    Address.fromString(withdrawer).toScVal(),
-  ));
+  return prepareSorobanTx(
+    config.network,
+    withdrawer,
+    contract.call(
+      "withdraw",
+      i128(shares),
+      xdr.ScVal.scvVec([i128(0n)]),
+      Address.fromString(withdrawer).toScVal()
+    )
+  );
 }
 
 /**
@@ -97,7 +100,7 @@ export async function fetchDefindexPosition(
   reportVaultId: string,
   publicKey: string
 ): Promise<PositionInfo[]> {
-  const server = new rpc.Server(network.rpcUrl, { timeout: 12_000 });
+  const server = getRpcServer(network.rpcUrl, 12_000);
   const caller = Address.fromString(publicKey).toScVal();
 
   const shares = toBigInt(
@@ -112,7 +115,8 @@ export async function fetchDefindexPosition(
     "get_asset_amounts_per_shares",
     i128(shares)
   )) as Array<bigint | number> | null;
-  const underlying = Array.isArray(amounts) && amounts.length > 0 ? toBigInt(amounts[0]) : 0n;
+  const underlying =
+    Array.isArray(amounts) && amounts.length > 0 ? toBigInt(amounts[0]) : 0n;
 
   return [
     {

@@ -9,7 +9,7 @@ const INTERNAL_DETAIL = /https?:\/\/|C[A-Z2-7]{50,}/;
  */
 export function sanitizeTxError(err: unknown, fallback: string): string {
   if (!(err instanceof Error)) return fallback;
-  const first = err.message.split("\n")[0].trim();
+  const first = err.message.split("\n")[0]?.trim();
   if (!first || INTERNAL_DETAIL.test(first)) return fallback;
   return first;
 }
@@ -31,12 +31,12 @@ export function isValidStellarAddress(key: string): boolean {
 export function withRaceTimeout<T>(
   fn: () => Promise<T>,
   ms: number,
-  label: string,
+  label: string
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const handle = setTimeout(
       () => reject(new Error(`${label} timed out after ${ms}ms`)),
-      ms,
+      ms
     );
     fn().then(
       (val) => {
@@ -46,7 +46,7 @@ export function withRaceTimeout<T>(
       (err) => {
         clearTimeout(handle);
         reject(err);
-      },
+      }
     );
   });
 }
@@ -73,7 +73,7 @@ export async function withRetry<T>(
       lastErr = err;
       if (attempt < maxAttempts - 1 && shouldRetry(err)) {
         await new Promise((resolve) =>
-          setTimeout(resolve, baseDelayMs * 2 ** attempt),
+          setTimeout(resolve, baseDelayMs * 2 ** attempt)
         );
       } else {
         break;
@@ -96,7 +96,6 @@ export function fromStroops(stroops: bigint): string {
   const decimal = remainder.toString().padStart(7, "0").replace(/0+$/, "");
   return `${sign}${whole}.${decimal}`;
 }
-
 const USD_FORMATTER = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -117,6 +116,7 @@ export function formatUsdAmount(amount: number): string {
 /**
  * Parses a USD-formatted string back to a number.
  * Returns null for invalid or malformed input.
+
  */
 export function parseUsdAmount(value: string): number | null {
   const stripped = value.replace(/[^0-9.,-]/g, "").replace(/,/g, "");

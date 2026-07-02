@@ -19,23 +19,24 @@ describe("sanitizeTxError", () => {
 
   it("returns the first line of a clean multi-line error message", () => {
     const err = new Error(
-      "Transaction simulation failed\n  at contract: ...\n  context: ...",
+
+      "Transaction simulation failed\n  at contract: ...\n  context: ..."
     );
     expect(sanitizeTxError(err, "fallback")).toBe(
-      "Transaction simulation failed",
+      "Transaction simulation failed"
     );
   });
 
   it("returns the fallback when the first line contains an RPC URL", () => {
     const err = new Error(
-      "fetch failed: https://soroban-testnet.stellar.org\nmore detail",
+      "fetch failed: https://soroban-testnet.stellar.org\nmore detail"
     );
     expect(sanitizeTxError(err, "fallback")).toBe("fallback");
   });
 
   it("returns the fallback when the first line contains a contract C-address", () => {
     const err = new Error(
-      "CCQNJ4SJM5NKRBJK3G4YATDUZPTLWVKWKJTPBFHIFVQMQJDQVLSEHWA: not found",
+      "CCQNJ4SJM5NKRBJK3G4YATDUZPTLWVKWKJTPBFHIFVQMQJDQVLSEHWA: not found"
     );
     expect(sanitizeTxError(err, "fallback")).toBe("fallback");
   });
@@ -48,7 +49,7 @@ describe("sanitizeTxError", () => {
   it("passes through safe user-facing error messages unchanged", () => {
     const err = new Error("All required trustlines already exist");
     expect(sanitizeTxError(err, "fallback")).toBe(
-      "All required trustlines already exist",
+      "All required trustlines already exist"
     );
   });
 });
@@ -118,7 +119,7 @@ describe("withRetry", () => {
       fn,
       3,
       0,
-      (err) => !(err instanceof TimeoutError),
+      (err) => !(err instanceof TimeoutError)
     );
     const assertion = expect(promise).rejects.toBeInstanceOf(TimeoutError);
     await vi.runAllTimersAsync();
@@ -141,7 +142,7 @@ describe("withRaceTimeout", () => {
     const fn = vi.fn().mockImplementation(() => new Promise(() => {}));
     const promise = withRaceTimeout(fn, 500, "test op");
     const assertion = expect(promise).rejects.toThrow(
-      "test op timed out after 500ms",
+      "test op timed out after 500ms"
     );
     await vi.runAllTimersAsync();
     await assertion;
@@ -232,7 +233,6 @@ describe("parseUsdAmount", () => {
     expect(parseUsdAmount("1.2.3")).toBeNull();
   });
 });
-
 describe("shortenAddress", () => {
   it("shortens a standard G-address to 4+4 chars by default", () => {
     expect(

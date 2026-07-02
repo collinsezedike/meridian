@@ -2,10 +2,12 @@ import { useState } from "react";
 import { useWalletStore } from "../store/wallet";
 import { isFreighterInstalled, connectFreighter } from "../lib/wallet";
 import { useToastStore } from "../store/toast";
+import { useTranslation } from "react-i18next";
 
 export type ConnectStatus = "idle" | "connecting" | "no-extension";
 
 export function useWalletConnect() {
+  const { t } = useTranslation();
   const { connect } = useWalletStore();
   const { push } = useToastStore();
   const [status, setStatus] = useState<ConnectStatus>("idle");
@@ -22,7 +24,7 @@ export function useWalletConnect() {
       const key = await connectFreighter();
       connect(key);
       setStatus("idle");
-      push("success", "Wallet connected");
+      push("success", t("walletConnect.walletConnected"));
     } catch (err) {
       const message = err instanceof Error ? err.message : "";
       // User closed the popup — not an error worth surfacing

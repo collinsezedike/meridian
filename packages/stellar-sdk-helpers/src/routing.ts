@@ -19,7 +19,10 @@ function isRoutable(vault: ApiVault, opts: RouteOptions): boolean {
  * to the best routable pool when every option is risky, and returns null when
  * nothing is routable. Pure — no I/O.
  */
-export function selectBestVault(vaults: ApiVault[], opts: RouteOptions): ApiVault | null {
+export function selectBestVault(
+  vaults: ApiVault[],
+  opts: RouteOptions
+): ApiVault | null {
   const routable = vaults.filter((v) => isRoutable(v, opts));
   if (routable.length === 0) return null;
 

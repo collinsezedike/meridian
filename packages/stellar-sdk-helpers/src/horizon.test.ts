@@ -9,9 +9,15 @@ function network(name: StellarNetwork["network"]): StellarNetwork {
 
 describe("buildHorizonServer", () => {
   it("returns a Horizon.Server instance for every supported network", () => {
-    expect(buildHorizonServer(network("testnet"))).toBeInstanceOf(Horizon.Server);
-    expect(buildHorizonServer(network("mainnet"))).toBeInstanceOf(Horizon.Server);
-    expect(buildHorizonServer(network("futurenet"))).toBeInstanceOf(Horizon.Server);
+    expect(buildHorizonServer(network("testnet"))).toBeInstanceOf(
+      Horizon.Server
+    );
+    expect(buildHorizonServer(network("mainnet"))).toBeInstanceOf(
+      Horizon.Server
+    );
+    expect(buildHorizonServer(network("futurenet"))).toBeInstanceOf(
+      Horizon.Server
+    );
   });
 
   it("maps each network to its canonical Horizon endpoint", () => {
@@ -27,4 +33,3 @@ describe("buildHorizonServer", () => {
     );
   });
 });
-

@@ -101,10 +101,10 @@ export const CONTRACT_ADDRESSES = {
       factory: "C...",
       vault: "",
     },
-    usdc: "C...",   // USDC_CONTRACT_ID
+    usdc: "C...", // USDC_CONTRACT_ID
     eurc: "C...",
-    musdc: "C...",  // MUSDC_CONTRACT_ID
-    vault: "C...",  // VAULT_CONTRACT_ID
+    musdc: "C...", // MUSDC_CONTRACT_ID
+    vault: "C...", // VAULT_CONTRACT_ID
   },
 } as const;
 ```

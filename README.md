@@ -13,6 +13,7 @@ Submitted to the **Drips Stellar Wave Program**.
 Meridian is a **testnet technical preview**, not a finished product. Be clear-eyed about what exists today before depositing real funds (you can't yet — mainnet is not wired).
 
 **Working today (testnet)**
+
 - Live APY / TVL feed across Stellar stablecoin pools (via DeFiLlama) with a risk heuristic
 - Non-custodial signing flow: the API builds an unsigned Soroban XDR, your wallet (Freighter) signs and submits it — keys never leave the browser
 - **Direct deposit / withdraw against a real Blend pool**: funds supply straight into Blend from your wallet and the resulting bToken position is yours — no Meridian-controlled custody
@@ -22,7 +23,7 @@ Meridian is a **testnet technical preview**, not a finished product. Be clear-ey
 
 **In progress — the core promise is not finished**
 
-- Direct deposit/withdraw against real DeFindex vaults — *transaction builders are implemented; gated behind `DEFINDEX_VAULT_ID` until a real testnet vault is wired*
+- Direct deposit/withdraw against real DeFindex vaults — _transaction builders are implemented; gated behind `DEFINDEX_VAULT_ID` until a real testnet vault is wired_
 - Per-position yield earned (cost-basis tracking for direct Blend/DeFindex positions)
 - Mainnet configuration and a security audit before any real-funds use
 
@@ -74,16 +75,16 @@ The API never holds private keys. It builds an unsigned Soroban transaction, ret
 
 ## Tech Stack
 
-| Layer | Technology |
-| --- | --- |
-| Frontend | Vite 8, React 19, Tailwind CSS, Zustand, TanStack Query |
-| Backend (prod) | Vercel Serverless Functions, Zod validation |
-| Backend (local) | Fastify |
-| Blockchain | Stellar Soroban, `@stellar/stellar-sdk` v12 |
-| Protocols | Blend Capital, DeFindex |
-| Contracts | Rust / Soroban SDK |
-| Monorepo | pnpm workspaces, Turborepo |
-| CI | GitHub Actions |
+| Layer           | Technology                                              |
+| --------------- | ------------------------------------------------------- |
+| Frontend        | Vite 8, React 19, Tailwind CSS, Zustand, TanStack Query |
+| Backend (prod)  | Vercel Serverless Functions, Zod validation             |
+| Backend (local) | Fastify                                                 |
+| Blockchain      | Stellar Soroban, `@stellar/stellar-sdk` v12             |
+| Protocols       | Blend Capital, DeFindex                                 |
+| Contracts       | Rust / Soroban SDK                                      |
+| Monorepo        | pnpm workspaces, Turborepo                              |
+| CI              | GitHub Actions                                          |
 
 ---
 

@@ -2,13 +2,15 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "lib": ["ES2020"],
-    "ignoreDeprecations": "5.0",
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "rootDir": "../..",
     "outDir": "dist",
     "paths": {
       "@meridian/shared": ["../../packages/shared/src"],
-      "@meridian/stellar-sdk-helpers": ["../../packages/stellar-sdk-helpers/src"]
+      "@meridian/stellar-sdk-helpers": [
+        "../../packages/stellar-sdk-helpers/src"
+      ]
     }
   },
   "include": ["src"]

@@ -2,6 +2,7 @@ export * from "./blend";
 export * from "./defilamma";
 export * from "./defindex";
 export * from "./horizon";
+export * from "./known-pools";
 export * from "./orchestration";
 export * from "./positions";
 export * from "./routing";

@@ -9,12 +9,35 @@ vi.mock("../../lib/wallet", () => ({
   connectFreighter: vi.fn(),
 }));
 
+vi.mock("react-i18next", () => {
+  const translations: Record<string, string> = {
+    "walletConnect.disconnect": "Disconnect",
+    "walletConnect.copyAddress": "Copy Address",
+    "walletConnect.copied": "Copied",
+    "common.installFreighter": "Install Freighter",
+    "common.connectWallet": "Connect Wallet",
+    "common.connecting": "Connecting...",
+    "walletConnect.walletDisconnected": "Wallet Disconnected",
+    "walletConnect.walletConnected": "Wallet Connected",
+  };
+
+  return {
+    useTranslation: () => ({
+      t: (key: string) => translations[key] ?? key,
+    }),
+  };
+});
+
 import { isFreighterInstalled, connectFreighter } from "../../lib/wallet";
 
 const KEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 
 beforeEach(() => {
-  useWalletStore.setState({ publicKey: null, connected: false, network: "testnet" });
+  useWalletStore.setState({
+    publicKey: null,
+    connected: false,
+    network: "testnet",
+  });
   useToastStore.setState({ toasts: [] });
   vi.clearAllMocks();
 });
@@ -38,13 +61,20 @@ describe("useWalletConnect", () => {
     await act(() => result.current.handleConnect());
 
     expect(result.current.status).toBe("idle");
-    expect(useWalletStore.getState()).toMatchObject({ publicKey: KEY, connected: true });
-    expect(useToastStore.getState().toasts[0]).toMatchObject({ kind: "success" });
+    expect(useWalletStore.getState()).toMatchObject({
+      publicKey: KEY,
+      connected: true,
+    });
+    expect(useToastStore.getState().toasts[0]).toMatchObject({
+      kind: "success",
+    });
   });
 
   it("swallows user-cancel errors without a toast", async () => {
     vi.mocked(isFreighterInstalled).mockResolvedValue(true);
-    vi.mocked(connectFreighter).mockRejectedValue(new Error("User declined request"));
+    vi.mocked(connectFreighter).mockRejectedValue(
+      new Error("User declined request")
+    );
     const { result } = renderHook(() => useWalletConnect());
 
     await act(() => result.current.handleConnect());
@@ -61,6 +91,9 @@ describe("useWalletConnect", () => {
     await act(() => result.current.handleConnect());
 
     expect(result.current.status).toBe("idle");
-    expect(useToastStore.getState().toasts[0]).toMatchObject({ kind: "error", message: "Network error" });
+    expect(useToastStore.getState().toasts[0]).toMatchObject({
+      kind: "error",
+      message: "Network error",
+    });
   });
 });

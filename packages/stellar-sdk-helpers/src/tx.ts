@@ -10,8 +10,8 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import type { StellarNetwork } from "./types";
-import { BASE_FEE, passphraseFor } from "./internal";
-import { withRetry } from "@meridian/shared";
+import { BASE_FEE, passphraseFor, getRpcServer } from "./internal";
+import { withRetry, withRaceTimeout, USDC_ISSUER } from "@meridian/shared";
 import { buildHorizonServer } from "./horizon";
 
 // The Soroban RPC SDK does not surface an AbortSignal option, so we race each
@@ -27,19 +27,15 @@ export class SorobanTimeoutError extends Error {
   }
 }
 
-const withSorobanTimeout = <T>(fn: () => Promise<T>, ms = SOROBAN_RPC_TIMEOUT_MS): Promise<T> =>
-  new Promise<T>((resolve, reject) => {
-    const handle = setTimeout(() => reject(new SorobanTimeoutError(ms)), ms);
-    fn().then(
-      (val) => { clearTimeout(handle); resolve(val); },
-      (err) => { clearTimeout(handle); reject(err); }
-    );
+const withSorobanTimeout = <T>(
+  fn: () => Promise<T>,
+  ms = SOROBAN_RPC_TIMEOUT_MS
+): Promise<T> =>
+  withRaceTimeout(fn, ms, "Soroban RPC").catch((err: unknown): never => {
+    if (err instanceof Error && err.message.includes("timed out"))
+      throw new SorobanTimeoutError(ms);
+    throw err;
   });
-
-const USDC_ISSUER: Record<string, string> = {
-  testnet: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
-  mainnet: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
-};
 
 // mUSDC is the vault's share token. Issuer = the musdc-issuer key used during deployment.
 const MUSDC_ISSUER: Record<string, string> = {
@@ -49,13 +45,15 @@ const MUSDC_ISSUER: Record<string, string> = {
 
 function usdcAsset(network: StellarNetwork): Asset {
   const issuer = USDC_ISSUER[network.network];
-  if (!issuer) throw new Error(`No USDC issuer for network: ${network.network}`);
+  if (!issuer)
+    throw new Error(`No USDC issuer for network: ${network.network}`);
   return new Asset("USDC", issuer);
 }
 
 function musdcAsset(network: StellarNetwork): Asset {
   const issuer = MUSDC_ISSUER[network.network];
-  if (!issuer) throw new Error(`No mUSDC issuer for network: ${network.network}`);
+  if (!issuer)
+    throw new Error(`No mUSDC issuer for network: ${network.network}`);
   return new Asset("MUSDC", issuer);
 }
 
@@ -70,9 +68,12 @@ function hasAssetTrustline(
 ): boolean {
   return balances.some(
     (b) =>
-      (b.asset_type === "credit_alphanum4" || b.asset_type === "credit_alphanum12") &&
-      (b as Horizon.HorizonApi.BalanceLine<"credit_alphanum4">).asset_code === code &&
-      (b as Horizon.HorizonApi.BalanceLine<"credit_alphanum4">).asset_issuer === issuer
+      (b.asset_type === "credit_alphanum4" ||
+        b.asset_type === "credit_alphanum12") &&
+      (b as Horizon.HorizonApi.BalanceLine<"credit_alphanum4">).asset_code ===
+        code &&
+      (b as Horizon.HorizonApi.BalanceLine<"credit_alphanum4">).asset_issuer ===
+        issuer
   );
 }
 
@@ -102,14 +103,21 @@ export async function simulateView(
   method: string,
   ...args: xdr.ScVal[]
 ): Promise<unknown> {
-  const dummyAccount = new Account("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", "0");
+  const dummyAccount = new Account(
+    "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    "0"
+  );
   const contract = new Contract(contractId);
-  const tx = new TransactionBuilder(dummyAccount, { fee: BASE_FEE, networkPassphrase })
+  const tx = new TransactionBuilder(dummyAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
     .addOperation(contract.call(method, ...args))
     .setTimeout(0)
     .build();
   const sim = await withSorobanTimeout(() => server.simulateTransaction(tx));
-  if (rpc.Api.isSimulationError(sim)) throw new Error(simErrorMessage(sim.error));
+  if (rpc.Api.isSimulationError(sim))
+    throw new Error(simErrorMessage(sim.error));
   if (!rpc.Api.isSimulationSuccess(sim) || !sim.result) return null;
   return scValToNative(sim.result.retval);
 }
@@ -125,21 +133,28 @@ export async function prepareSorobanTx(
   op: xdr.Operation
 ): Promise<{ xdr: string; fee: string }> {
   const passphrase = passphraseFor(network);
-  const server = new rpc.Server(network.rpcUrl, { timeout: 8_000 });
+  const server = getRpcServer(network.rpcUrl, 8_000);
   const account = await withRetry(
     () => withSorobanTimeout(() => server.getAccount(caller)),
     3,
     200,
     (err) => !(err instanceof SorobanTimeoutError)
   );
-  const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: passphrase })
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: passphrase,
+  })
     .addOperation(op)
     .setTimeout(300)
     .build();
   const sim = await withSorobanTimeout(() => server.simulateTransaction(tx));
-  if (rpc.Api.isSimulationError(sim)) throw new Error(`Simulation failed: ${simErrorMessage(sim.error)}`);
+  if (rpc.Api.isSimulationError(sim))
+    throw new Error(`Simulation failed: ${simErrorMessage(sim.error)}`);
   const prepared = rpc.assembleTransaction(tx, sim).build();
-  return { xdr: prepared.toEnvelope().toXDR("base64"), fee: sim.minResourceFee };
+  return {
+    xdr: prepared.toEnvelope().toXDR("base64"),
+    fee: sim.minResourceFee,
+  };
 }
 
 /**
@@ -158,16 +173,23 @@ export async function buildAddTrustlineTx(
 
   const ops: ReturnType<typeof Operation.changeTrust>[] = [];
 
-  if (!hasAssetTrustline(balances, "USDC", USDC_ISSUER[network.network] ?? "")) {
+  if (
+    !hasAssetTrustline(balances, "USDC", USDC_ISSUER[network.network] ?? "")
+  ) {
     ops.push(Operation.changeTrust({ asset: usdcAsset(network) }));
   }
-  if (MUSDC_ISSUER[network.network] && !hasAssetTrustline(balances, "MUSDC", MUSDC_ISSUER[network.network])) {
+  const musdcIssuer = MUSDC_ISSUER[network.network];
+  if (musdcIssuer && !hasAssetTrustline(balances, "MUSDC", musdcIssuer)) {
     ops.push(Operation.changeTrust({ asset: musdcAsset(network) }));
   }
 
-  if (ops.length === 0) throw new Error("All required trustlines already exist");
+  if (ops.length === 0)
+    throw new Error("All required trustlines already exist");
 
-  const builder = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: passphrase });
+  const builder = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: passphrase,
+  });
   for (const op of ops) builder.addOperation(op);
   const tx = builder.setTimeout(300).build();
 
@@ -200,7 +222,8 @@ interface TransactionReader {
   getTransaction(hash: string): Promise<rpc.Api.GetTransactionResponse>;
 }
 
-const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const defaultSleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
  * Poll `getTransaction` until the network reports a final status. Resolves on
@@ -240,7 +263,7 @@ export async function waitForTransaction(
  * messages. Returns a generic fallback when the string is empty.
  */
 export function simErrorMessage(raw: string): string {
-  return raw.split("\n")[0].trim() || "Simulation failed (no detail)";
+  return raw.split("\n")[0]?.trim() || "Simulation failed (no detail)";
 }
 
 // Best-effort decode of the result code the RPC returns on a rejected submit
@@ -265,12 +288,14 @@ export async function submitTx(
   opts: ConfirmOptions = {}
 ): Promise<SubmitResult> {
   const passphrase = passphraseFor(network);
-  const server = new rpc.Server(network.rpcUrl, { timeout: 8_000 });
+  const server = getRpcServer(network.rpcUrl, 8_000);
   const tx = TransactionBuilder.fromXDR(signedXdr, passphrase);
 
   const sent = await withSorobanTimeout(() => server.sendTransaction(tx));
   if (sent.status === "ERROR") {
-    throw new Error(`Transaction rejected at submission: ${describeSendError(sent)}`);
+    throw new Error(
+      `Transaction rejected at submission: ${describeSendError(sent)}`
+    );
   }
   if (sent.status === "TRY_AGAIN_LATER") {
     throw new Error("Transaction could not be submitted yet (try again later)");

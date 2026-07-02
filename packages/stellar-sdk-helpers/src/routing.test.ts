@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import { selectBestVault } from "./routing";
 import type { ApiVault } from "./vaults";
 
-function vault(p: Partial<Omit<ApiVault, "protocol">> & { protocol?: string }): ApiVault {
+function vault(
+  p: Partial<Omit<ApiVault, "protocol">> & { protocol?: string }
+): ApiVault {
   return {
     id: p.id ?? "v",
     protocol: (p.protocol ?? "blend") as ApiVault["protocol"],
