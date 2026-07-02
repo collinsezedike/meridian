@@ -15,6 +15,7 @@ export function sanitizeTxError(err: unknown, fallback: string): string {
 }
 
 export function shortenAddress(address: string, chars = 4): string {
+  if (address.length <= chars * 2) return address;
   return `${address.slice(0, chars)}...${address.slice(-chars)}`;
 }
 
@@ -27,12 +28,25 @@ export function isValidStellarAddress(key: string): boolean {
  * Races `fn` against a timeout. Clears the timer if `fn` resolves first so no
  * handle lingers in the event loop after a successful call.
  */
-export function withRaceTimeout<T>(fn: () => Promise<T>, ms: number, label: string): Promise<T> {
+export function withRaceTimeout<T>(
+  fn: () => Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const handle = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    const handle = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms,
+    );
     fn().then(
-      (val) => { clearTimeout(handle); resolve(val); },
-      (err) => { clearTimeout(handle); reject(err); }
+      (val) => {
+        clearTimeout(handle);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(handle);
+        reject(err);
+      },
     );
   });
 }
@@ -49,7 +63,7 @@ export async function withRetry<T>(
   fn: () => Promise<T>,
   maxAttempts = 3,
   baseDelayMs = 200,
-  shouldRetry: (err: unknown) => boolean = () => true
+  shouldRetry: (err: unknown) => boolean = () => true,
 ): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -58,7 +72,9 @@ export async function withRetry<T>(
     } catch (err) {
       lastErr = err;
       if (attempt < maxAttempts - 1 && shouldRetry(err)) {
-        await new Promise((resolve) => setTimeout(resolve, baseDelayMs * 2 ** attempt));
+        await new Promise((resolve) =>
+          setTimeout(resolve, baseDelayMs * 2 ** attempt),
+        );
       } else {
         break;
       }
@@ -67,3 +83,45 @@ export async function withRetry<T>(
   throw lastErr;
 }
 
+/**
+ * Converts a stroops value to a decimal string.
+ * 1 USDC = 10,000,000 stroops.
+ */
+export function fromStroops(stroops: bigint): string {
+  const negative = stroops < 0n;
+  const abs = negative ? -stroops : stroops;
+  const whole = abs / 10_000_000n;
+  const remainder = abs % 10_000_000n;
+  const sign = negative ? "-" : "";
+  if (remainder === 0n) return `${sign}${whole}`;
+  const decimal = remainder.toString().padStart(7, "0").replace(/0+$/, "");
+  return `${sign}${whole}.${decimal}`;
+}
+
+const USD_FORMATTER = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+/**
+ * Formats a number as a USD currency string.
+ * e.g. 1234.5 -> "$1,234.50"
+ */
+export function formatUsdAmount(amount: number): string {
+  if (!Number.isFinite(amount))
+    throw new RangeError(`formatUsdAmount: invalid amount: ${amount}`);
+  return USD_FORMATTER.format(amount);
+}
+
+/**
+ * Parses a USD-formatted string back to a number.
+ * Returns null for invalid or malformed input.
+ */
+export function parseUsdAmount(value: string): number | null {
+  const stripped = value.replace(/[^0-9.,-]/g, "").replace(/,/g, "");
+  const match = stripped.match(/^-?[0-9]+(?:\.[0-9]+)?$/);
+  if (!match) return null;
+  return parseFloat(match[0]);
+}
