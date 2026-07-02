@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { withRetry, sanitizeTxError } from "./utils";
+import {
+  withRetry,
+  withRaceTimeout,
+  sanitizeTxError,
+  fromStroops,
+  formatUsdAmount,
+  parseUsdAmount,
+  shortenAddress,
+} from "./utils";
 
 describe("sanitizeTxError", () => {
   it("returns the fallback for non-Error values", () => {
@@ -10,17 +18,25 @@ describe("sanitizeTxError", () => {
   });
 
   it("returns the first line of a clean multi-line error message", () => {
-    const err = new Error("Transaction simulation failed\n  at contract: ...\n  context: ...");
-    expect(sanitizeTxError(err, "fallback")).toBe("Transaction simulation failed");
+    const err = new Error(
+      "Transaction simulation failed\n  at contract: ...\n  context: ...",
+    );
+    expect(sanitizeTxError(err, "fallback")).toBe(
+      "Transaction simulation failed",
+    );
   });
 
   it("returns the fallback when the first line contains an RPC URL", () => {
-    const err = new Error("fetch failed: https://soroban-testnet.stellar.org\nmore detail");
+    const err = new Error(
+      "fetch failed: https://soroban-testnet.stellar.org\nmore detail",
+    );
     expect(sanitizeTxError(err, "fallback")).toBe("fallback");
   });
 
   it("returns the fallback when the first line contains a contract C-address", () => {
-    const err = new Error("CCQNJ4SJM5NKRBJK3G4YATDUZPTLWVKWKJTPBFHIFVQMQJDQVLSEHWA: not found");
+    const err = new Error(
+      "CCQNJ4SJM5NKRBJK3G4YATDUZPTLWVKWKJTPBFHIFVQMQJDQVLSEHWA: not found",
+    );
     expect(sanitizeTxError(err, "fallback")).toBe("fallback");
   });
 
@@ -31,7 +47,9 @@ describe("sanitizeTxError", () => {
 
   it("passes through safe user-facing error messages unchanged", () => {
     const err = new Error("All required trustlines already exist");
-    expect(sanitizeTxError(err, "fallback")).toBe("All required trustlines already exist");
+    expect(sanitizeTxError(err, "fallback")).toBe(
+      "All required trustlines already exist",
+    );
   });
 });
 
@@ -96,10 +114,107 @@ describe("withRetry", () => {
       .mockRejectedValueOnce(new Error("transient"))
       .mockRejectedValueOnce(new TimeoutError("deadline"))
       .mockResolvedValue("ok");
-    const promise = withRetry(fn, 3, 0, (err) => !(err instanceof TimeoutError));
+    const promise = withRetry(
+      fn,
+      3,
+      0,
+      (err) => !(err instanceof TimeoutError),
+    );
     const assertion = expect(promise).rejects.toBeInstanceOf(TimeoutError);
     await vi.runAllTimersAsync();
     await assertion;
     expect(fn).toHaveBeenCalledTimes(2);
+  });
+});
+describe("fromStroops", () => {
+  it("converts exact whole XLM", () => {
+    expect(fromStroops(10_000_000n)).toBe("1");
+  });
+
+  it("converts fractional XLM", () => {
+    expect(fromStroops(15_500_000n)).toBe("1.55");
+  });
+
+  it("handles zero", () => {
+    expect(fromStroops(0n)).toBe("0");
+  });
+
+  it("handles negative non-exact value", () => {
+    expect(fromStroops(-15_500_000n)).toBe("-1.55");
+  });
+
+  it("handles negative exact value", () => {
+    expect(fromStroops(-10_000_000n)).toBe("-1");
+  });
+
+  it("handles max BigInt value correctly", () => {
+    expect(fromStroops(9_007_199_254_740_991n)).toBe("900719925.4740991");
+  });
+});
+
+describe("formatUsdAmount", () => {
+  it("formats zero", () => {
+    expect(formatUsdAmount(0)).toBe("$0.00");
+  });
+
+  it("formats a typical value", () => {
+    expect(formatUsdAmount(1234.5)).toBe("$1,234.50");
+  });
+
+  it("formats a large value", () => {
+    expect(formatUsdAmount(1_000_000)).toBe("$1,000,000.00");
+  });
+
+  it("throws for NaN", () => {
+    expect(() => formatUsdAmount(NaN)).toThrow(RangeError);
+  });
+
+  it("throws for Infinity", () => {
+    expect(() => formatUsdAmount(Infinity)).toThrow(RangeError);
+  });
+});
+
+describe("parseUsdAmount", () => {
+  it("parses a USD string back to a number", () => {
+    expect(parseUsdAmount("$1,234.50")).toBe(1234.5);
+  });
+
+  it("round-trips with formatUsdAmount", () => {
+    expect(parseUsdAmount(formatUsdAmount(1234.5))).toBe(1234.5);
+  });
+
+  it("returns null for empty string", () => {
+    expect(parseUsdAmount("")).toBeNull();
+  });
+
+  it("returns null for non-numeric string", () => {
+    expect(parseUsdAmount("abc")).toBeNull();
+  });
+
+  it("returns null for malformed multi-dot string", () => {
+    expect(parseUsdAmount("1.2.3")).toBeNull();
+  });
+});
+
+describe("shortenAddress", () => {
+  it("shortens a standard G-address to 4+4 chars by default", () => {
+    expect(
+      shortenAddress(
+        "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      ),
+    ).toBe("GABC...WXYZ");
+  });
+
+  it("respects a custom chars argument", () => {
+    expect(
+      shortenAddress(
+        "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        6,
+      ),
+    ).toBe("GABCDE...UVWXYZ");
+  });
+
+  it("returns address unchanged when too short to truncate", () => {
+    expect(shortenAddress("GABC")).toBe("GABC");
   });
 });
