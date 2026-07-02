@@ -63,7 +63,7 @@ export async function withRetry<T>(
   fn: () => Promise<T>,
   maxAttempts = 3,
   baseDelayMs = 200,
-  shouldRetry: (err: unknown) => boolean = () => true,
+  shouldRetry: (err: unknown) => boolean = () => true
 ): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {

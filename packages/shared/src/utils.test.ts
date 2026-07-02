@@ -19,7 +19,6 @@ describe("sanitizeTxError", () => {
 
   it("returns the first line of a clean multi-line error message", () => {
     const err = new Error(
-
       "Transaction simulation failed\n  at contract: ...\n  context: ..."
     );
     expect(sanitizeTxError(err, "fallback")).toBe(
@@ -237,8 +236,8 @@ describe("shortenAddress", () => {
   it("shortens a standard G-address to 4+4 chars by default", () => {
     expect(
       shortenAddress(
-        "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-      ),
+        "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      )
     ).toBe("GABC...WXYZ");
   });
 
@@ -246,8 +245,8 @@ describe("shortenAddress", () => {
     expect(
       shortenAddress(
         "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-        6,
-      ),
+        6
+      )
     ).toBe("GABCDE...UVWXYZ");
   });
 
