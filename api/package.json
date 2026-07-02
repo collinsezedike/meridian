@@ -9,7 +9,9 @@
   "dependencies": {
     "@meridian/shared": "workspace:*",
     "@meridian/stellar-sdk-helpers": "workspace:*",
-    "@stellar/stellar-sdk": "^14.0.0"
+    "@stellar/stellar-sdk": "^14.0.0",
+    "@upstash/ratelimit": "^2.0.8",
+    "@upstash/redis": "^1.38.0"
   },
   "devDependencies": {
     "@vercel/node": "^5.8.17",

@@ -1,5 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { DEFAULT_ALLOWED_ORIGIN } from "@meridian/shared";
+import { Ratelimit } from "@upstash/ratelimit";
+import { Redis } from "@upstash/redis";
 
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? DEFAULT_ALLOWED_ORIGIN;
 
@@ -19,17 +21,27 @@ export function applyCors(req: VercelRequest, res: VercelResponse): boolean {
   return false;
 }
 
-// In-memory rate limit: per-IP, 100 req / 60 s — matches the Fastify server's
-// @fastify/rate-limit config. Resets on cold start and is not shared across
-// invocation instances. For a distributed limit use Upstash Redis or Vercel KV.
+const LIMIT = 100;
+const WINDOW = "60 s";
+const WINDOW_MS = 60_000;
+
+// Distributed sliding-window limiter via Upstash Redis when env vars are
+// present. Falls back to in-memory per-process counting for local dev — the
+// fallback is not shared across workers and should not be used in production.
+const ratelimit =
+  process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
+    ? new Ratelimit({
+        redis: Redis.fromEnv(),
+        limiter: Ratelimit.slidingWindow(LIMIT, WINDOW),
+      })
+    : null;
+
 const counts = new Map<string, { n: number; resetAt: number }>();
 
-/** Clears all rate-limit buckets. Exposed for tests only. */
+/** Clears all in-memory rate-limit buckets. Exposed for tests only. */
 export function resetRateLimitForTesting(): void {
   counts.clear();
 }
-const LIMIT = 100;
-const WINDOW_MS = 60_000;
 
 function clientIp(req: VercelRequest): string {
   // x-vercel-forwarded-for is set by the Vercel edge and cannot be spoofed
@@ -52,14 +64,25 @@ function clientIp(req: VercelRequest): string {
  * Writes a 429 response and returns false when the limit is exceeded — the
  * caller should return immediately.
  */
-export function checkRateLimit(
+export async function checkRateLimit(
   req: VercelRequest,
   res: VercelResponse
-): boolean {
+): Promise<boolean> {
   const ip = clientIp(req);
+
+  if (ratelimit) {
+    const { success } = await ratelimit.limit(ip);
+    if (!success) {
+      res
+        .status(429)
+        .json({ error: "Too many requests. Try again in a minute." });
+      return false;
+    }
+    return true;
+  }
+
   const now = Date.now();
   const entry = counts.get(ip);
-
   if (!entry || now > entry.resetAt) {
     counts.set(ip, { n: 1, resetAt: now + WINDOW_MS });
     return true;

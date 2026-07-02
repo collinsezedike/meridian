@@ -15,7 +15,7 @@ const CACHE_CONTROL = "public, s-maxage=60, stale-while-revalidate=300";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (applyCors(req, res)) return;
-  if (!checkRateLimit(req, res)) return;
+  if (!(await checkRateLimit(req, res))) return;
   try {
     const cached = isVaultCacheWarm();
     const vaults = await fetchAllVaults(APP_NETWORK.network);
