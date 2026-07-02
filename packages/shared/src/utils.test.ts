@@ -184,7 +184,7 @@ describe("fromStroops", () => {
     expect(fromStroops(-10_000_000n)).toBe("-1");
   });
 
-  it("handles max BigInt value correctly", () => {
+  it("preserves precision at Number.MAX_SAFE_INTEGER boundary", () => {
     expect(fromStroops(9_007_199_254_740_991n)).toBe("900719925.4740991");
   });
 });
