@@ -8,6 +8,7 @@ config({ path: resolve(process.cwd(), "../../.env") });
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
+import Redis from "ioredis";
 import { DEFAULT_ALLOWED_ORIGIN } from "@meridian/shared";
 import { vaultsRoute } from "./routes/vaults";
 import { positionsRoute } from "./routes/positions";
@@ -18,10 +19,18 @@ import { txRoute } from "./routes/tx";
 // Security headers: X-Content-Type-Options and X-Frame-Options on every response.
 const app = Fastify({ logger: true, bodyLimit: 10 * 1024 });
 
+const redisClient = process.env.REDIS_URL
+  ? new Redis(process.env.REDIS_URL)
+  : undefined;
+
 await app.register(cors, {
   origin: process.env.ALLOWED_ORIGIN ?? DEFAULT_ALLOWED_ORIGIN,
 });
-await app.register(rateLimit, { max: 100, timeWindow: "1 minute" });
+await app.register(rateLimit, {
+  max: 100,
+  timeWindow: "1 minute",
+  ...(redisClient ? { redis: redisClient } : {}),
+});
 
 app.addHook("onSend", (_req, reply, _payload, done) => {
   reply.header("X-Content-Type-Options", "nosniff");

@@ -1,4 +1,4 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
+﻿import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { buildAddTrustlineTx } from "@meridian/stellar-sdk-helpers";
 import {
   APP_NETWORK,
@@ -10,7 +10,7 @@ import { applyCors, checkRateLimit } from "../../_lib/middleware.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (applyCors(req, res)) return;
-  if (!checkRateLimit(req, res)) return;
+  if (!(await checkRateLimit(req, res))) return;
   if (req.method !== "POST")
     return res.status(405).json({ error: "Method not allowed" });
 

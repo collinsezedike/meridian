@@ -82,66 +82,75 @@ describe("applyCors", () => {
 // checkRateLimit ------------------------------------------------------------------
 
 describe("checkRateLimit", () => {
-  it("allows the first 100 requests from the same IP", () => {
+  it("allows the first 100 requests from the same IP", async () => {
     const ip = "1.2.3.4";
     for (let i = 0; i < 100; i++) {
       const res = fakeRes();
       expect(
-        checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), res)
+        await checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), res)
       ).toBe(true);
       expect(res.statusCode).toBe(200);
     }
   });
 
-  it("blocks the 101st request with 429", () => {
+  it("blocks the 101st request with 429", async () => {
     const ip = "1.2.3.5";
     for (let i = 0; i < 100; i++) {
-      checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), fakeRes());
+      await checkRateLimit(
+        fakeReq("POST", { "x-forwarded-for": ip }),
+        fakeRes()
+      );
     }
     const res = fakeRes();
     expect(
-      checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), res)
+      await checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), res)
     ).toBe(false);
     expect(res.statusCode).toBe(429);
   });
 
-  it("resets the counter after the 60 s window expires", () => {
+  it("resets the counter after the 60 s window expires", async () => {
     vi.useFakeTimers();
     const ip = "1.2.3.6";
     for (let i = 0; i < 100; i++) {
-      checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), fakeRes());
+      await checkRateLimit(
+        fakeReq("POST", { "x-forwarded-for": ip }),
+        fakeRes()
+      );
     }
     // Advance past the 60 s window.
     vi.advanceTimersByTime(61_000);
     const res = fakeRes();
     expect(
-      checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), res)
+      await checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), res)
     ).toBe(true);
     expect(res.statusCode).toBe(200);
   });
 
-  it("tracks two different IPs independently", () => {
+  it("tracks two different IPs independently", async () => {
     const ipA = "10.0.0.1";
     const ipB = "10.0.0.2";
     for (let i = 0; i < 100; i++) {
-      checkRateLimit(fakeReq("POST", { "x-forwarded-for": ipA }), fakeRes());
+      await checkRateLimit(
+        fakeReq("POST", { "x-forwarded-for": ipA }),
+        fakeRes()
+      );
     }
     // ipA is blocked but ipB should still be allowed.
     const resA = fakeRes();
     expect(
-      checkRateLimit(fakeReq("POST", { "x-forwarded-for": ipA }), resA)
+      await checkRateLimit(fakeReq("POST", { "x-forwarded-for": ipA }), resA)
     ).toBe(false);
     const resB = fakeRes();
     expect(
-      checkRateLimit(fakeReq("POST", { "x-forwarded-for": ipB }), resB)
+      await checkRateLimit(fakeReq("POST", { "x-forwarded-for": ipB }), resB)
     ).toBe(true);
   });
 
-  it("uses x-vercel-forwarded-for over x-forwarded-for when both are present", () => {
+  it("uses x-vercel-forwarded-for over x-forwarded-for when both are present", async () => {
     const vercelIp = "5.6.7.8";
     const fwdIp = "9.9.9.9";
     for (let i = 0; i < 100; i++) {
-      checkRateLimit(
+      await checkRateLimit(
         fakeReq("POST", {
           "x-vercel-forwarded-for": vercelIp,
           "x-forwarded-for": fwdIp,
@@ -152,7 +161,7 @@ describe("checkRateLimit", () => {
     // vercelIp bucket is full — requests with that header should be blocked
     const resBlocked = fakeRes();
     expect(
-      checkRateLimit(
+      await checkRateLimit(
         fakeReq("POST", {
           "x-vercel-forwarded-for": vercelIp,
           "x-forwarded-for": fwdIp,
@@ -165,7 +174,10 @@ describe("checkRateLimit", () => {
     // fwdIp bucket is untouched — requests without x-vercel-forwarded-for should still pass
     const resAllowed = fakeRes();
     expect(
-      checkRateLimit(fakeReq("POST", { "x-forwarded-for": fwdIp }), resAllowed)
+      await checkRateLimit(
+        fakeReq("POST", { "x-forwarded-for": fwdIp }),
+        resAllowed
+      )
     ).toBe(true);
   });
 });

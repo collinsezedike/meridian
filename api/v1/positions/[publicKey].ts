@@ -9,7 +9,7 @@ import { applyCors, checkRateLimit } from "../../_lib/middleware.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (applyCors(req, res)) return;
-  if (!checkRateLimit(req, res)) return;
+  if (!(await checkRateLimit(req, res))) return;
   const { publicKey } = req.query as { publicKey: string };
 
   if (!publicKey || !isValidStellarAddress(publicKey)) {
