@@ -23,19 +23,19 @@ the donation, making the skim unprofitable.
 
 ### Entry points
 
-| Function | Description |
-|---|---|
-| `initialize(admin, usdc, musdc)` | One-time setup. Sets admin, USDC token, and mUSDC share token addresses. |
+| Function                            | Description                                                                              |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| `initialize(admin, usdc, musdc)`    | One-time setup. Sets admin, USDC token, and mUSDC share token addresses.                 |
 | `deposit(caller, amount, route_to)` | Pull `amount` USDC from `caller`, mint proportional mUSDC shares. Returns shares minted. |
-| `withdraw(caller, shares)` | Burn `shares` mUSDC, send proportional USDC back to `caller`. Returns USDC sent. |
-| `get_position(address)` | Current mUSDC share balance for `address`. |
-| `get_principal(address)` | Net USDC deposited and not yet withdrawn (cost basis). |
-| `get_entry_time(address)` | Ledger timestamp of the address's first deposit in the current position. |
-| `get_active_protocol()` | The protocol hint set on the last deposit. |
-| `get_total_assets()` | Total USDC held by the vault. |
-| `get_total_shares()` | Total mUSDC shares outstanding. |
-| `set_paused(paused)` | Admin-only. Block new deposits while leaving withdrawals open. |
-| `set_admin(new_admin)` | Admin-only. Rotate the admin key without redeploying. |
+| `withdraw(caller, shares)`          | Burn `shares` mUSDC, send proportional USDC back to `caller`. Returns USDC sent.         |
+| `get_position(address)`             | Current mUSDC share balance for `address`.                                               |
+| `get_principal(address)`            | Net USDC deposited and not yet withdrawn (cost basis).                                   |
+| `get_entry_time(address)`           | Ledger timestamp of the address's first deposit in the current position.                 |
+| `get_active_protocol()`             | The protocol hint set on the last deposit.                                               |
+| `get_total_assets()`                | Total USDC held by the vault.                                                            |
+| `get_total_shares()`                | Total mUSDC shares outstanding.                                                          |
+| `set_paused(paused)`                | Admin-only. Block new deposits while leaving withdrawals open.                           |
+| `set_admin(new_admin)`              | Admin-only. Rotate the admin key without redeploying.                                    |
 
 ### `Protocol` type
 
@@ -96,14 +96,14 @@ pub fn rebalance(
 ) -> i128
 ```
 
-| Parameter | Description |
-|---|---|
-| `depositor` | Address whose shares are burned. Must authorise this call. |
-| `from_vault` | Vault contract to withdraw from. |
-| `to_vault` | Vault contract to deposit into. |
-| `shares` | mUSDC share count to burn on `from_vault`. |
-| `min_out` | Minimum USDC stroops the withdrawal must return. Reverts on slippage. |
-| `route_to` | Protocol hint forwarded to `to_vault.deposit`. |
+| Parameter    | Description                                                           |
+| ------------ | --------------------------------------------------------------------- |
+| `depositor`  | Address whose shares are burned. Must authorise this call.            |
+| `from_vault` | Vault contract to withdraw from.                                      |
+| `to_vault`   | Vault contract to deposit into.                                       |
+| `shares`     | mUSDC share count to burn on `from_vault`.                            |
+| `min_out`    | Minimum USDC stroops the withdrawal must return. Reverts on slippage. |
+| `route_to`   | Protocol hint forwarded to `to_vault.deposit`.                        |
 
 Returns the number of shares minted by `to_vault`.
 
