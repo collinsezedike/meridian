@@ -4,6 +4,7 @@ import { usePositions } from "../../hooks/usePositions";
 import { useVaultActions } from "../../hooks/useVaultActions";
 import { useWalletStore } from "../../store/wallet";
 import { useWalletConnect } from "../../hooks/useWalletConnect";
+import { AmountInput } from "../ui/AmountInput";
 import { useTranslation } from "react-i18next";
 
 const PROTOCOL_LABEL: Record<string, string> = {
@@ -264,23 +265,12 @@ export function VaultPanel() {
                   </span>
                 )}
               </div>
-              <div className="flex items-center gap-3 rounded-xl border border-gray-700 bg-gray-900/70 px-4 py-3.5 focus-within:border-gray-500 transition-colors duration-150">
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  placeholder="0.00"
-                  value={amount}
-                  onChange={(e) =>
-                    setAmount((e.target as HTMLInputElement).value)
-                  }
-                  onKeyDown={onAmountKeyDown}
-                  className="flex-1 min-w-0 bg-transparent text-white text-xl font-semibold outline-none placeholder:text-gray-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                />
-                <span className="rounded-lg bg-gray-800 border border-gray-700 px-2.5 py-1 text-xs font-semibold text-gray-300 shrink-0">
-                  USDC
-                </span>
-              </div>
+              <AmountInput
+                currency="USDC"
+                value={amount}
+                onChange={setAmount}
+                onKeyDown={onAmountKeyDown}
+              />
             </div>
             {needsTrustline && (
               <button
@@ -318,23 +308,12 @@ export function VaultPanel() {
                       Max: {position.shares.toFixed(2)}
                     </button>
                   </div>
-                  <div className="flex items-center gap-3 rounded-xl border border-gray-700 bg-gray-900/70 px-4 py-3.5 focus-within:border-gray-500 transition-colors duration-150">
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      placeholder="0.00"
-                      value={amount}
-                      onChange={(e) =>
-                        setAmount((e.target as HTMLInputElement).value)
-                      }
-                      onKeyDown={onAmountKeyDown}
-                      className="flex-1 min-w-0 bg-transparent text-white text-xl font-semibold outline-none placeholder:text-gray-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                    />
-                    <span className="rounded-lg bg-gray-800 border border-gray-700 px-2.5 py-1 text-xs font-semibold text-gray-300 shrink-0">
-                      mUSDC
-                    </span>
-                  </div>
+                  <AmountInput
+                    currency="mUSDC"
+                    value={amount}
+                    onChange={setAmount}
+                    onKeyDown={onAmountKeyDown}
+                  />
                 </div>
                 <button
                   onClick={handleWithdraw}
