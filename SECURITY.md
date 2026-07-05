@@ -82,12 +82,12 @@ We will keep you informed at each stage. If you do not receive an acknowledgemen
 
 ## Severity Guidance
 
-| Severity     | Examples                                                        |
-| ------------ | --------------------------------------------------------------- |
-| **Critical** | Drain funds via mainnet contract exploit; private key exposure  |
-| **High**     | Unauthorised tx signing; testnet exploit with mainnet path      |
-| **Medium**   | API auth bypass without fund access; XSS in wallet flow         |
-| **Low**      | Information disclosure; input gap with no fund risk             |
+| Severity     | Examples                                                       |
+| ------------ | -------------------------------------------------------------- |
+| **Critical** | Drain funds via mainnet contract exploit; private key exposure |
+| **High**     | Unauthorised tx signing; testnet exploit with mainnet path     |
+| **Medium**   | API auth bypass without fund access; XSS in wallet flow        |
+| **Low**      | Information disclosure; input gap with no fund risk            |
 
 **On-chain contracts deployed to mainnet are always treated as Critical severity regardless of the apparent difficulty of exploitation.** Even a theoretical vulnerability in a contract holding user funds warrants immediate response.
 

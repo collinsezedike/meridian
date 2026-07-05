@@ -2,14 +2,14 @@
 
 ## Stack
 
-| Concern | Library |
-|---|---|
-| Bundler | Vite 8 |
-| UI | React 19 |
-| Styling | Tailwind CSS |
-| Server state | TanStack Query v5 |
-| Client state | Zustand |
-| Wallet | `@stellar/freighter-api` |
+| Concern      | Library                  |
+| ------------ | ------------------------ |
+| Bundler      | Vite 8                   |
+| UI           | React 19                 |
+| Styling      | Tailwind CSS             |
+| Server state | TanStack Query v5        |
+| Client state | Zustand                  |
+| Wallet       | `@stellar/freighter-api` |
 
 ## Component structure
 

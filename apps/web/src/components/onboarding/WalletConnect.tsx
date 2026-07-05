@@ -23,7 +23,7 @@ export function WalletConnect() {
       push("error", "Failed to copy address");
     }
   };
-  
+
   function handleDisconnect() {
     disconnect();
     push("info", t("walletConnect.walletDisconnected"));
@@ -36,8 +36,12 @@ export function WalletConnect() {
         <span>{shortenAddress(publicKey)}</span>
         <button
           onClick={handleCopy}
-          title={copied ? t("walletConnect.copied") : t("walletConnect.copyAddress")}
-          aria-label={copied ? t("walletConnect.copied") : t("walletConnect.copyAddress")}
+          title={
+            copied ? t("walletConnect.copied") : t("walletConnect.copyAddress")
+          }
+          aria-label={
+            copied ? t("walletConnect.copied") : t("walletConnect.copyAddress")
+          }
           className="text-gray-400 hover:text-white transition-colors duration-150"
         >
           {copied ? <Check size={14} /> : <Copy size={14} />}
@@ -73,7 +77,9 @@ export function WalletConnect() {
       disabled={status === "connecting"}
       className="text-sm border border-gray-700 rounded-lg px-4 py-2 font-medium text-gray-300 hover:border-gray-600 hover:text-white transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
     >
-      {status === "connecting" ? t("common.connecting") : t("common.connectWallet")}
+      {status === "connecting"
+        ? t("common.connecting")
+        : t("common.connectWallet")}
     </button>
   );
 }

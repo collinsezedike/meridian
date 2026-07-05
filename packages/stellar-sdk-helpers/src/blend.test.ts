@@ -4,7 +4,8 @@ import type { StellarNetwork } from "./types";
 
 // Mock the Blend SDK so fetchBlendPositions never touches the network.
 vi.mock("@blend-capital/blend-sdk", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@blend-capital/blend-sdk")>();
+  const actual =
+    await importOriginal<typeof import("@blend-capital/blend-sdk")>();
   return {
     ...actual,
     PoolV2: {
@@ -22,7 +23,7 @@ const network: StellarNetwork = {
 };
 
 const POOL_ID = "CPOOL0000000000000000000000000000000000000000000000000000";
-const PUBKEY  = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+const PUBKEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const USDC_ID = "CUSDC0000000000000000000000000000000000000000000000000000";
 const EURC_ID = "CEURC0000000000000000000000000000000000000000000000000000";
 
@@ -39,11 +40,13 @@ function makePool(
     reserves: reserveMap,
     loadUser: vi.fn(async (_publicKey: string) => ({
       getCollateralFloat: (reserve: object) => {
-        const id = [...reserveMap.entries()].find(([, r]) => r === reserve)?.[0] ?? "";
+        const id =
+          [...reserveMap.entries()].find(([, r]) => r === reserve)?.[0] ?? "";
         return userBalances[id]?.collateral ?? 0;
       },
       getSupplyFloat: (reserve: object) => {
-        const id = [...reserveMap.entries()].find(([, r]) => r === reserve)?.[0] ?? "";
+        const id =
+          [...reserveMap.entries()].find(([, r]) => r === reserve)?.[0] ?? "";
         return userBalances[id]?.supply ?? 0;
       },
     })),
@@ -65,7 +68,9 @@ describe("blendAssetForVault", () => {
   });
 
   it("throws for a vault id with no mapped reserve asset", () => {
-    expect(() => blendAssetForVault("blend-xlm-fixed")).toThrow(/no blend reserve asset/i);
+    expect(() => blendAssetForVault("blend-xlm-fixed")).toThrow(
+      /no blend reserve asset/i
+    );
   });
 });
 
@@ -78,7 +83,12 @@ describe("fetchBlendPositions", () => {
     const pool = makePool(reserveMap, {});
     vi.mocked(PoolV2.load).mockResolvedValue(pool as never);
 
-    const result = await fetchBlendPositions(network, POOL_ID, PUBKEY, reserves);
+    const result = await fetchBlendPositions(
+      network,
+      POOL_ID,
+      PUBKEY,
+      reserves
+    );
     expect(result).toEqual([]);
     expect(pool.loadUser).toHaveBeenCalledWith(PUBKEY);
   });
@@ -94,10 +104,27 @@ describe("fetchBlendPositions", () => {
     });
     vi.mocked(PoolV2.load).mockResolvedValue(pool as never);
 
-    const result = await fetchBlendPositions(network, POOL_ID, PUBKEY, reserves);
+    const result = await fetchBlendPositions(
+      network,
+      POOL_ID,
+      PUBKEY,
+      reserves
+    );
     expect(result).toHaveLength(2);
-    expect(result[0]).toMatchObject({ vaultId: "blend-usdc-fixed", shares: 50, deposited: 50, earned: 0, entryTime: 0 });
-    expect(result[1]).toMatchObject({ vaultId: "blend-eurc-fixed", shares: 20, deposited: 20, earned: 0, entryTime: 0 });
+    expect(result[0]).toMatchObject({
+      vaultId: "blend-usdc-fixed",
+      shares: 50,
+      deposited: 50,
+      earned: 0,
+      entryTime: 0,
+    });
+    expect(result[1]).toMatchObject({
+      vaultId: "blend-eurc-fixed",
+      shares: 20,
+      deposited: 20,
+      earned: 0,
+      entryTime: 0,
+    });
   });
 
   it("sets shares to collateral-only and deposited to collateral + plain supply", async () => {
@@ -107,7 +134,9 @@ describe("fetchBlendPositions", () => {
     });
     vi.mocked(PoolV2.load).mockResolvedValue(pool as never);
 
-    const [pos] = await fetchBlendPositions(network, POOL_ID, PUBKEY, [reserves[0]]);
+    const [pos] = await fetchBlendPositions(network, POOL_ID, PUBKEY, [
+      reserves[0],
+    ]);
     expect(pos.shares).toBe(30);
     expect(pos.deposited).toBe(40);
   });
@@ -120,7 +149,12 @@ describe("fetchBlendPositions", () => {
     vi.mocked(PoolV2.load).mockResolvedValue(pool as never);
 
     // Both USDC and EURC passed, but only USDC is in the pool's reserve map.
-    const result = await fetchBlendPositions(network, POOL_ID, PUBKEY, reserves);
+    const result = await fetchBlendPositions(
+      network,
+      POOL_ID,
+      PUBKEY,
+      reserves
+    );
     expect(result).toHaveLength(1);
     expect(result[0].vaultId).toBe("blend-usdc-fixed");
   });
@@ -132,7 +166,9 @@ describe("fetchBlendPositions", () => {
     });
     vi.mocked(PoolV2.load).mockResolvedValue(pool as never);
 
-    const result = await fetchBlendPositions(network, POOL_ID, PUBKEY, [reserves[0]]);
+    const result = await fetchBlendPositions(network, POOL_ID, PUBKEY, [
+      reserves[0],
+    ]);
     expect(result).toEqual([]);
   });
 });

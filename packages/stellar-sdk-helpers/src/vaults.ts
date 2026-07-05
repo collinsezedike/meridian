@@ -1,5 +1,11 @@
-import { getStellarStablecoinPools, assessPoolRisk, type RiskLevel } from "./defilamma";
+import { PoolV2 } from "@blend-capital/blend-sdk";
+import {
+  getStellarStablecoinPools,
+  assessPoolRisk,
+  type RiskLevel,
+} from "./defilamma";
 import { KNOWN_POOLS } from "./known-pools";
+import { APP_NETWORK, withRaceTimeout } from "@meridian/shared";
 
 export interface ApiVault {
   id: string;
@@ -30,11 +36,44 @@ export function isVaultCacheWarm(): boolean {
 }
 
 /**
- * Fetch vaults from DeFiLlama and return those backed by known on-chain pools.
- * Results are cached for 60 s. If DeFiLlama returns no usable pools, the
- * previous cache is served rather than returning an empty list.
+ * Query each pool in KNOWN_POOLS.testnet on-chain and return its TVL and APY.
+ * Both are derived from the Blend SDK's reserve state loaded via PoolV2.load —
+ * no external oracle needed. Adding a new testnet pool only requires a new
+ * entry in KNOWN_POOLS.testnet.
  */
-export async function fetchAllVaults(): Promise<ApiVault[]> {
+async function fetchTestnetVaults(): Promise<ApiVault[]> {
+  const blendNetwork = {
+    rpc: APP_NETWORK.rpcUrl,
+    passphrase: APP_NETWORK.passphrase,
+  };
+  const vaults: ApiVault[] = [];
+  for (const meta of Object.values(KNOWN_POOLS.testnet)) {
+    const pool = await withRaceTimeout(
+      () => PoolV2.load(blendNetwork, meta.poolId),
+      10_000,
+      "Blend RPC"
+    );
+    const reserve = pool.reserves.get(meta.assetId);
+    // totalSupply() is in stroops (7 decimal places).
+    const tvl = reserve ? Math.round(Number(reserve.totalSupply()) / 1e7) : 0;
+    // estSupplyApy is a decimal (e.g. 0.05 = 5%); convert to percentage points.
+    const apy = reserve ? Number((reserve.estSupplyApy * 100).toFixed(2)) : 0;
+    vaults.push({ ...meta, apy, tvl, userBalance: 0, riskLevel: "safe" });
+  }
+  return vaults;
+}
+
+/**
+ * Fetch vaults for the given network. On mainnet, pulls live APY/TVL from
+ * DeFiLlama and matches against KNOWN_POOLS.mainnet. On testnet, queries the
+ * Blend TestnetV2 pool on-chain directly (DeFiLlama does not index testnet).
+ * Mainnet results are cached for 60 s; testnet results are always fresh.
+ */
+export async function fetchAllVaults(
+  network: "mainnet" | "testnet" = APP_NETWORK.network
+): Promise<ApiVault[]> {
+  if (network === "testnet") return fetchTestnetVaults();
+
   const now = Date.now();
   if (vaultCache && now < vaultCache.expiresAt) return vaultCache.vaults;
 
@@ -42,9 +81,14 @@ export async function fetchAllVaults(): Promise<ApiVault[]> {
 
   const vaults: ApiVault[] = [];
   for (const pool of pools) {
-    const meta = KNOWN_POOLS[pool.pool];
+    const meta = KNOWN_POOLS.mainnet[pool.pool];
     if (!meta) {
-      console.warn("[vaults] unknown DeFiLlama pool, skipping:", pool.pool, pool.project, pool.symbol);
+      console.warn(
+        "[vaults] unknown DeFiLlama pool, skipping:",
+        pool.pool,
+        pool.project,
+        pool.symbol
+      );
       continue;
     }
     vaults.push({

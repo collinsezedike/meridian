@@ -68,12 +68,12 @@ If this is your first open-source contribution, start here:
 
 Before cloning, confirm you have the required tools installed:
 
-| Tool | Required version | Check |
-| --- | --- | --- |
-| Node.js | `>=24` | `node --version` |
-| pnpm | `9.x` | `pnpm --version` |
-| Rust toolchain | stable (latest) | `rustc --version` |
-| Soroban CLI | latest | `soroban --version` |
+| Tool           | Required version | Check               |
+| -------------- | ---------------- | ------------------- |
+| Node.js        | `>=20`           | `node --version`    |
+| pnpm           | `9.x`            | `pnpm --version`    |
+| Rust toolchain | stable (latest)  | `rustc --version`   |
+| Soroban CLI    | latest           | `soroban --version` |
 
 Rust and Soroban CLI are only required if you are working on the smart contracts in `packages/contracts`. TypeScript-only contributors can skip them.
 
@@ -122,12 +122,12 @@ npm install -g pnpm@9
 
    Edit `.env` and set the values you need:
 
-   | Variable | Required for | Description |
-   | --- | --- | --- |
-   | `PORT` | API | Port for the Fastify API server. Default `3001`. |
-   | `ALLOWED_ORIGIN` | API | CORS allowed origin. Default `http://localhost:3000`. |
-   | `DEFINDEX_VAULT_ID` | API | DeFindex vault contract address (C-address). Leave empty to disable DeFindex; only Blend positions are returned. |
-   | `VITE_API_URL` | Web | URL the web app uses to reach the API. Default `http://localhost:3001`. |
+   | Variable            | Required for | Description                                                                                                      |
+   | ------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------- |
+   | `PORT`              | API          | Port for the Fastify API server. Default `3001`.                                                                 |
+   | `ALLOWED_ORIGIN`    | API          | CORS allowed origin. Default `http://localhost:3000`.                                                            |
+   | `DEFINDEX_VAULT_ID` | API          | DeFindex vault contract address (C-address). Leave empty to disable DeFindex; only Blend positions are returned. |
+   | `VITE_API_URL`      | Web          | URL the web app uses to reach the API. Default `http://localhost:3001`.                                          |
 
 6. Start the development servers:
 
@@ -179,14 +179,14 @@ Every issue title must use the bracket prefix format:
 [Type] Short imperative description
 ```
 
-| Prefix | When to use |
-| --- | --- |
+| Prefix             | When to use                                 |
+| ------------------ | ------------------------------------------- |
 | `[Bug]` or `[Fix]` | Something is broken or behaving incorrectly |
-| `[Feature]` | New capability or significant enhancement |
-| `[Frontend]` | Frontend-scoped work (React, UI, Tailwind) |
-| `[Test]` | Adds or improves test coverage |
-| `[Docs]` | Documentation, README, JSDoc, guides |
-| `[Chore]` | Refactor, cleanup, dependency update, CI |
+| `[Feature]`        | New capability or significant enhancement   |
+| `[Frontend]`       | Frontend-scoped work (React, UI, Tailwind)  |
+| `[Test]`           | Adds or improves test coverage              |
+| `[Docs]`           | Documentation, README, JSDoc, guides        |
+| `[Chore]`          | Refactor, cleanup, dependency update, CI    |
 
 ### Which template to use
 
@@ -197,11 +197,11 @@ Every issue title must use the bracket prefix format:
 
 Apply labels from all three categories before submitting. PRs linked to unlabelled issues will be asked to add labels before review begins.
 
-| Category | Pick | Options |
-| --- | --- | --- |
-| Purpose | one | `bug`, `enhancement`, `docs`, `testing`, `chore`, `security` |
-| Area | all that apply | `frontend`, `api`, `sdk`, `contracts`, `ci`, `ui`, `i18n`, `stellar`, `soroban` |
-| Complexity | one | `trivial`, `medium`, `hard` |
+| Category   | Pick           | Options                                                                         |
+| ---------- | -------------- | ------------------------------------------------------------------------------- |
+| Purpose    | one            | `bug`, `enhancement`, `docs`, `testing`, `chore`, `security`                    |
+| Area       | all that apply | `frontend`, `api`, `sdk`, `contracts`, `ci`, `ui`, `i18n`, `stellar`, `soroban` |
+| Complexity | one            | `trivial`, `medium`, `hard`                                                     |
 
 Use `good first issue` in place of a complexity label for tasks that are fully isolated and require no Stellar or Soroban knowledge.
 
@@ -250,12 +250,12 @@ Branches that do not match this pattern will fail the branch naming ruleset and 
 Meridian uses [Conventional Commits](https://www.conventionalcommits.org/). Every commit must follow this format:
 
 ```text
-<type>(<scope>): <subject>
+<type>[(<scope>)]: <subject>
 ```
 
 **Types:** `feat`, `fix`, `test`, `docs`, `refactor`, `perf`, `chore`, `ci`
 
-**Scopes:** Use the relevant package or app: `api`, `web`, `contracts`, `sdk`, `shared`, `ci`, `docs`
+**Scopes (optional):** Use the relevant package or app: `api`, `web`, `contracts`, `sdk`, `shared`, `ci`, `docs`
 
 **Rules:**
 
@@ -270,7 +270,7 @@ feat(api): add Blend pool APY aggregation endpoint
 fix(sdk): handle Soroban RPC timeout on testnet
 test(api): add edge case coverage for empty pool response
 docs: update CONTRIBUTING with Soroban contract standards
-chore(ci): pin Node.js to v24 in GitHub Actions workflow
+chore: pin Node.js to v20 in GitHub Actions workflow
 ```
 
 > Issue references (`Closes #N`) go in the **PR body**, not in commit messages. Squash merge is enforced -- the PR title becomes the squash commit, so issue refs in individual commits are discarded.

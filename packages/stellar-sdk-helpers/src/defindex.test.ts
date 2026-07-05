@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { buildDefindexDepositTx, buildDefindexWithdrawTx, stroopsToUnits, fetchDefindexPosition } from "./defindex";
+import {
+  buildDefindexDepositTx,
+  buildDefindexWithdrawTx,
+  stroopsToUnits,
+  fetchDefindexPosition,
+} from "./defindex";
 import type { StellarNetwork } from "./types";
 
 // Track rpc.Server constructor calls so we can assert on the timeout option.
@@ -39,14 +44,20 @@ const ADDR = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 // unit-testable without an RPC server.
 describe("buildDefindexDepositTx", () => {
   it("rejects a non-positive amount", async () => {
-    await expect(buildDefindexDepositTx(config, ADDR, 0n)).rejects.toThrow(/positive/);
-    await expect(buildDefindexDepositTx(config, ADDR, -1n)).rejects.toThrow(/positive/);
+    await expect(buildDefindexDepositTx(config, ADDR, 0n)).rejects.toThrow(
+      /positive/
+    );
+    await expect(buildDefindexDepositTx(config, ADDR, -1n)).rejects.toThrow(
+      /positive/
+    );
   });
 });
 
 describe("buildDefindexWithdrawTx", () => {
   it("rejects non-positive shares", async () => {
-    await expect(buildDefindexWithdrawTx(config, ADDR, 0n)).rejects.toThrow(/positive/);
+    await expect(buildDefindexWithdrawTx(config, ADDR, 0n)).rejects.toThrow(
+      /positive/
+    );
   });
 });
 
@@ -89,17 +100,27 @@ describe("fetchDefindexPosition", () => {
 
   it("returns [] when the user holds zero shares", async () => {
     vi.mocked(simulateView).mockResolvedValue(0n);
-    const result = await fetchDefindexPosition(network, VAULT_ID, "defindex-usdc", PUBKEY);
+    const result = await fetchDefindexPosition(
+      network,
+      VAULT_ID,
+      "defindex-usdc",
+      PUBKEY
+    );
     expect(result).toEqual([]);
     expect(simulateView).toHaveBeenCalledOnce();
   });
 
   it("maps shares and underlying amount into a PositionInfo", async () => {
     vi.mocked(simulateView)
-      .mockResolvedValueOnce(5_000_000n)          // balance: 0.5 dfTokens
-      .mockResolvedValueOnce([10_000_000n]);       // get_asset_amounts_per_shares: 1 USDC
+      .mockResolvedValueOnce(5_000_000n) // balance: 0.5 dfTokens
+      .mockResolvedValueOnce([10_000_000n]); // get_asset_amounts_per_shares: 1 USDC
 
-    const result = await fetchDefindexPosition(network, VAULT_ID, "defindex-usdc", PUBKEY);
+    const result = await fetchDefindexPosition(
+      network,
+      VAULT_ID,
+      "defindex-usdc",
+      PUBKEY
+    );
     expect(result).toHaveLength(1);
     expect(result[0].vaultId).toBe("defindex-usdc");
     expect(result[0].shares).toBeCloseTo(0.5, 7);
@@ -113,7 +134,12 @@ describe("fetchDefindexPosition", () => {
       .mockResolvedValueOnce(5_000_000n)
       .mockResolvedValueOnce(null);
 
-    const [pos] = await fetchDefindexPosition(network, VAULT_ID, "defindex-usdc", PUBKEY);
+    const [pos] = await fetchDefindexPosition(
+      network,
+      VAULT_ID,
+      "defindex-usdc",
+      PUBKEY
+    );
     expect(pos.deposited).toBe(0);
   });
 
@@ -122,7 +148,12 @@ describe("fetchDefindexPosition", () => {
       .mockResolvedValueOnce(5_000_000n)
       .mockResolvedValueOnce([]);
 
-    const [pos] = await fetchDefindexPosition(network, VAULT_ID, "defindex-usdc", PUBKEY);
+    const [pos] = await fetchDefindexPosition(
+      network,
+      VAULT_ID,
+      "defindex-usdc",
+      PUBKEY
+    );
     expect(pos.deposited).toBe(0);
   });
 });

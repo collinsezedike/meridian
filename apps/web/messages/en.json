@@ -1,50 +1,48 @@
 {
-    "header": {
-        "title": "Meridian"
-    },
+  "header": {
+    "title": "Meridian"
+  },
 
-    "walletConnect": {
-        "disconnect": "Disconnect",
-        "copyAddress": "Copy Address",
-        "copied": "Copied",
-        "walletDisconnected": "Wallet Disconnected",
-        "walletConnected": "Wallet Connected"
-    },
+  "walletConnect": {
+    "disconnect": "Disconnect",
+    "copyAddress": "Copy Address",
+    "copied": "Copied",
+    "walletDisconnected": "Wallet Disconnected",
+    "walletConnected": "Wallet Connected"
+  },
 
-    
-    "vaultPanel": {
-        "deposit": "Deposit",
-        "withdraw": "Withdraw",
-        "network": "Network",
-        "apy": "APY",
-        "tvl": "TVL",
-        "route": "Route",
-        "protocol": "Protocol",
-        "noLiveRateData": "No live rate data.",
-        "yourPosition": "Your Position",
-        "earned": "Earned",
-        "connectUSDC": "Connect your Freighter wallet to deposit USDC and start earning yield automatically.",
-        "amount": "Amount",
-        "balance": "Balance",
-        "addAssets": "Add vault assets to wallet",
-        "position": "You have no active position to withdraw from.",
-        "shares": "Shares",
-        "waiting": "Waiting for signature..."
-    },
+  "vaultPanel": {
+    "deposit": "Deposit",
+    "withdraw": "Withdraw",
+    "network": "Network",
+    "apy": "APY",
+    "tvl": "TVL",
+    "route": "Route",
+    "protocol": "Protocol",
+    "noLiveRateData": "No live rate data.",
+    "yourPosition": "Your Position",
+    "earned": "Earned",
+    "connectUSDC": "Connect your Freighter wallet to deposit USDC and start earning yield automatically.",
+    "amount": "Amount",
+    "balance": "Balance",
+    "addAssets": "Add vault assets to wallet",
+    "position": "You have no active position to withdraw from.",
+    "shares": "Shares",
+    "waiting": "Waiting for signature..."
+  },
 
-    "vaultActions": {
-        "failedAssets": "Failed to add vault assets",
-        "depositFailed": "Deposit failed",
-        "assetsAdded": "Vault assets added to wallet",
-        "withdrawalFailed": "Withdrawal failed",
-        "withdrew": "Withdrew",
-        "deposited": "Deposited"
-    },
+  "vaultActions": {
+    "failedAssets": "Failed to add vault assets",
+    "depositFailed": "Deposit failed",
+    "assetsAdded": "Vault assets added to wallet",
+    "withdrawalFailed": "Withdrawal failed",
+    "withdrew": "Withdrew",
+    "deposited": "Deposited"
+  },
 
-    "common": {
-        "connectWallet":"Connect Wallet",
-        "connecting":"Connecting...",
-        "installFreighter": "Install Freighter"
-    }
-
+  "common": {
+    "connectWallet": "Connect Wallet",
+    "connecting": "Connecting...",
+    "installFreighter": "Install Freighter"
+  }
 }

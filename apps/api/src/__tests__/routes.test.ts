@@ -51,17 +51,31 @@ describe("GET /health", () => {
 describe("GET /api/v1/positions/:publicKey", () => {
   it("returns 200 with positions from the SDK", async () => {
     const app = buildApp();
-    const pos = [{ vaultId: "blend-usdc-fixed", shares: 10, deposited: 10, earned: 0, entryTime: 0 }];
+    const pos = [
+      {
+        vaultId: "blend-usdc-fixed",
+        shares: 10,
+        deposited: 10,
+        earned: 0,
+        entryTime: 0,
+      },
+    ];
     vi.mocked(resolvePositions).mockResolvedValue(pos);
 
-    const res = await app.inject({ method: "GET", url: `/api/v1/positions/${WALLET}` });
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/v1/positions/${WALLET}`,
+    });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ positions: pos });
   });
 
   it("returns 400 for an invalid public key", async () => {
     const app = buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/positions/not-a-key" });
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/positions/not-a-key",
+    });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toHaveProperty("error");
   });
@@ -69,14 +83,21 @@ describe("GET /api/v1/positions/:publicKey", () => {
   it("returns 503 when the SDK throws", async () => {
     const app = buildApp();
     vi.mocked(resolvePositions).mockRejectedValue(new Error("RPC down"));
-    const res = await app.inject({ method: "GET", url: `/api/v1/positions/${WALLET}` });
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/v1/positions/${WALLET}`,
+    });
     expect(res.statusCode).toBe(503);
     expect(res.json()).toHaveProperty("error");
   });
 });
 
 describe("POST /api/v1/tx/deposit", () => {
-  const validBody = { walletAddress: WALLET, vaultId: "blend-usdc-fixed", amount: "10" };
+  const validBody = {
+    walletAddress: WALLET,
+    vaultId: "blend-usdc-fixed",
+    amount: "10",
+  };
 
   it("returns 200 with xdr and fee from the SDK", async () => {
     const app = buildApp();
@@ -117,7 +138,9 @@ describe("POST /api/v1/tx/deposit", () => {
 
   it("returns 500 when the SDK throws a simulation error", async () => {
     const app = buildApp();
-    vi.mocked(buildDepositTx).mockRejectedValue(new Error("Simulation failed: HostError"));
+    vi.mocked(buildDepositTx).mockRejectedValue(
+      new Error("Simulation failed: HostError")
+    );
 
     const res = await app.inject({
       method: "POST",
@@ -131,11 +154,18 @@ describe("POST /api/v1/tx/deposit", () => {
 });
 
 describe("POST /api/v1/tx/withdraw", () => {
-  const validBody = { walletAddress: WALLET, vaultId: "blend-usdc-fixed", shares: "5" };
+  const validBody = {
+    walletAddress: WALLET,
+    vaultId: "blend-usdc-fixed",
+    shares: "5",
+  };
 
   it("returns 200 with xdr and fee from the SDK", async () => {
     const app = buildApp();
-    vi.mocked(buildWithdrawTx).mockResolvedValue({ xdr: "WITHDRAWXDR", fee: "100" });
+    vi.mocked(buildWithdrawTx).mockResolvedValue({
+      xdr: "WITHDRAWXDR",
+      fee: "100",
+    });
 
     const res = await app.inject({
       method: "POST",
@@ -153,7 +183,10 @@ describe("POST /api/v1/tx/withdraw", () => {
       method: "POST",
       url: "/api/v1/tx/withdraw",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ walletAddress: WALLET, vaultId: "blend-usdc-fixed" }),
+      body: JSON.stringify({
+        walletAddress: WALLET,
+        vaultId: "blend-usdc-fixed",
+      }),
     });
     expect(res.statusCode).toBe(400);
   });
@@ -202,7 +235,11 @@ describe("POST /api/v1/tx/add-trustline", () => {
 describe("POST /api/v1/tx/submit", () => {
   it("returns 200 with the submit result from the SDK", async () => {
     const app = buildApp();
-    vi.mocked(submitTx).mockResolvedValue({ hash: "abc123", status: "SUCCESS", ledger: 42 });
+    vi.mocked(submitTx).mockResolvedValue({
+      hash: "abc123",
+      status: "SUCCESS",
+      ledger: 42,
+    });
 
     const res = await app.inject({
       method: "POST",
@@ -211,7 +248,11 @@ describe("POST /api/v1/tx/submit", () => {
       body: JSON.stringify({ xdr: "SIGNEDXDR" }),
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ hash: "abc123", status: "SUCCESS", ledger: 42 });
+    expect(res.json()).toMatchObject({
+      hash: "abc123",
+      status: "SUCCESS",
+      ledger: 42,
+    });
   });
 
   it("returns 400 for an empty xdr string", async () => {
@@ -273,7 +314,11 @@ describe("rate limiting on /api/v1/tx/deposit", () => {
       method: "POST" as const,
       url: "/api/v1/tx/deposit",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ walletAddress: WALLET, vaultId: "blend-usdc-fixed", amount: "10" }),
+      body: JSON.stringify({
+        walletAddress: WALLET,
+        vaultId: "blend-usdc-fixed",
+        amount: "10",
+      }),
     };
 
     for (let i = 0; i < 10; i++) {
@@ -292,7 +337,10 @@ describe("GET /api/v1/vaults/:vaultId", () => {
     const vault = { id: "blend-usdc-fixed", apy: 0.05 };
     vi.mocked(fetchAllVaults).mockResolvedValue([vault] as never);
 
-    const res = await app.inject({ method: "GET", url: "/api/v1/vaults/blend-usdc-fixed" });
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/vaults/blend-usdc-fixed",
+    });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ id: "blend-usdc-fixed" });
   });
@@ -301,7 +349,10 @@ describe("GET /api/v1/vaults/:vaultId", () => {
     const app = buildApp();
     vi.mocked(fetchAllVaults).mockResolvedValue([] as never);
 
-    const res = await app.inject({ method: "GET", url: "/api/v1/vaults/unknown" });
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/vaults/unknown",
+    });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toHaveProperty("error");
   });

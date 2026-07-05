@@ -1,7 +1,7 @@
 # Transaction signing flow
 
 Meridian's core security property is simple: **the API never holds or sees a private key.**
-It builds an *unsigned* Soroban transaction, returns it as a base64 XDR string, and the
+It builds an _unsigned_ Soroban transaction, returns it as a base64 XDR string, and the
 browser hands that XDR to the user's wallet (Freighter) for signing. The signed XDR is then
 relayed back through the API only to be forwarded to the Stellar network — the API still
 never signs anything itself.
@@ -45,7 +45,7 @@ sequenceDiagram
 - **The wallet is the trust boundary.** Freighter shows the user the operations and asset
   amounts before they approve. Signing happens inside the extension; the decrypted key never
   enters the page or the network.
-- **The `/submit` endpoint only relays.** It accepts an *already-signed* XDR and forwards it to
+- **The `/submit` endpoint only relays.** It accepts an _already-signed_ XDR and forwards it to
   Soroban RPC via `sendTransaction`. It does not (and cannot) add signatures. Submitting could
   also be done straight from the browser to RPC; routing it through the API just centralises
   endpoint configuration and error handling.

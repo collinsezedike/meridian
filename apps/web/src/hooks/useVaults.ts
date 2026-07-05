@@ -13,7 +13,10 @@ export function useVaults() {
     queryKey: ["vaults"],
     queryFn: async () => {
       const data = await api.getVaults();
-      return { vaults: data.vaults, recommendedVaultId: data.recommendedVaultId };
+      return {
+        vaults: data.vaults,
+        recommendedVaultId: data.recommendedVaultId,
+      };
     },
     staleTime: 5 * 60_000,
     retry: 1,

@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { applyCors, checkRateLimit, resetRateLimitForTesting } from "../_lib/middleware.js";
+import {
+  applyCors,
+  checkRateLimit,
+  resetRateLimitForTesting,
+} from "../_lib/middleware.js";
 
 // Minimal fake request / response ------------------------------------------------
 
@@ -19,12 +23,28 @@ interface FakeRes {
 }
 
 function fakeRes(): FakeRes & VercelResponse {
-  const r: FakeRes = { statusCode: 200, body: undefined, headers: {}, ended: false };
+  const r: FakeRes = {
+    statusCode: 200,
+    body: undefined,
+    headers: {},
+    ended: false,
+  };
   return Object.assign(r, {
-    status(code: number) { r.statusCode = code; return this; },
-    json(payload: unknown) { r.body = payload; return this; },
-    end() { r.ended = true; return this; },
-    setHeader(k: string, v: string) { r.headers[k] = v; },
+    status(code: number) {
+      r.statusCode = code;
+      return this;
+    },
+    json(payload: unknown) {
+      r.body = payload;
+      return this;
+    },
+    end() {
+      r.ended = true;
+      return this;
+    },
+    setHeader(k: string, v: string) {
+      r.headers[k] = v;
+    },
   }) as unknown as FakeRes & VercelResponse;
 }
 
@@ -66,7 +86,9 @@ describe("checkRateLimit", () => {
     const ip = "1.2.3.4";
     for (let i = 0; i < 100; i++) {
       const res = fakeRes();
-      expect(checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), res)).toBe(true);
+      expect(
+        checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), res)
+      ).toBe(true);
       expect(res.statusCode).toBe(200);
     }
   });
@@ -77,7 +99,9 @@ describe("checkRateLimit", () => {
       checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), fakeRes());
     }
     const res = fakeRes();
-    expect(checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), res)).toBe(false);
+    expect(
+      checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), res)
+    ).toBe(false);
     expect(res.statusCode).toBe(429);
   });
 
@@ -90,7 +114,9 @@ describe("checkRateLimit", () => {
     // Advance past the 60 s window.
     vi.advanceTimersByTime(61_000);
     const res = fakeRes();
-    expect(checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), res)).toBe(true);
+    expect(
+      checkRateLimit(fakeReq("POST", { "x-forwarded-for": ip }), res)
+    ).toBe(true);
     expect(res.statusCode).toBe(200);
   });
 
@@ -102,9 +128,13 @@ describe("checkRateLimit", () => {
     }
     // ipA is blocked but ipB should still be allowed.
     const resA = fakeRes();
-    expect(checkRateLimit(fakeReq("POST", { "x-forwarded-for": ipA }), resA)).toBe(false);
+    expect(
+      checkRateLimit(fakeReq("POST", { "x-forwarded-for": ipA }), resA)
+    ).toBe(false);
     const resB = fakeRes();
-    expect(checkRateLimit(fakeReq("POST", { "x-forwarded-for": ipB }), resB)).toBe(true);
+    expect(
+      checkRateLimit(fakeReq("POST", { "x-forwarded-for": ipB }), resB)
+    ).toBe(true);
   });
 
   it("uses x-vercel-forwarded-for over x-forwarded-for when both are present", () => {
@@ -112,7 +142,10 @@ describe("checkRateLimit", () => {
     const fwdIp = "9.9.9.9";
     for (let i = 0; i < 100; i++) {
       checkRateLimit(
-        fakeReq("POST", { "x-vercel-forwarded-for": vercelIp, "x-forwarded-for": fwdIp }),
+        fakeReq("POST", {
+          "x-vercel-forwarded-for": vercelIp,
+          "x-forwarded-for": fwdIp,
+        }),
         fakeRes()
       );
     }
@@ -120,7 +153,10 @@ describe("checkRateLimit", () => {
     const resBlocked = fakeRes();
     expect(
       checkRateLimit(
-        fakeReq("POST", { "x-vercel-forwarded-for": vercelIp, "x-forwarded-for": fwdIp }),
+        fakeReq("POST", {
+          "x-vercel-forwarded-for": vercelIp,
+          "x-forwarded-for": fwdIp,
+        }),
         resBlocked
       )
     ).toBe(false);

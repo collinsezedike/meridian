@@ -33,7 +33,6 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-
 export const api = {
   getVaults: () =>
     apiFetch<{
@@ -43,20 +42,26 @@ export const api = {
       cached: boolean;
     }>("/api/v1/vaults"),
   getPositions: (publicKey: string) =>
-    apiFetch<{ positions: ApiPosition[] }>(
-      `/api/v1/positions/${publicKey}`
-    ),
+    apiFetch<{ positions: ApiPosition[] }>(`/api/v1/positions/${publicKey}`),
   addTrustline: (walletAddress: string) =>
     apiFetch<{ xdr: string }>("/api/v1/tx/add-trustline", {
       method: "POST",
       body: JSON.stringify({ walletAddress }),
     }),
-  buildDeposit: (body: { walletAddress: string; vaultId: string; amount: string }) =>
+  buildDeposit: (body: {
+    walletAddress: string;
+    vaultId: string;
+    amount: string;
+  }) =>
     apiFetch<{ xdr: string; fee: string }>("/api/v1/tx/deposit", {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  buildWithdraw: (body: { walletAddress: string; vaultId: string; shares: string }) =>
+  buildWithdraw: (body: {
+    walletAddress: string;
+    vaultId: string;
+    shares: string;
+  }) =>
     apiFetch<{ xdr: string; fee: string }>("/api/v1/tx/withdraw", {
       method: "POST",
       body: JSON.stringify(body),

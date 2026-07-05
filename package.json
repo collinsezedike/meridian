@@ -2,22 +2,24 @@
   "name": "meridian",
   "version": "0.1.0",
   "private": true,
-"scripts": {
+  "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "typecheck:api": "tsc --noEmit -p api/tsconfig.json"
+    "typecheck:api": "tsc --noEmit -p api/tsconfig.json",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
-    "@stellar/stellar-sdk": "^12.0.0"
+    "@stellar/stellar-sdk": "^14.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "esbuild": "^0.28.0",
     "turbo": "^2.9.14",
-    "typescript": "^5.4.0",
+    "typescript": "^6.0.3",
     "prettier": "^3.2.0",
     "@eslint/js": "^9.0.0",
     "eslint": "^9.0.0"

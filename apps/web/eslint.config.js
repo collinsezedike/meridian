@@ -20,7 +20,10 @@ export default [
       "no-undef": "off",
       ...tsPlugin.configs.recommended.rules,
       ...reactHooks.configs["recommended-latest"].rules,
-      "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
+      "react-refresh/only-export-components": [
+        "warn",
+        { allowConstantExport: true },
+      ],
     },
   },
 ];

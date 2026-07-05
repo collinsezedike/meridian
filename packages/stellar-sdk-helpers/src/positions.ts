@@ -28,14 +28,21 @@ export interface RawPosition {
  *
  * Returns an empty array when the address holds no shares.
  */
-export function computePosition(vaultId: string, raw: RawPosition): PositionInfo[] {
+export function computePosition(
+  vaultId: string,
+  raw: RawPosition
+): PositionInfo[] {
   if (raw.shares <= 0n) return [];
 
   const currentValue =
-    raw.totalShares > 0n ? (raw.shares * raw.totalAssets) / raw.totalShares : 0n;
+    raw.totalShares > 0n
+      ? (raw.shares * raw.totalAssets) / raw.totalShares
+      : 0n;
 
   const earned =
-    raw.principal !== null && currentValue > raw.principal ? currentValue - raw.principal : 0n;
+    raw.principal !== null && currentValue > raw.principal
+      ? currentValue - raw.principal
+      : 0n;
 
   return [
     {
@@ -47,4 +54,3 @@ export function computePosition(vaultId: string, raw: RawPosition): PositionInfo
     },
   ];
 }
-

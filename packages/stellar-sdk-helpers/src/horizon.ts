@@ -10,4 +10,3 @@ export function buildHorizonServer(config: StellarNetwork): Horizon.Server {
   };
   return new Horizon.Server(urls[config.network]);
 }
-

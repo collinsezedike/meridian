@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.turbo/
+target/
+pnpm-lock.yaml
+apps/docs/.vitepress/dist/
+apps/docs/.vitepress/cache/
+packages/contracts/

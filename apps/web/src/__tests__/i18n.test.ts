@@ -21,6 +21,6 @@ describe("i18n", () => {
   Object.entries(locales).forEach(([locale, translations]) => {
     it(`${locale} has the same keys as english`, () => {
       expect(flatten(translations).sort()).toEqual(englishKeys);
-    })
-  })
+    });
+  });
 });

@@ -35,13 +35,16 @@ function clientIp(req: VercelRequest): string {
   // x-vercel-forwarded-for is set by the Vercel edge and cannot be spoofed
   // by the client, unlike x-forwarded-for which is client-controlled.
   const vercelIp = req.headers["x-vercel-forwarded-for"];
-  if (typeof vercelIp === "string" && vercelIp) return vercelIp.split(",")[0].trim();
+  if (typeof vercelIp === "string" && vercelIp)
+    return vercelIp.split(",")[0]?.trim() ?? vercelIp;
 
   // Fallback for local dev (Fastify / pnpm dev) where Vercel headers are absent.
   const fwd = req.headers["x-forwarded-for"];
-  return (typeof fwd === "string" ? fwd.split(",")[0].trim() : null) ??
+  return (
+    (typeof fwd === "string" ? (fwd.split(",")[0]?.trim() ?? fwd) : null) ??
     req.socket?.remoteAddress ??
-    "unknown";
+    "unknown"
+  );
 }
 
 /**
@@ -49,7 +52,10 @@ function clientIp(req: VercelRequest): string {
  * Writes a 429 response and returns false when the limit is exceeded — the
  * caller should return immediately.
  */
-export function checkRateLimit(req: VercelRequest, res: VercelResponse): boolean {
+export function checkRateLimit(
+  req: VercelRequest,
+  res: VercelResponse
+): boolean {
   const ip = clientIp(req);
   const now = Date.now();
   const entry = counts.get(ip);
@@ -59,7 +65,9 @@ export function checkRateLimit(req: VercelRequest, res: VercelResponse): boolean
     return true;
   }
   if (entry.n >= LIMIT) {
-    res.status(429).json({ error: "Too many requests. Try again in a minute." });
+    res
+      .status(429)
+      .json({ error: "Too many requests. Try again in a minute." });
     return false;
   }
   entry.n++;

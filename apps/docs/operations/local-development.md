@@ -2,12 +2,12 @@
 
 ## Prerequisites
 
-| Tool | Version | Install |
-| --- | --- | --- |
-| Node.js | ≥ 20 | [nodejs.org](https://nodejs.org) |
-| pnpm | ≥ 9 | `npm i -g pnpm` |
-| Rust | stable | [rustup.rs](https://rustup.rs) |
-| Stellar CLI | latest | `cargo install stellar-cli` |
+| Tool        | Version | Install                          |
+| ----------- | ------- | -------------------------------- |
+| Node.js     | ≥ 20    | [nodejs.org](https://nodejs.org) |
+| pnpm        | ≥ 9     | `npm i -g pnpm`                  |
+| Rust        | stable  | [rustup.rs](https://rustup.rs)   |
+| Stellar CLI | latest  | `cargo install stellar-cli`      |
 
 The Rust toolchain and Stellar CLI are only required if you are working on the Soroban contracts in `packages/contracts/`. Frontend and API work does not require them.
 

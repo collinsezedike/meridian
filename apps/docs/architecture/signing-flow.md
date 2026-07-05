@@ -54,7 +54,7 @@ Browser                    API (Vercel)              Stellar RPC
 
 Before returning XDR to the client, the API simulates the transaction against the Soroban RPC node. Simulation:
 
-1. Executes the transaction in a read-only context to determine what contract storage entries will be read and written (the *footprint*).
+1. Executes the transaction in a read-only context to determine what contract storage entries will be read and written (the _footprint_).
 2. Calculates the resource fee required to cover CPU and storage access.
 3. Returns a `readBytes`, `writeBytes`, and `minResourceFee` estimate.
 

@@ -4,9 +4,9 @@ The `MeridianVault` contract is a Soroban smart contract written in Rust, locate
 
 ## Tokens
 
-| Token | Role |
-|---|---|
-| USDC | Deposit and withdrawal currency. Pulled from the user on deposit, returned on withdraw. |
+| Token | Role                                                                                                               |
+| ----- | ------------------------------------------------------------------------------------------------------------------ |
+| USDC  | Deposit and withdrawal currency. Pulled from the user on deposit, returned on withdraw.                            |
 | mUSDC | Share token. Minted to the user on deposit, burned on withdraw. Represents proportional ownership of vault assets. |
 
 Both are standard Stellar assets managed via the `TokenClient` interface. The vault must be set as the admin of the mUSDC asset to mint and burn autonomously.
@@ -98,14 +98,14 @@ USDC on Stellar uses 7 decimal places. 1 USDC = `10_000_000` stroops. All contra
 
 ## Contract storage
 
-| Key | Storage type | Value |
-|---|---|---|
-| `ADMIN` | Instance | Admin `Address` |
-| `USDC` | Instance | USDC contract `Address` |
-| `MUSDC` | Instance | mUSDC contract `Address` |
-| `PROTOCOL` | Instance | Last-used `Protocol` enum |
-| `TOTAL_SH` | Instance | Total mUSDC shares outstanding (`i128`) |
-| `PAUSED` | Instance | Deposit pause flag (`bool`) |
-| `Balance(address)` | Persistent | Per-address mUSDC share balance (`i128`) |
-| `Entry(address)` | Persistent | Per-address deposit entry timestamp (`u64`) |
-| `Principal(address)` | Persistent | Per-address net USDC deposited, not yet withdrawn (`i128`) |
+| Key                  | Storage type | Value                                                      |
+| -------------------- | ------------ | ---------------------------------------------------------- |
+| `ADMIN`              | Instance     | Admin `Address`                                            |
+| `USDC`               | Instance     | USDC contract `Address`                                    |
+| `MUSDC`              | Instance     | mUSDC contract `Address`                                   |
+| `PROTOCOL`           | Instance     | Last-used `Protocol` enum                                  |
+| `TOTAL_SH`           | Instance     | Total mUSDC shares outstanding (`i128`)                    |
+| `PAUSED`             | Instance     | Deposit pause flag (`bool`)                                |
+| `Balance(address)`   | Persistent   | Per-address mUSDC share balance (`i128`)                   |
+| `Entry(address)`     | Persistent   | Per-address deposit entry timestamp (`u64`)                |
+| `Principal(address)` | Persistent   | Per-address net USDC deposited, not yet withdrawn (`i128`) |

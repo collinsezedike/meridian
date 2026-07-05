@@ -1,8 +1,38 @@
-import { buildBlendDepositTx, buildBlendWithdrawTx, blendAssetForVault, fetchBlendPositions } from "./blend";
-import { buildDefindexDepositTx, buildDefindexWithdrawTx, fetchDefindexPosition } from "./defindex";
+import {
+  buildBlendDepositTx,
+  buildBlendWithdrawTx,
+  blendAssetForVault,
+  fetchBlendPositions,
+} from "./blend";
+import {
+  buildDefindexDepositTx,
+  buildDefindexWithdrawTx,
+  fetchDefindexPosition,
+} from "./defindex";
 import { toStroops, resolveProtocol } from "./tx";
 import type { StellarNetwork } from "./types";
 import type { PositionInfo } from "./positions";
+import { KNOWN_POOLS } from "./known-pools";
+
+function blendPositionEntries(
+  network: StellarNetwork,
+  addresses: ProtocolAddresses
+): Array<{ assetId: string; vaultId: string }> {
+  const pools =
+    network.network === "testnet"
+      ? Object.values(KNOWN_POOLS.testnet)
+      : Object.values(KNOWN_POOLS.mainnet);
+  const seen = new Set<string>();
+  const entries: Array<{ assetId: string; vaultId: string }> = [];
+  for (const pool of pools) {
+    if (pool.protocol !== "blend") continue;
+    const assetKey = blendAssetForVault(pool.id);
+    if (seen.has(assetKey)) continue;
+    seen.add(assetKey);
+    entries.push({ assetId: addresses[assetKey], vaultId: pool.id });
+  }
+  return entries;
+}
 
 export interface ProtocolAddresses {
   blendPool: string;
@@ -45,22 +75,42 @@ export async function buildDepositTx(
 
 /**
  * Fetches all positions for `publicKey` across Blend reserves and (optionally)
- * the DeFindex vault. Errors from either protocol propagate to the caller.
+ * the DeFindex vault. Each source is fetched independently: a failure in one
+ * (e.g. RPC timeout, user has no Blend entry) does not suppress positions from
+ * the other. Both failures are logged; partial results are returned.
  */
 export async function resolvePositions(
   publicKey: string,
   network: StellarNetwork,
-  addresses: ProtocolAddresses,
+  addresses: ProtocolAddresses
 ): Promise<PositionInfo[]> {
-  const [blendPositions, dfxPositions] = await Promise.all([
-    fetchBlendPositions(network, addresses.blendPool, publicKey, [
-      { assetId: addresses.usdc, vaultId: "blend-usdc-fixed" },
-      { assetId: addresses.eurc, vaultId: "blend-eurc-fixed" },
-    ]),
+  const [blendResult, dfxResult] = await Promise.allSettled([
+    fetchBlendPositions(
+      network,
+      addresses.blendPool,
+      publicKey,
+      blendPositionEntries(network, addresses)
+    ),
     addresses.defindexVault
-      ? fetchDefindexPosition(network, addresses.defindexVault, addresses.defindexVaultId, publicKey)
+      ? fetchDefindexPosition(
+          network,
+          addresses.defindexVault,
+          addresses.defindexVaultId,
+          publicKey
+        )
       : Promise.resolve([]),
   ]);
+
+  if (blendResult.status === "rejected") {
+    console.error("[positions] Blend fetch failed:", blendResult.reason);
+  }
+  if (dfxResult.status === "rejected") {
+    console.error("[positions] DeFindex fetch failed:", dfxResult.reason);
+  }
+
+  const blendPositions =
+    blendResult.status === "fulfilled" ? blendResult.value : [];
+  const dfxPositions = dfxResult.status === "fulfilled" ? dfxResult.value : [];
 
   return [...blendPositions, ...dfxPositions];
 }

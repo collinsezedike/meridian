@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { rpc, Horizon } from "@stellar/stellar-sdk";
-import { toStroops, resolveProtocol, waitForTransaction, simErrorMessage, buildAddTrustlineTx, simulateView } from "./tx";
+import {
+  toStroops,
+  resolveProtocol,
+  waitForTransaction,
+  simErrorMessage,
+  buildAddTrustlineTx,
+  simulateView,
+} from "./tx";
 import type { StellarNetwork } from "./types";
 
 const { SUCCESS, FAILED, NOT_FOUND } = rpc.Api.GetTransactionStatus;
@@ -35,7 +42,9 @@ describe("simErrorMessage", () => {
   });
 
   it("trims surrounding whitespace", () => {
-    expect(simErrorMessage("  Error(WasmVm, InvalidAction)  ")).toBe("Error(WasmVm, InvalidAction)");
+    expect(simErrorMessage("  Error(WasmVm, InvalidAction)  ")).toBe(
+      "Error(WasmVm, InvalidAction)"
+    );
   });
 
   it("returns a fallback for empty or whitespace-only errors", () => {
@@ -53,15 +62,20 @@ describe("simulateView RPC timeout", () => {
     // The server mock resolves immediately so we don't need to wait for the
     // timeout — we only need to verify the deadline was registered.
     const server = {
-      simulateTransaction: vi.fn(async () => ({
-        id: "1",
-        events: [],
-        minResourceFee: "100",
-        results: [],
-        transactionData: new (await import("@stellar/stellar-sdk")).rpc.Server(
-          "https://soroban-testnet.stellar.org"
-        ),
-      } as unknown as Awaited<ReturnType<rpc.Server["simulateTransaction"]>>)),
+      simulateTransaction: vi.fn(
+        async () =>
+          ({
+            id: "1",
+            events: [],
+            minResourceFee: "100",
+            results: [],
+            transactionData: new (
+              await import("@stellar/stellar-sdk")
+            ).rpc.Server("https://soroban-testnet.stellar.org"),
+          }) as unknown as Awaited<
+            ReturnType<rpc.Server["simulateTransaction"]>
+          >
+      ),
     } as unknown as rpc.Server;
 
     try {
@@ -128,10 +142,15 @@ const TESTNET: StellarNetwork = {
   passphrase: "Test SDF Network ; September 2015",
 };
 
-const USDC_ISSUER_TESTNET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-const MUSDC_ISSUER_TESTNET = "GAZOB5KAE27U7QMGCJLA74TKGECONNND73GL2GIMYBXYNBVG4U5IHBX7";
+const USDC_ISSUER_TESTNET =
+  "GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56";
+const MUSDC_ISSUER_TESTNET =
+  "GAZOB5KAE27U7QMGCJLA74TKGECONNND73GL2GIMYBXYNBVG4U5IHBX7";
 
-function makeBalance(code: string, issuer: string): Horizon.HorizonApi.BalanceLine {
+function makeBalance(
+  code: string,
+  issuer: string
+): Horizon.HorizonApi.BalanceLine {
   return {
     asset_type: code.length <= 4 ? "credit_alphanum4" : "credit_alphanum12",
     asset_code: code,
@@ -159,7 +178,10 @@ describe("buildAddTrustlineTx", () => {
     } as unknown as Awaited<ReturnType<Horizon.Server["loadAccount"]>>);
 
     await expect(
-      buildAddTrustlineTx("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", TESTNET)
+      buildAddTrustlineTx(
+        "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        TESTNET
+      )
     ).rejects.toThrow("All required trustlines already exist");
   });
 });
@@ -167,7 +189,9 @@ describe("buildAddTrustlineTx", () => {
 describe("waitForTransaction", () => {
   it("resolves once the transaction reaches SUCCESS", async () => {
     const reader = fakeReader([NOT_FOUND, NOT_FOUND, SUCCESS]);
-    const res = await waitForTransaction(reader, "TXHASH", { sleep: noopSleep });
+    const res = await waitForTransaction(reader, "TXHASH", {
+      sleep: noopSleep,
+    });
     expect(res.status).toBe(SUCCESS);
     expect(res.ledger).toBe(42);
     expect(reader.calls).toBe(3);

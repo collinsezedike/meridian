@@ -18,7 +18,9 @@ import { txRoute } from "./routes/tx";
 // Security headers: X-Content-Type-Options and X-Frame-Options on every response.
 const app = Fastify({ logger: true, bodyLimit: 10 * 1024 });
 
-await app.register(cors, { origin: process.env.ALLOWED_ORIGIN ?? DEFAULT_ALLOWED_ORIGIN });
+await app.register(cors, {
+  origin: process.env.ALLOWED_ORIGIN ?? DEFAULT_ALLOWED_ORIGIN,
+});
 await app.register(rateLimit, { max: 100, timeWindow: "1 minute" });
 
 app.addHook("onSend", (_req, reply, _payload, done) => {

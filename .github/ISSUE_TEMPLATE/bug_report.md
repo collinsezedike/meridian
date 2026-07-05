@@ -3,7 +3,7 @@ name: Bug Report
 about: Report a bug in Meridian — include enough detail to reproduce it
 title: "[Bug] "
 labels: bug
-assignees: ''
+assignees: ""
 ---
 
 ## Description
@@ -26,14 +26,14 @@ assignees: ''
 
 ## Environment
 
-| Field | Value |
-|---|---|
-| Network | <!-- testnet / mainnet --> |
-| Wallet | <!-- Freighter / Albedo / other --> |
-| Protocol affected | <!-- Blend / DeFindex / API / Frontend / None --> |
-| Browser (if frontend) | <!-- e.g. Chrome 124, Firefox 126 --> |
-| Node.js version | <!-- `node -v` --> |
-| pnpm version | <!-- `pnpm -v` --> |
+| Field                 | Value                                             |
+| --------------------- | ------------------------------------------------- |
+| Network               | <!-- testnet / mainnet -->                        |
+| Wallet                | <!-- Freighter / Albedo / other -->               |
+| Protocol affected     | <!-- Blend / DeFindex / API / Frontend / None --> |
+| Browser (if frontend) | <!-- e.g. Chrome 124, Firefox 126 -->             |
+| Node.js version       | <!-- `node -v` -->                                |
+| pnpm version          | <!-- `pnpm -v` -->                                |
 
 ## Transaction Details (if on-chain)
 

@@ -9,7 +9,10 @@ describe("useToastStore", () => {
     useToastStore.getState().push("success", "Wallet connected");
     const { toasts } = useToastStore.getState();
     expect(toasts).toHaveLength(1);
-    expect(toasts[0]).toMatchObject({ kind: "success", message: "Wallet connected" });
+    expect(toasts[0]).toMatchObject({
+      kind: "success",
+      message: "Wallet connected",
+    });
     expect(typeof toasts[0].id).toBe("string");
   });
 

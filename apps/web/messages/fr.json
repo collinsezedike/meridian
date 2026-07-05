@@ -42,8 +42,7 @@
 
   "common": {
     "connectWallet": "Connecter le portefeuille",
-    "connecting":"Connexion...",
+    "connecting": "Connexion...",
     "installFreighter": "Installer Freighter"
   }
-
 }

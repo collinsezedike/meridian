@@ -67,7 +67,12 @@ export function buildBlendDepositTx(
   depositor: string,
   amount: bigint
 ): Promise<{ xdr: string; fee: string }> {
-  return buildPoolRequestTx(config, depositor, RequestType.SupplyCollateral, amount);
+  return buildPoolRequestTx(
+    config,
+    depositor,
+    RequestType.SupplyCollateral,
+    amount
+  );
 }
 
 /**
@@ -80,7 +85,12 @@ export function buildBlendWithdrawTx(
   withdrawer: string,
   amount: bigint
 ): Promise<{ xdr: string; fee: string }> {
-  return buildPoolRequestTx(config, withdrawer, RequestType.WithdrawCollateral, amount);
+  return buildPoolRequestTx(
+    config,
+    withdrawer,
+    RequestType.WithdrawCollateral,
+    amount
+  );
 }
 
 export interface BlendReserveRef {
@@ -108,9 +118,16 @@ export async function fetchBlendPositions(
   reserves: BlendReserveRef[]
 ): Promise<PositionInfo[]> {
   const pool = await withRetry(() =>
-    withBlendTimeout(() => PoolV2.load({ rpc: network.rpcUrl, passphrase: network.passphrase }, poolId))
+    withBlendTimeout(() =>
+      PoolV2.load(
+        { rpc: network.rpcUrl, passphrase: network.passphrase },
+        poolId
+      )
+    )
   );
-  const user = await withRetry(() => withBlendTimeout(() => pool.loadUser(publicKey)));
+  const user = await withRetry(() =>
+    withBlendTimeout(() => pool.loadUser(publicKey))
+  );
 
   const positions: PositionInfo[] = [];
   for (const { assetId, vaultId } of reserves) {
@@ -119,7 +136,13 @@ export async function fetchBlendPositions(
     const collateral = user.getCollateralFloat(reserve);
     const total = collateral + user.getSupplyFloat(reserve);
     if (total <= 0) continue;
-    positions.push({ vaultId, shares: collateral, deposited: total, earned: 0, entryTime: 0 });
+    positions.push({
+      vaultId,
+      shares: collateral,
+      deposited: total,
+      earned: 0,
+      entryTime: 0,
+    });
   }
   return positions;
 }
