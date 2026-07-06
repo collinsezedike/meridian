@@ -25,7 +25,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       vaultId,
       walletAddress,
       shares,
-      buildTxAddresses(process.env.DEFINDEX_VAULT_ID),
+      buildTxAddresses(),
       APP_NETWORK
     );
     return res.json(result);

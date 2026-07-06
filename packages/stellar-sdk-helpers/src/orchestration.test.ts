@@ -23,6 +23,35 @@ const DFX_USDC: PositionInfo = {
   entryTime: 0,
 };
 
+vi.mock("./known-pools", () => ({
+  KNOWN_POOLS: {
+    testnet: {
+      "blend-testnet-usdc": {
+        id: "blend-usdc-fixed",
+        protocol: "blend",
+        contractId: "CPOOL",
+        assetId: "CUSDC",
+        asset: "USDC",
+      },
+      "blend-testnet-eurc": {
+        id: "blend-eurc-fixed",
+        protocol: "blend",
+        contractId: "CPOOL",
+        assetId: "CEURC",
+        asset: "EURC",
+      },
+      "defindex-usdc": {
+        id: "defindex-usdc",
+        protocol: "defindex",
+        contractId: "CDFX",
+        assetId: "CUSDC",
+        asset: "USDC",
+      },
+    },
+    mainnet: {},
+  },
+}));
+
 vi.mock("./blend", () => ({
   blendAssetForVault: vi.fn((vaultId: string) =>
     vaultId.includes("-eurc") ? "eurc" : "usdc"
@@ -68,11 +97,8 @@ const network: StellarNetwork = {
 };
 
 const addresses: ProtocolAddresses = {
-  blendPool: "CPOOL",
   usdc: "CUSDC",
   eurc: "CEURC",
-  defindexVault: "CDFX",
-  defindexVaultId: "defindex-usdc",
 };
 
 const WALLET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
@@ -123,17 +149,16 @@ describe("buildDepositTx", () => {
     expect(buildBlendDepositTx).not.toHaveBeenCalled();
   });
 
-  it("throws when defindexVault address is empty and vault is defindex", async () => {
-    const noVault = { ...addresses, defindexVault: "" };
+  it("throws for a vault not in KNOWN_POOLS", async () => {
     await expect(
-      buildDepositTx("defindex-usdc", WALLET, "10", noVault, network)
-    ).rejects.toThrow(/DeFindex vault not configured/);
+      buildDepositTx("defindex-eurc", WALLET, "10", addresses, network)
+    ).rejects.toThrow(/Vault not configured/);
   });
 
   it("throws for an unrecognised vault protocol", async () => {
     await expect(
       buildDepositTx("ondo-usdy", WALLET, "10", addresses, network)
-    ).rejects.toThrow(/No protocol mapping/);
+    ).rejects.toThrow();
   });
 });
 
@@ -170,30 +195,30 @@ describe("buildWithdrawTx", () => {
     );
   });
 
-  it("throws when defindexVault address is empty and vault is defindex", async () => {
-    const noVault = { ...addresses, defindexVault: "" };
+  it("throws for a vault not in KNOWN_POOLS", async () => {
     await expect(
-      buildWithdrawTx("defindex-usdc", WALLET, "5", noVault, network)
-    ).rejects.toThrow(/DeFindex vault not configured/);
+      buildWithdrawTx("defindex-eurc", WALLET, "5", addresses, network)
+    ).rejects.toThrow(/Vault not configured/);
   });
 
   it("throws for an unrecognised vault protocol", async () => {
     await expect(
       buildWithdrawTx("ondo-usdy", WALLET, "5", addresses, network)
-    ).rejects.toThrow(/No protocol mapping/);
+    ).rejects.toThrow();
   });
 });
 
 describe("resolvePositions", () => {
-  it("calls fetchBlendPositions with the correct reserves and returns its result", async () => {
+  it("calls fetchBlendPositions with the pool contract and reserves from KNOWN_POOLS", async () => {
     const positions = await resolvePositions(WALLET, network, addresses);
     expect(fetchBlendPositions).toHaveBeenCalledWith(network, "CPOOL", WALLET, [
       { assetId: "CUSDC", vaultId: "blend-usdc-fixed" },
+      { assetId: "CEURC", vaultId: "blend-eurc-fixed" },
     ]);
     expect(positions).toContainEqual(BLEND_USDC);
   });
 
-  it("appends DeFindex positions when defindexVault is set", async () => {
+  it("fetches DeFindex positions for every DeFindex vault in KNOWN_POOLS", async () => {
     const positions = await resolvePositions(WALLET, network, addresses);
     expect(fetchDefindexPosition).toHaveBeenCalledWith(
       network,
@@ -202,13 +227,6 @@ describe("resolvePositions", () => {
       WALLET
     );
     expect(positions).toContainEqual(DFX_USDC);
-  });
-
-  it("skips DeFindex fetch when defindexVault is empty", async () => {
-    const noVault = { ...addresses, defindexVault: "" };
-    const positions = await resolvePositions(WALLET, network, noVault);
-    expect(fetchDefindexPosition).not.toHaveBeenCalled();
-    expect(positions).toEqual([BLEND_USDC]);
   });
 
   it("returns Blend positions when DeFindex fetch fails", async () => {
@@ -227,7 +245,7 @@ describe("resolvePositions", () => {
     expect(positions).toEqual([DFX_USDC]);
   });
 
-  it("returns empty array when both fetches fail", async () => {
+  it("returns empty array when all fetches fail", async () => {
     vi.mocked(fetchBlendPositions).mockRejectedValueOnce(
       new Error("Blend down")
     );

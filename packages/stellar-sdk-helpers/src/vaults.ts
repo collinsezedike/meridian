@@ -47,9 +47,11 @@ async function fetchTestnetVaults(): Promise<ApiVault[]> {
     passphrase: APP_NETWORK.passphrase,
   };
   const vaults: ApiVault[] = [];
-  for (const meta of Object.values(KNOWN_POOLS.testnet)) {
+  for (const meta of Object.values(KNOWN_POOLS.testnet).filter(
+    (p) => p.protocol === "blend"
+  )) {
     const pool = await withRaceTimeout(
-      () => PoolV2.load(blendNetwork, meta.poolId),
+      () => PoolV2.load(blendNetwork, meta.contractId),
       10_000,
       "Blend RPC"
     );

@@ -31,7 +31,7 @@ export const txRoute: FastifyPluginAsync = async (app) => {
           vaultId,
           walletAddress,
           amount,
-          buildTxAddresses(process.env.DEFINDEX_VAULT_ID),
+          buildTxAddresses(),
           APP_NETWORK
         );
         reply.send(result);
@@ -58,7 +58,7 @@ export const txRoute: FastifyPluginAsync = async (app) => {
           vaultId,
           walletAddress,
           shares,
-          buildTxAddresses(process.env.DEFINDEX_VAULT_ID),
+          buildTxAddresses(),
           APP_NETWORK
         );
         reply.send(result);

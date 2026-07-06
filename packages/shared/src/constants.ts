@@ -77,14 +77,11 @@ export function isDefindexConfigured(): boolean {
   return Boolean(process.env.DEFINDEX_VAULT_ID ?? APP_ADDRESSES.defindex.vault);
 }
 
-/** Build the ProtocolAddresses object consumed by stellar-sdk-helpers, allowing
- *  the DeFindex vault contract address to be overridden at runtime via DEFINDEX_VAULT_ID. */
-export function buildTxAddresses(defindexOverride?: string) {
+/** Build the asset SAC addresses consumed by stellar-sdk-helpers. Protocol
+ *  contract addresses are resolved from KNOWN_POOLS inside the SDK by vault ID. */
+export function buildTxAddresses() {
   return {
-    blendPool: APP_ADDRESSES.blend.pool,
     usdc: APP_ADDRESSES.usdc,
     eurc: APP_ADDRESSES.eurc,
-    defindexVault: defindexOverride ?? APP_ADDRESSES.defindex.vault,
-    defindexVaultId: "defindex-usdc",
   };
 }

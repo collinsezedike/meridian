@@ -20,7 +20,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const positions = await resolvePositions(
       publicKey,
       APP_NETWORK,
-      buildTxAddresses(process.env.DEFINDEX_VAULT_ID)
+      buildTxAddresses()
     );
     res.json({ positions });
   } catch (err) {

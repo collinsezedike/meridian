@@ -18,7 +18,7 @@ export const positionsRoute: FastifyPluginAsync = async (app) => {
       const positions = await resolvePositions(
         publicKey,
         APP_NETWORK,
-        buildTxAddresses(process.env.DEFINDEX_VAULT_ID)
+        buildTxAddresses()
       );
       reply.send({ positions });
     } catch (err) {

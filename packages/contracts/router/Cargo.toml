@@ -1,5 +1,5 @@
 [package]
-name = "meridian-vault"
+name = "meridian-router"
 version = "0.1.0"
 edition = "2021"
 
@@ -11,6 +11,7 @@ soroban-sdk = { version = "22.0.0", features = ["alloc"] }
 
 [dev-dependencies]
 soroban-sdk = { version = "22.0.0", features = ["testutils", "alloc"] }
+meridian-vault = { path = "../vault", features = ["testutils"] }
 
 [features]
 testutils = ["soroban-sdk/testutils"]

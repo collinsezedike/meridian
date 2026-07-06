@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["vault"]
+members = ["vault", "router"]
 
 [profile.release]
 opt-level = "z"

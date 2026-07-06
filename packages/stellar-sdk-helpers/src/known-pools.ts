@@ -3,10 +3,13 @@ export interface KnownPoolMeta {
   name: string;
   protocol: "blend" | "defindex";
   label: string;
+  // The main protocol contract for this vault: lending pool address for Blend,
+  // vault contract address for DeFindex. Optional on mainnet until deployed.
+  contractId?: string;
 }
 
 export interface TestnetPoolMeta extends KnownPoolMeta {
-  poolId: string;
+  contractId: string;
   assetId: string;
   asset: string;
 }
@@ -52,7 +55,17 @@ export const KNOWN_POOLS: {
       name: "Blend Capital",
       protocol: "blend",
       label: "TestnetV2",
-      poolId: "CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF",
+      contractId: "CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF",
+      assetId: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
+      asset: "USDC",
+    },
+    // Paltalabs single-asset USDC vault on DeFindex testnet.
+    "defindex-usdc": {
+      id: "defindex-usdc",
+      name: "DeFindex",
+      protocol: "defindex",
+      label: "USDC Vault",
+      contractId: "CBMVK2JK6NTOT2O4HNQAIQFJY232BHKGLIMXDVQVHIIZKDACXDFZDWHN",
       assetId: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
       asset: "USDC",
     },
