@@ -3,15 +3,8 @@
   "compilerOptions": {
     "lib": ["ES2020"],
     "ignoreDeprecations": "6.0",
-    "baseUrl": ".",
-    "rootDir": "../..",
-    "outDir": "dist",
-    "paths": {
-      "@meridian/shared": ["../../packages/shared/src"],
-      "@meridian/stellar-sdk-helpers": [
-        "../../packages/stellar-sdk-helpers/src"
-      ]
-    }
+    "rootDir": "src",
+    "outDir": "dist"
   },
   "include": ["src"]
 }

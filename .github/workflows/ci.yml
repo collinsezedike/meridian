@@ -24,6 +24,10 @@ jobs:
       # The Vercel serverless functions in api/ live outside the pnpm workspace,
       # so turbo doesn't cover them — typecheck them explicitly.
       - run: pnpm typecheck:api
+      - name: Verify apps/api build output is flat
+        run: |
+          pnpm --filter @meridian/api build
+          test -f apps/api/dist/index.js
 
   test:
     name: Test
