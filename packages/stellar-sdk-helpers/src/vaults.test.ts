@@ -104,40 +104,50 @@ describe("fetchAllVaults", () => {
   });
 });
 
-describe("fetchAllVaults (testnet)", () => {
-  // USDC SAC for Blend TestnetV2 (from KNOWN_POOLS.testnet["blend-testnet-usdc"].assetId).
-  const TESTNET_USDC_SAC =
-    "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU";
+vi.mock("./tx", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./tx")>();
+  return { ...actual, simulateView: vi.fn() };
+});
 
-  beforeEach(() => clearVaultCache());
+vi.mock("./internal", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./internal")>();
+  return {
+    ...actual,
+    getRpcServer: vi.fn(() => ({})),
+    toBigInt: vi.fn((v: unknown) => v as bigint),
+  };
+});
+
+import { simulateView } from "./tx";
+import { toBigInt } from "./internal";
+
+describe("fetchAllVaults (testnet)", () => {
+  beforeEach(() => {
+    clearVaultCache();
+    vi.clearAllMocks();
+  });
   afterEach(() => {
     vi.restoreAllMocks();
     clearVaultCache();
   });
 
-  it("returns testnet vault with TVL and APY derived from on-chain reserve", async () => {
-    // 1 000 USDC = 10_000_000_000 stroops (7 decimal places). 5% APY = 0.05.
-    vi.spyOn(PoolV2, "load").mockResolvedValue({
-      reserves: new Map([
-        [
-          TESTNET_USDC_SAC,
-          { totalSupply: () => 10_000_000_000n, estSupplyApy: 0.05 },
-        ],
-      ]),
-    } as unknown as Awaited<ReturnType<typeof PoolV2.load>>);
+  it("returns meridian vault with TVL derived from get_total_assets", async () => {
+    // 1 000 USDC = 10_000_000_000 stroops (7 decimal places).
+    vi.mocked(simulateView).mockResolvedValue(10_000_000_000n as never);
+    vi.mocked(toBigInt).mockReturnValue(10_000_000_000n);
 
     const vaults = await fetchAllVaults("testnet");
     expect(vaults).toHaveLength(1);
-    expect(vaults[0].id).toBe("blend-usdc-fixed");
+    expect(vaults[0].id).toBe("meridian-usdc");
+    expect(vaults[0].protocol).toBe("meridian");
     expect(vaults[0].tvl).toBe(1000);
-    expect(vaults[0].apy).toBe(5);
+    expect(vaults[0].apy).toBe(0);
     expect(vaults[0].riskLevel).toBe("safe");
   });
 
-  it("returns zero TVL and zero APY when the reserve is absent from the pool", async () => {
-    vi.spyOn(PoolV2, "load").mockResolvedValue({
-      reserves: new Map(),
-    } as unknown as Awaited<ReturnType<typeof PoolV2.load>>);
+  it("returns zero TVL when get_total_assets returns zero", async () => {
+    vi.mocked(simulateView).mockResolvedValue(0n as never);
+    vi.mocked(toBigInt).mockReturnValue(0n);
 
     const vaults = await fetchAllVaults("testnet");
     expect(vaults[0].tvl).toBe(0);
@@ -145,15 +155,12 @@ describe("fetchAllVaults (testnet)", () => {
   });
 
   it("does not cache testnet results between calls", async () => {
-    const loadSpy = vi.spyOn(PoolV2, "load").mockResolvedValue({
-      reserves: new Map([
-        [TESTNET_USDC_SAC, { totalSupply: () => 0n, estSupplyApy: 0 }],
-      ]),
-    } as unknown as Awaited<ReturnType<typeof PoolV2.load>>);
+    vi.mocked(simulateView).mockResolvedValue(0n as never);
+    vi.mocked(toBigInt).mockReturnValue(0n);
 
     await fetchAllVaults("testnet");
     await fetchAllVaults("testnet");
 
-    expect(loadSpy).toHaveBeenCalledTimes(2);
+    expect(simulateView).toHaveBeenCalledTimes(2);
   });
 });

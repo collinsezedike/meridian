@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 const PROTOCOL_LABEL: Record<string, string> = {
   blend: "Blend Capital",
   defindex: "DeFindex",
+  meridian: "Meridian",
 };
 
 function formatUsd(value: number, locale: string) {

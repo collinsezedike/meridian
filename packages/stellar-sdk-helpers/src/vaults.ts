@@ -6,10 +6,12 @@ import {
 } from "./defilamma";
 import { KNOWN_POOLS } from "./known-pools";
 import { APP_NETWORK, withRaceTimeout } from "@meridian/shared";
+import { simulateView } from "./tx";
+import { getRpcServer, toBigInt } from "./internal";
 
 export interface ApiVault {
   id: string;
-  protocol: "blend" | "defindex";
+  protocol: "blend" | "defindex" | "meridian";
   asset: string;
   name: string;
   label: string;
@@ -37,31 +39,45 @@ export function isVaultCacheWarm(): boolean {
 
 /**
  * Query each pool in KNOWN_POOLS.testnet on-chain and return its TVL and APY.
- * Both are derived from the Blend SDK's reserve state loaded via PoolV2.load —
- * no external oracle needed. Adding a new testnet pool only requires a new
- * entry in KNOWN_POOLS.testnet.
+ * Blend pools use PoolV2.load; Meridian coordinator vaults read get_total_assets
+ * directly. Adding a new testnet pool only requires a new entry in KNOWN_POOLS.testnet.
  */
 async function fetchTestnetVaults(): Promise<ApiVault[]> {
-  const blendNetwork = {
+  const network = {
     rpc: APP_NETWORK.rpcUrl,
     passphrase: APP_NETWORK.passphrase,
   };
   const vaults: ApiVault[] = [];
-  for (const meta of Object.values(KNOWN_POOLS.testnet).filter(
-    (p) => p.protocol === "blend"
-  )) {
-    const pool = await withRaceTimeout(
-      () => PoolV2.load(blendNetwork, meta.contractId),
-      10_000,
-      "Blend RPC"
-    );
-    const reserve = pool.reserves.get(meta.assetId);
-    // totalSupply() is in stroops (7 decimal places).
-    const tvl = reserve ? Math.round(Number(reserve.totalSupply()) / 1e7) : 0;
-    // estSupplyApy is a decimal (e.g. 0.05 = 5%); convert to percentage points.
-    const apy = reserve ? Number((reserve.estSupplyApy * 100).toFixed(2)) : 0;
-    vaults.push({ ...meta, apy, tvl, userBalance: 0, riskLevel: "safe" });
+
+  for (const meta of Object.values(KNOWN_POOLS.testnet)) {
+    if (meta.protocol === "blend") {
+      const pool = await withRaceTimeout(
+        () => PoolV2.load(network, meta.contractId),
+        10_000,
+        "Blend RPC"
+      );
+      const reserve = pool.reserves.get(meta.assetId);
+      const tvl = reserve ? Math.round(Number(reserve.totalSupply()) / 1e7) : 0;
+      const apy = reserve ? Number((reserve.estSupplyApy * 100).toFixed(2)) : 0;
+      vaults.push({ ...meta, apy, tvl, userBalance: 0, riskLevel: "safe" });
+    } else if (meta.protocol === "meridian") {
+      const server = getRpcServer(network.rpc, 10_000);
+      const raw = await withRaceTimeout(
+        () =>
+          simulateView(
+            server,
+            meta.contractId,
+            network.passphrase,
+            "get_total_assets"
+          ),
+        10_000,
+        "Meridian RPC"
+      );
+      const tvl = Math.round(Number(toBigInt(raw)) / 1e7);
+      vaults.push({ ...meta, apy: 0, tvl, userBalance: 0, riskLevel: "safe" });
+    }
   }
+
   return vaults;
 }
 

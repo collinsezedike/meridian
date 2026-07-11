@@ -820,6 +820,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "meridian-blend-adapter"
+version = "0.1.0"
+dependencies = [
+ "meridian-vault",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "meridian-defindex-adapter"
+version = "0.1.0"
+dependencies = [
+ "meridian-vault",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "meridian-router"
+version = "0.1.0"
+dependencies = [
+ "meridian-vault",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "meridian-vault"
 version = "0.1.0"
 dependencies = [
