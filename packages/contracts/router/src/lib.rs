@@ -1,16 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractclient, contractimpl, contracttype, Address, Env};
-
-/// Mirrors `meridian_vault::Protocol`. Both types carry `#[contracttype]` with
-/// identical variant names, so their XDR encoding is the same and values pass
-/// safely across the cross-contract boundary.
-#[contracttype]
-#[derive(Clone)]
-pub enum Protocol {
-    Blend,
-    DeFindex,
-}
+use soroban_sdk::{contract, contractclient, contractimpl, Address, Env};
 
 /// Minimal vault interface used by the router. The generated `VaultClient`
 /// serialises arguments to XDR and calls the target address; no vault code is
@@ -18,7 +8,7 @@ pub enum Protocol {
 #[contractclient(name = "VaultClient")]
 pub trait VaultInterface {
     fn withdraw(env: Env, caller: Address, shares: i128) -> i128;
-    fn deposit(env: Env, caller: Address, amount: i128, route_to: Protocol) -> i128;
+    fn deposit(env: Env, caller: Address, amount: i128) -> i128;
 }
 
 #[contract]
@@ -42,7 +32,6 @@ impl MeridianRouter {
         to_vault: Address,
         shares: i128,
         min_out: i128,
-        route_to: Protocol,
     ) -> i128 {
         depositor.require_auth();
 
@@ -55,19 +44,78 @@ impl MeridianRouter {
             panic!("slippage: received less than minimum");
         }
 
-        to.deposit(&depositor, &usdc_received, &route_to)
+        to.deposit(&depositor, &usdc_received)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use meridian_vault::{MeridianVault, MeridianVaultClient, Protocol as VaultProtocol};
+    use meridian_vault::{MeridianVault, MeridianVaultClient};
     use soroban_sdk::{
+        contract, contractimpl, symbol_short,
         testutils::Address as _,
-        token::StellarAssetClient,
-        Address, Env,
+        token::{StellarAssetClient, TokenClient},
+        Address, Env, Symbol,
     };
+
+    // Simple pass-through adapter for router tests (no yield, 1:1 USDC-to-shares).
+    const TA_USDC: Symbol = symbol_short!("TA_USDC");
+    const TA_SH: Symbol = symbol_short!("TA_SH");
+
+    #[contract]
+    struct TestAdapter;
+
+    #[contractimpl]
+    impl TestAdapter {
+        pub fn initialize(env: Env, usdc: Address) {
+            env.storage().instance().set(&TA_USDC, &usdc);
+            env.storage().instance().set(&TA_SH, &0_i128);
+        }
+
+        pub fn deposit(env: Env, amount: i128) -> i128 {
+            let prev: i128 = env.storage().instance().get(&TA_SH).unwrap_or(0);
+            env.storage().instance().set(&TA_SH, &(prev + amount));
+            amount
+        }
+
+        pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
+            let usdc: Address = env.storage().instance().get(&TA_USDC).unwrap();
+            TokenClient::new(&env, &usdc).transfer(
+                &env.current_contract_address(),
+                &recipient,
+                &shares,
+            );
+            let prev: i128 = env.storage().instance().get(&TA_SH).unwrap_or(0);
+            env.storage().instance().set(&TA_SH, &(prev - shares));
+            shares
+        }
+
+        pub fn total_assets(env: Env) -> i128 {
+            let usdc: Address = env.storage().instance().get(&TA_USDC).unwrap();
+            TokenClient::new(&env, &usdc).balance(&env.current_contract_address())
+        }
+    }
+
+    fn make_vault(
+        env: &Env,
+        admin: &Address,
+        usdc_id: &Address,
+    ) -> (Address, MeridianVaultClient<'static>) {
+        let musdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        let adapter_id = env.register(TestAdapter, ());
+        TestAdapterClient::new(env, &adapter_id).initialize(usdc_id);
+
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(env, &vault_id);
+        vault.initialize(admin, usdc_id, &musdc_id, &adapter_id);
+        StellarAssetClient::new(env, &musdc_id).set_admin(&vault_id);
+
+        (vault_id, vault)
+    }
 
     #[test]
     fn rebalance_moves_funds_between_vaults() {
@@ -77,36 +125,22 @@ mod tests {
         let admin = Address::generate(&env);
         let user = Address::generate(&env);
 
-        let usdc_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
         StellarAssetClient::new(&env, &usdc_id).mint(&user, &10_000_000_000_i128);
 
-        let musdc_a_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
-        let vault_a_id = env.register(MeridianVault, ());
-        let vault_a = MeridianVaultClient::new(&env, &vault_a_id);
-        vault_a.initialize(&admin, &usdc_id, &musdc_a_id);
-        StellarAssetClient::new(&env, &musdc_a_id).set_admin(&vault_a_id);
-
-        let musdc_b_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
-        let vault_b_id = env.register(MeridianVault, ());
-        let vault_b = MeridianVaultClient::new(&env, &vault_b_id);
-        vault_b.initialize(&admin, &usdc_id, &musdc_b_id);
-        StellarAssetClient::new(&env, &musdc_b_id).set_admin(&vault_b_id);
+        let (vault_a_id, vault_a) = make_vault(&env, &admin, &usdc_id);
+        let (vault_b_id, vault_b) = make_vault(&env, &admin, &usdc_id);
 
         let router_id = env.register(MeridianRouter, ());
         let router = MeridianRouterClient::new(&env, &router_id);
 
         let amount = 100_0000000_i128;
-        vault_a.deposit(&user, &amount, &VaultProtocol::Blend);
+        vault_a.deposit(&user, &amount);
         let shares = vault_a.get_position(&user);
 
-        let new_shares = router.rebalance(
-            &user,
-            &vault_a_id,
-            &vault_b_id,
-            &shares,
-            &1_i128,
-            &Protocol::Blend,
-        );
+        let new_shares = router.rebalance(&user, &vault_a_id, &vault_b_id, &shares, &1_i128);
 
         assert!(new_shares > 0);
         assert_eq!(vault_a.get_position(&user), 0);
@@ -122,34 +156,21 @@ mod tests {
         let admin = Address::generate(&env);
         let user = Address::generate(&env);
 
-        let usdc_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
         StellarAssetClient::new(&env, &usdc_id).mint(&user, &10_000_000_000_i128);
 
-        let musdc_a_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
-        let vault_a_id = env.register(MeridianVault, ());
-        let vault_a = MeridianVaultClient::new(&env, &vault_a_id);
-        vault_a.initialize(&admin, &usdc_id, &musdc_a_id);
-        StellarAssetClient::new(&env, &musdc_a_id).set_admin(&vault_a_id);
-
-        let musdc_b_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
-        let vault_b_id = env.register(MeridianVault, ());
-        MeridianVaultClient::new(&env, &vault_b_id).initialize(&admin, &usdc_id, &musdc_b_id);
-        StellarAssetClient::new(&env, &musdc_b_id).set_admin(&vault_b_id);
+        let (vault_a_id, vault_a) = make_vault(&env, &admin, &usdc_id);
+        let (vault_b_id, _vault_b) = make_vault(&env, &admin, &usdc_id);
 
         let router_id = env.register(MeridianRouter, ());
         let router = MeridianRouterClient::new(&env, &router_id);
 
         let amount = 100_0000000_i128;
-        vault_a.deposit(&user, &amount, &VaultProtocol::Blend);
+        vault_a.deposit(&user, &amount);
         let shares = vault_a.get_position(&user);
 
-        router.rebalance(
-            &user,
-            &vault_a_id,
-            &vault_b_id,
-            &shares,
-            &(amount * 2),
-            &Protocol::Blend,
-        );
+        router.rebalance(&user, &vault_a_id, &vault_b_id, &shares, &(amount * 2));
     }
 }

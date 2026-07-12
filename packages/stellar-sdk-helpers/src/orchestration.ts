@@ -1,15 +1,9 @@
+import { toStroops } from "./tx";
 import {
-  buildBlendDepositTx,
-  buildBlendWithdrawTx,
-  blendAssetForVault,
-  fetchBlendPositions,
-} from "./blend";
-import {
-  buildDefindexDepositTx,
-  buildDefindexWithdrawTx,
-  fetchDefindexPosition,
-} from "./defindex";
-import { toStroops, resolveProtocol } from "./tx";
+  buildCoordinatorDepositTx,
+  buildCoordinatorWithdrawTx,
+  fetchCoordinatorPosition,
+} from "./coordinator";
 import type { StellarNetwork } from "./types";
 import type { PositionInfo } from "./positions";
 import { KNOWN_POOLS } from "./known-pools";
@@ -36,105 +30,70 @@ function resolveVaultEntry(vaultId: string, network: StellarNetwork) {
 }
 
 /**
- * Build an unsigned deposit transaction for the vault identified by `vaultId`.
- * Routes to the correct protocol by looking up the vault in KNOWN_POOLS. Throws
- * if the vault is unregistered, its contract is unconfigured, or its protocol
- * prefix is unrecognised.
+ * Build an unsigned deposit transaction for the coordinator vault identified
+ * by `vaultId`. All deposits route through the coordinator regardless of the
+ * underlying protocol; the active adapter handles protocol-specific logic.
  */
 export async function buildDepositTx(
   vaultId: string,
   walletAddress: string,
   amount: string,
-  addresses: ProtocolAddresses,
+  _addresses: ProtocolAddresses,
   network: StellarNetwork
 ): Promise<{ xdr: string; fee: string }> {
   const entry = resolveVaultEntry(vaultId, network);
-  if (resolveProtocol(vaultId) === "Blend") {
-    const assetKey = blendAssetForVault(vaultId);
-    return buildBlendDepositTx(
-      { poolId: entry.contractId, assetId: addresses[assetKey], network },
-      walletAddress,
-      toStroops(amount)
-    );
-  }
-  return buildDefindexDepositTx(
-    { vaultId: entry.contractId, network },
+  return buildCoordinatorDepositTx(
+    { contractId: entry.contractId, network },
     walletAddress,
     toStroops(amount)
   );
 }
 
 /**
- * Build an unsigned withdrawal transaction for the vault identified by `vaultId`.
- * `shares` is the protocol share count to burn: bToken collateral for Blend,
- * dfToken count for DeFindex. Routes and throws on the same conditions as
- * `buildDepositTx`.
+ * Build an unsigned withdrawal transaction for the coordinator vault identified
+ * by `vaultId`. `shares` is the mUSDC share count to burn.
  */
 export async function buildWithdrawTx(
   vaultId: string,
   walletAddress: string,
   shares: string,
-  addresses: ProtocolAddresses,
+  _addresses: ProtocolAddresses,
   network: StellarNetwork
 ): Promise<{ xdr: string; fee: string }> {
   const entry = resolveVaultEntry(vaultId, network);
-  if (resolveProtocol(vaultId) === "Blend") {
-    const assetKey = blendAssetForVault(vaultId);
-    return buildBlendWithdrawTx(
-      { poolId: entry.contractId, assetId: addresses[assetKey], network },
-      walletAddress,
-      toStroops(shares)
-    );
-  }
-  return buildDefindexWithdrawTx(
-    { vaultId: entry.contractId, network },
+  return buildCoordinatorWithdrawTx(
+    { contractId: entry.contractId, network },
     walletAddress,
     toStroops(shares)
   );
 }
 
 /**
- * Fetches all positions for `publicKey` across every registered vault on the
- * given network. Blend vaults that share a pool contract are batched into one
- * RPC call; each DeFindex vault is fetched independently. Failures from any
- * single source are logged and suppressed so partial results are always returned.
+ * Fetches all positions for `publicKey` across every registered coordinator
+ * vault on the given network. Failures from any single vault are logged and
+ * suppressed so partial results are always returned.
  */
 export async function resolvePositions(
   publicKey: string,
   network: StellarNetwork,
-  addresses: ProtocolAddresses
+  _addresses: ProtocolAddresses
 ): Promise<PositionInfo[]> {
   const pools = Object.values(
     network.network === "testnet" ? KNOWN_POOLS.testnet : KNOWN_POOLS.mainnet
-  );
-
-  // Group Blend reserves by pool contract so vaults sharing a pool get one fetch.
-  const blendGroups = new Map<
-    string,
-    Array<{ assetId: string; vaultId: string }>
-  >();
-  for (const pool of pools) {
-    if (pool.protocol !== "blend" || !pool.contractId) continue;
-    const assetKey = blendAssetForVault(pool.id);
-    if (!blendGroups.has(pool.contractId)) blendGroups.set(pool.contractId, []);
-    blendGroups
-      .get(pool.contractId)!
-      .push({ assetId: addresses[assetKey], vaultId: pool.id });
-  }
-
-  const dfxPools = pools.filter(
+  ).filter(
     (p): p is typeof p & { contractId: string } =>
-      p.protocol === "defindex" && Boolean(p.contractId)
+      p.protocol === "meridian" && Boolean(p.contractId)
   );
 
-  const results = await Promise.allSettled([
-    ...[...blendGroups.entries()].map(([poolId, reserves]) =>
-      fetchBlendPositions(network, poolId, publicKey, reserves)
-    ),
-    ...dfxPools.map((p) =>
-      fetchDefindexPosition(network, p.contractId, p.id, publicKey)
-    ),
-  ]);
+  const results = await Promise.allSettled(
+    pools.map((p) =>
+      fetchCoordinatorPosition(
+        { contractId: p.contractId, network },
+        p.id,
+        publicKey
+      )
+    )
+  );
 
   const positions: PositionInfo[] = [];
   for (const result of results) {

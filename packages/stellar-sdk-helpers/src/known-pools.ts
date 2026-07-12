@@ -1,10 +1,11 @@
 export interface KnownPoolMeta {
   id: string;
   name: string;
-  protocol: "blend" | "defindex";
+  protocol: "blend" | "defindex" | "meridian";
   label: string;
   // The main protocol contract for this vault: lending pool address for Blend,
-  // vault contract address for DeFindex. Optional on mainnet until deployed.
+  // vault contract address for DeFindex, coordinator vault address for Meridian.
+  // Optional on mainnet until deployed.
   contractId?: string;
 }
 
@@ -48,24 +49,15 @@ export const KNOWN_POOLS: {
     },
   },
   testnet: {
-    // Blend TestnetV2: only active lending pool on Stellar testnet. USDC reserve
-    // only; no EURC pool exists on Blend testnet. APY/TVL fetched on-chain.
-    "blend-testnet-usdc": {
-      id: "blend-usdc-fixed",
-      name: "Blend Capital",
-      protocol: "blend",
-      label: "TestnetV2",
-      contractId: "CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF",
-      assetId: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
-      asset: "USDC",
-    },
-    // Paltalabs single-asset USDC vault on DeFindex testnet.
-    "defindex-usdc": {
-      id: "defindex-usdc",
-      name: "DeFindex",
-      protocol: "defindex",
+    // Meridian coordinator vault: protocol-agnostic entry point. The vault
+    // routes to its active adapter (Blend or DeFindex) transparently.
+    // contractId is updated after each redeployment.
+    "meridian-usdc": {
+      id: "meridian-usdc",
+      name: "Meridian",
+      protocol: "meridian",
       label: "USDC Vault",
-      contractId: "CBMVK2JK6NTOT2O4HNQAIQFJY232BHKGLIMXDVQVHIIZKDACXDFZDWHN",
+      contractId: "CBK5RI4BCA7TLSD2S5Q5TH2LUQAT55GF34OBTWPFUKWZ5O6YXSQDAWOJ",
       assetId: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
       asset: "USDC",
     },

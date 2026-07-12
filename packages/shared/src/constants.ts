@@ -3,7 +3,7 @@ export const DEFAULT_ALLOWED_ORIGIN = "https://usemeridian.vercel.app";
 export const SUPPORTED_STABLECOINS = ["USDC", "EURC"] as const;
 export type SupportedStablecoin = (typeof SUPPORTED_STABLECOINS)[number];
 
-export const PROTOCOL_IDS = ["blend", "defindex"] as const;
+export const PROTOCOL_IDS = ["blend", "defindex", "meridian"] as const;
 export type ProtocolId = (typeof PROTOCOL_IDS)[number];
 
 // Per-network classic Stellar asset issuers. Used for trustline setup and SAC

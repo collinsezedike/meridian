@@ -8,15 +8,21 @@ import {
 import type { StellarNetwork } from "./types";
 import type { PositionInfo } from "./positions";
 
-const BLEND_USDC: PositionInfo = {
-  vaultId: "blend-usdc-fixed",
+const VAULT_CONTRACT =
+  "CBK5RI4BCA7TLSD2S5Q5TH2LUQAT55GF34OBTWPFUKWZ5O6YXSQDAWOJ";
+const VAULT2_CONTRACT =
+  "CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF";
+
+const MERIDIAN_USDC: PositionInfo = {
+  vaultId: "meridian-usdc",
   shares: 10,
   deposited: 10,
   earned: 0,
   entryTime: 0,
 };
-const DFX_USDC: PositionInfo = {
-  vaultId: "defindex-usdc",
+
+const MERIDIAN_EURC: PositionInfo = {
+  vaultId: "meridian-eurc",
   shares: 5,
   deposited: 5,
   earned: 0,
@@ -26,69 +32,44 @@ const DFX_USDC: PositionInfo = {
 vi.mock("./known-pools", () => ({
   KNOWN_POOLS: {
     testnet: {
-      "blend-testnet-usdc": {
-        id: "blend-usdc-fixed",
-        protocol: "blend",
-        contractId: "CPOOL",
-        assetId: "CUSDC",
+      "meridian-usdc": {
+        id: "meridian-usdc",
+        protocol: "meridian",
+        contractId: "CBK5RI4BCA7TLSD2S5Q5TH2LUQAT55GF34OBTWPFUKWZ5O6YXSQDAWOJ",
+        assetId: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
         asset: "USDC",
       },
-      "blend-testnet-eurc": {
-        id: "blend-eurc-fixed",
-        protocol: "blend",
-        contractId: "CPOOL",
-        assetId: "CEURC",
+      "meridian-eurc": {
+        id: "meridian-eurc",
+        protocol: "meridian",
+        contractId: "CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF",
+        assetId: "CCUUDM434BMZMYWYDITHFXHDMIVTGGD6T2I5UKNX5BSLXLW7HVR4MCGZ",
         asset: "EURC",
-      },
-      "defindex-usdc": {
-        id: "defindex-usdc",
-        protocol: "defindex",
-        contractId: "CDFX",
-        assetId: "CUSDC",
-        asset: "USDC",
       },
     },
     mainnet: {},
   },
 }));
 
-vi.mock("./blend", () => ({
-  blendAssetForVault: vi.fn((vaultId: string) =>
-    vaultId.includes("-eurc") ? "eurc" : "usdc"
+vi.mock("./coordinator", () => ({
+  buildCoordinatorDepositTx: vi.fn(async () => ({
+    xdr: "COORDINATOR_DEPOSIT_XDR",
+    fee: "200",
+  })),
+  buildCoordinatorWithdrawTx: vi.fn(async () => ({
+    xdr: "COORDINATOR_WITHDRAW_XDR",
+    fee: "200",
+  })),
+  fetchCoordinatorPosition: vi.fn(async (_config: unknown, vaultId: string) =>
+    vaultId === "meridian-usdc" ? [MERIDIAN_USDC] : [MERIDIAN_EURC]
   ),
-  buildBlendDepositTx: vi.fn(async () => ({
-    xdr: "BLEND_DEPOSIT_XDR",
-    fee: "200",
-  })),
-  buildBlendWithdrawTx: vi.fn(async () => ({
-    xdr: "BLEND_WITHDRAW_XDR",
-    fee: "200",
-  })),
-  fetchBlendPositions: vi.fn(async () => [BLEND_USDC]),
-}));
-
-vi.mock("./defindex", () => ({
-  buildDefindexDepositTx: vi.fn(async () => ({
-    xdr: "DFX_DEPOSIT_XDR",
-    fee: "300",
-  })),
-  buildDefindexWithdrawTx: vi.fn(async () => ({
-    xdr: "DFX_WITHDRAW_XDR",
-    fee: "300",
-  })),
-  fetchDefindexPosition: vi.fn(async () => [DFX_USDC]),
 }));
 
 import {
-  buildBlendDepositTx,
-  buildBlendWithdrawTx,
-  fetchBlendPositions,
-} from "./blend";
-import {
-  buildDefindexDepositTx,
-  buildDefindexWithdrawTx,
-  fetchDefindexPosition,
-} from "./defindex";
+  buildCoordinatorDepositTx,
+  buildCoordinatorWithdrawTx,
+  fetchCoordinatorPosition,
+} from "./coordinator";
 
 const network: StellarNetwork = {
   network: "testnet",
@@ -97,8 +78,8 @@ const network: StellarNetwork = {
 };
 
 const addresses: ProtocolAddresses = {
-  usdc: "CUSDC",
-  eurc: "CEURC",
+  usdc: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
+  eurc: "CCUUDM434BMZMYWYDITHFXHDMIVTGGD6T2I5UKNX5BSLXLW7HVR4MCGZ",
 };
 
 const WALLET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
@@ -106,90 +87,41 @@ const WALLET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 beforeEach(() => vi.clearAllMocks());
 
 describe("buildDepositTx", () => {
-  it("routes a blend-usdc vault to buildBlendDepositTx with the USDC asset", async () => {
+  it("routes a meridian vault deposit through buildCoordinatorDepositTx", async () => {
     const result = await buildDepositTx(
-      "blend-usdc-fixed",
+      "meridian-usdc",
       WALLET,
       "10",
       addresses,
       network
     );
-    expect(result).toEqual({ xdr: "BLEND_DEPOSIT_XDR", fee: "200" });
-    expect(buildBlendDepositTx).toHaveBeenCalledWith(
-      { poolId: "CPOOL", assetId: "CUSDC", network },
+    expect(result).toEqual({ xdr: "COORDINATOR_DEPOSIT_XDR", fee: "200" });
+    expect(buildCoordinatorDepositTx).toHaveBeenCalledWith(
+      { contractId: VAULT_CONTRACT, network },
       WALLET,
       100_000_000n
     );
-    expect(buildDefindexDepositTx).not.toHaveBeenCalled();
-  });
-
-  it("routes a blend-eurc vault to buildBlendDepositTx with the EURC asset", async () => {
-    await buildDepositTx("blend-eurc-fixed", WALLET, "5", addresses, network);
-    expect(buildBlendDepositTx).toHaveBeenCalledWith(
-      { poolId: "CPOOL", assetId: "CEURC", network },
-      WALLET,
-      50_000_000n
-    );
-  });
-
-  it("routes a defindex vault to buildDefindexDepositTx", async () => {
-    const result = await buildDepositTx(
-      "defindex-usdc",
-      WALLET,
-      "10",
-      addresses,
-      network
-    );
-    expect(result).toEqual({ xdr: "DFX_DEPOSIT_XDR", fee: "300" });
-    expect(buildDefindexDepositTx).toHaveBeenCalledWith(
-      { vaultId: "CDFX", network },
-      WALLET,
-      100_000_000n
-    );
-    expect(buildBlendDepositTx).not.toHaveBeenCalled();
   });
 
   it("throws for a vault not in KNOWN_POOLS", async () => {
     await expect(
-      buildDepositTx("defindex-eurc", WALLET, "10", addresses, network)
+      buildDepositTx("unknown-vault", WALLET, "10", addresses, network)
     ).rejects.toThrow(/Vault not configured/);
-  });
-
-  it("throws for an unrecognised vault protocol", async () => {
-    await expect(
-      buildDepositTx("ondo-usdy", WALLET, "10", addresses, network)
-    ).rejects.toThrow();
   });
 });
 
 describe("buildWithdrawTx", () => {
-  it("routes a blend vault to buildBlendWithdrawTx", async () => {
+  it("routes a meridian vault withdrawal through buildCoordinatorWithdrawTx", async () => {
     const result = await buildWithdrawTx(
-      "blend-usdc-fixed",
+      "meridian-usdc",
       WALLET,
       "5",
       addresses,
       network
     );
-    expect(result).toEqual({ xdr: "BLEND_WITHDRAW_XDR", fee: "200" });
-    expect(buildBlendWithdrawTx).toHaveBeenCalledWith(
-      { poolId: "CPOOL", assetId: "CUSDC", network },
-      WALLET,
-      50_000_000n
-    );
-  });
-
-  it("routes a defindex vault to buildDefindexWithdrawTx", async () => {
-    const result = await buildWithdrawTx(
-      "defindex-usdc",
-      WALLET,
-      "5",
-      addresses,
-      network
-    );
-    expect(result).toEqual({ xdr: "DFX_WITHDRAW_XDR", fee: "300" });
-    expect(buildDefindexWithdrawTx).toHaveBeenCalledWith(
-      { vaultId: "CDFX", network },
+    expect(result).toEqual({ xdr: "COORDINATOR_WITHDRAW_XDR", fee: "200" });
+    expect(buildCoordinatorWithdrawTx).toHaveBeenCalledWith(
+      { contractId: VAULT_CONTRACT, network },
       WALLET,
       50_000_000n
     );
@@ -197,60 +129,39 @@ describe("buildWithdrawTx", () => {
 
   it("throws for a vault not in KNOWN_POOLS", async () => {
     await expect(
-      buildWithdrawTx("defindex-eurc", WALLET, "5", addresses, network)
+      buildWithdrawTx("unknown-vault", WALLET, "5", addresses, network)
     ).rejects.toThrow(/Vault not configured/);
-  });
-
-  it("throws for an unrecognised vault protocol", async () => {
-    await expect(
-      buildWithdrawTx("ondo-usdy", WALLET, "5", addresses, network)
-    ).rejects.toThrow();
   });
 });
 
 describe("resolvePositions", () => {
-  it("calls fetchBlendPositions with the pool contract and reserves from KNOWN_POOLS", async () => {
+  it("calls fetchCoordinatorPosition for every meridian vault in KNOWN_POOLS", async () => {
     const positions = await resolvePositions(WALLET, network, addresses);
-    expect(fetchBlendPositions).toHaveBeenCalledWith(network, "CPOOL", WALLET, [
-      { assetId: "CUSDC", vaultId: "blend-usdc-fixed" },
-      { assetId: "CEURC", vaultId: "blend-eurc-fixed" },
-    ]);
-    expect(positions).toContainEqual(BLEND_USDC);
-  });
-
-  it("fetches DeFindex positions for every DeFindex vault in KNOWN_POOLS", async () => {
-    const positions = await resolvePositions(WALLET, network, addresses);
-    expect(fetchDefindexPosition).toHaveBeenCalledWith(
-      network,
-      "CDFX",
-      "defindex-usdc",
+    expect(fetchCoordinatorPosition).toHaveBeenCalledWith(
+      { contractId: VAULT_CONTRACT, network },
+      "meridian-usdc",
       WALLET
     );
-    expect(positions).toContainEqual(DFX_USDC);
+    expect(fetchCoordinatorPosition).toHaveBeenCalledWith(
+      { contractId: VAULT2_CONTRACT, network },
+      "meridian-eurc",
+      WALLET
+    );
+    expect(positions).toContainEqual(MERIDIAN_USDC);
+    expect(positions).toContainEqual(MERIDIAN_EURC);
   });
 
-  it("returns Blend positions when DeFindex fetch fails", async () => {
-    vi.mocked(fetchDefindexPosition).mockRejectedValueOnce(
+  it("returns partial results when one vault fetch fails", async () => {
+    vi.mocked(fetchCoordinatorPosition).mockImplementationOnce(async () => {
+      throw new Error("RPC down");
+    });
+    const positions = await resolvePositions(WALLET, network, addresses);
+    expect(positions).toHaveLength(1);
+  });
+
+  it("returns empty array when all vault fetches fail", async () => {
+    vi.mocked(fetchCoordinatorPosition).mockRejectedValue(
       new Error("RPC down")
-    );
-    const positions = await resolvePositions(WALLET, network, addresses);
-    expect(positions).toEqual([BLEND_USDC]);
-  });
-
-  it("returns DeFindex positions when Blend fetch fails", async () => {
-    vi.mocked(fetchBlendPositions).mockRejectedValueOnce(
-      new Error("Blend RPC timeout")
-    );
-    const positions = await resolvePositions(WALLET, network, addresses);
-    expect(positions).toEqual([DFX_USDC]);
-  });
-
-  it("returns empty array when all fetches fail", async () => {
-    vi.mocked(fetchBlendPositions).mockRejectedValueOnce(
-      new Error("Blend down")
-    );
-    vi.mocked(fetchDefindexPosition).mockRejectedValueOnce(
-      new Error("DeFindex down")
     );
     const positions = await resolvePositions(WALLET, network, addresses);
     expect(positions).toEqual([]);
