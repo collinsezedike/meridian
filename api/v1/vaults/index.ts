@@ -7,11 +7,16 @@ import {
 import { isDefindexConfigured, APP_NETWORK } from "@meridian/shared";
 import { applyCors, checkRateLimit } from "../../_lib/middleware.js";
 
-// Cache the aggregated vault list at the Vercel CDN. APY/TVL move slowly, so a
-// short fresh window keeps DeFiLlama call volume low, and the stale-while-
-// revalidate window lets the edge keep serving the last good payload through a
-// transient DeFiLlama outage instead of failing the whole dashboard.
-const CACHE_CONTROL = "public, s-maxage=60, stale-while-revalidate=300";
+// Cache the aggregated vault list at the Vercel CDN. APY/TVL move slowly on
+// mainnet, so a short fresh window keeps DeFiLlama call volume low, and the
+// stale-while-revalidate window lets the edge keep serving the last good
+// payload through a transient DeFiLlama outage instead of failing the whole
+// dashboard. Testnet reads go straight to the chain on every call (see
+// fetchAllVaults) specifically so deposits/withdrawals show up immediately
+// during testing; caching the HTTP response on top of that would defeat the
+// purpose, so testnet gets no-store instead.
+const MAINNET_CACHE_CONTROL = "public, s-maxage=60, stale-while-revalidate=300";
+const TESTNET_CACHE_CONTROL = "no-store";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (applyCors(req, res)) return;
@@ -22,7 +27,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const best = selectBestVault(vaults, {
       defindexConfigured: isDefindexConfigured(),
     });
-    res.setHeader("Cache-Control", CACHE_CONTROL);
+    res.setHeader(
+      "Cache-Control",
+      APP_NETWORK.network === "testnet"
+        ? TESTNET_CACHE_CONTROL
+        : MAINNET_CACHE_CONTROL
+    );
     res.json({
       vaults,
       recommendedVaultId: best?.id ?? null,

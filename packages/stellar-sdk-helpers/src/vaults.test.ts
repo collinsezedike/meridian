@@ -121,6 +121,34 @@ vi.mock("./internal", async (importOriginal) => {
 import { simulateView } from "./tx";
 import { toBigInt } from "./internal";
 
+const ADAPTER_ID = "CADAPTER00000000000000000000000000000000000000000000000000";
+const POOL_ID = "CPOOL0000000000000000000000000000000000000000000000000000";
+
+// Mocks simulateView's `method` param (5th positional arg after server,
+// contractId, passphrase, method) so different on-chain calls can return
+// different values, matching how fetchMeridianApy actually calls it.
+function mockAdapterDiscovery(opts: {
+  totalAssets?: bigint;
+  protocol?: string;
+}) {
+  vi.mocked(simulateView).mockImplementation(
+    async (_server, _contractId, _passphrase, method) => {
+      switch (method) {
+        case "get_total_assets":
+          return (opts.totalAssets ?? 0n) as never;
+        case "get_adapter":
+          return ADAPTER_ID as never;
+        case "get_pool":
+          return POOL_ID as never;
+        case "get_protocol":
+          return (opts.protocol ?? "blend") as never;
+        default:
+          throw new Error(`unexpected simulateView method: ${String(method)}`);
+      }
+    }
+  );
+}
+
 describe("fetchAllVaults (testnet)", () => {
   beforeEach(() => {
     clearVaultCache();
@@ -133,7 +161,7 @@ describe("fetchAllVaults (testnet)", () => {
 
   it("returns meridian vault with TVL derived from get_total_assets", async () => {
     // 1 000 USDC = 10_000_000_000 stroops (7 decimal places).
-    vi.mocked(simulateView).mockResolvedValue(10_000_000_000n as never);
+    mockAdapterDiscovery({ totalAssets: 10_000_000_000n, protocol: "none" });
     vi.mocked(toBigInt).mockReturnValue(10_000_000_000n);
 
     const vaults = await fetchAllVaults("testnet");
@@ -141,26 +169,58 @@ describe("fetchAllVaults (testnet)", () => {
     expect(vaults[0].id).toBe("meridian-usdc");
     expect(vaults[0].protocol).toBe("meridian");
     expect(vaults[0].tvl).toBe(1000);
-    expect(vaults[0].apy).toBe(0);
     expect(vaults[0].riskLevel).toBe("safe");
   });
 
   it("returns zero TVL when get_total_assets returns zero", async () => {
-    vi.mocked(simulateView).mockResolvedValue(0n as never);
+    mockAdapterDiscovery({ totalAssets: 0n, protocol: "none" });
     vi.mocked(toBigInt).mockReturnValue(0n);
 
     const vaults = await fetchAllVaults("testnet");
     expect(vaults[0].tvl).toBe(0);
-    expect(vaults[0].apy).toBe(0);
   });
 
   it("does not cache testnet results between calls", async () => {
-    vi.mocked(simulateView).mockResolvedValue(0n as never);
+    mockAdapterDiscovery({ totalAssets: 0n, protocol: "none" });
     vi.mocked(toBigInt).mockReturnValue(0n);
 
     await fetchAllVaults("testnet");
     await fetchAllVaults("testnet");
 
-    expect(simulateView).toHaveBeenCalledTimes(2);
+    const totalAssetsCalls = vi
+      .mocked(simulateView)
+      .mock.calls.filter(([, , , method]) => method === "get_total_assets");
+    expect(totalAssetsCalls).toHaveLength(2);
+  });
+
+  it("fetches live Blend APY when the active adapter wraps a Blend pool", async () => {
+    mockAdapterDiscovery({ totalAssets: 0n, protocol: "blend" });
+    vi.mocked(toBigInt).mockReturnValue(0n);
+    const usdcAssetId =
+      "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU";
+    const loadSpy = vi.spyOn(PoolV2, "load").mockResolvedValue({
+      reserves: new Map([
+        [usdcAssetId, { totalSupply: () => 0n, estSupplyApy: 0.08 }],
+      ]),
+    } as unknown as Awaited<ReturnType<typeof PoolV2.load>>);
+
+    const vaults = await fetchAllVaults("testnet");
+
+    expect(loadSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ rpc: expect.any(String) }),
+      POOL_ID
+    );
+    expect(vaults[0].apy).toBe(8);
+  });
+
+  it("returns apy 0 without querying Blend when the adapter wraps an unrecognised protocol", async () => {
+    mockAdapterDiscovery({ totalAssets: 0n, protocol: "defindex" });
+    vi.mocked(toBigInt).mockReturnValue(0n);
+    const loadSpy = vi.spyOn(PoolV2, "load");
+
+    const vaults = await fetchAllVaults("testnet");
+
+    expect(vaults[0].apy).toBe(0);
+    expect(loadSpy).not.toHaveBeenCalled();
   });
 });

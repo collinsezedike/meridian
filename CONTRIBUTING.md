@@ -73,9 +73,9 @@ Before cloning, confirm you have the required tools installed:
 | Node.js        | `>=20`           | `node --version`    |
 | pnpm           | `9.x`            | `pnpm --version`    |
 | Rust toolchain | stable (latest)  | `rustc --version`   |
-| Soroban CLI    | latest           | `soroban --version` |
+| Stellar CLI    | latest           | `stellar --version` |
 
-Rust and Soroban CLI are only required if you are working on the smart contracts in `packages/contracts`. TypeScript-only contributors can skip them.
+Rust and the Stellar CLI (`cargo install stellar-cli`; the binary is `stellar`, the older `soroban-cli` is deprecated) are only required if you are working on the smart contracts in `packages/contracts`. TypeScript-only contributors can skip them.
 
 To install pnpm at the correct version:
 

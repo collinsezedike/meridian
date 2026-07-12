@@ -36,16 +36,12 @@ export function VaultPanel() {
   const { t, i18n } = useTranslation();
   const { connected, publicKey } = useWalletStore();
   const { handleConnect, status: connectStatus } = useWalletConnect();
-  const { data: positions = [] } = usePositions(publicKey);
   const {
-    deposit,
-    withdraw,
-    addTrustline,
-    needsTrustline,
-    isDepositing,
-    isWithdrawing,
-    clearNeedsTrustline,
-  } = useVaultActions();
+    data: positions = [],
+    isError: positionsError,
+    refetch: refetchPositions,
+  } = usePositions(publicKey);
+  const { deposit, withdraw, isDepositing, isWithdrawing } = useVaultActions();
 
   const [tab, setTab] = useState<Tab>("deposit");
   const [amount, setAmount] = useState("");
@@ -94,7 +90,6 @@ export function VaultPanel() {
   function handleTabChange(next: Tab) {
     setTab(next);
     setAmount("");
-    clearNeedsTrustline();
   }
 
   return (
@@ -205,6 +200,22 @@ export function VaultPanel() {
         </div>
       )}
 
+      {/* Position load error — deposit/withdraw stay usable, only the
+          position summary is affected. */}
+      {connected && positionsError && (
+        <div className="mx-7 my-5 rounded-xl border border-amber-800/70 bg-amber-950/20 px-4 py-3.5 flex items-center justify-between gap-3">
+          <p className="text-sm text-amber-400">
+            {t("vaultPanel.positionsError")}
+          </p>
+          <button
+            onClick={() => void refetchPositions()}
+            className="shrink-0 rounded-lg border border-amber-800/70 px-3 py-1.5 text-xs font-medium text-amber-300 hover:border-amber-700 hover:text-amber-200 transition-colors duration-150"
+          >
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
+
       {/* Tab switcher */}
       {connected && (
         <div className="flex border-b border-gray-800">
@@ -273,14 +284,6 @@ export function VaultPanel() {
                 onKeyDown={onAmountKeyDown}
               />
             </div>
-            {needsTrustline && (
-              <button
-                onClick={addTrustline}
-                className="w-full rounded-xl border border-amber-800/70 bg-amber-950/20 hover:border-amber-700 text-amber-400 hover:text-amber-300 text-sm font-medium py-3 transition-colors duration-150"
-              >
-                {t("vaultPanel.addAssets")}
-              </button>
-            )}
             <button
               onClick={handleDeposit}
               disabled={!amount || !bestVault || isDepositing}

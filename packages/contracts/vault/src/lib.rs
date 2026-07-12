@@ -39,6 +39,19 @@ pub trait YieldAdapterInterface {
     fn deposit(env: Env, amount: i128) -> i128;
     fn withdraw(env: Env, shares: i128, recipient: Address) -> i128;
     fn total_assets(env: Env) -> i128;
+    /// Returns the address of the underlying protocol contract this adapter
+    /// wraps (a lending pool for Blend, a vault for DeFindex, etc). Lets
+    /// off-chain callers discover where to read live protocol data (e.g. a
+    /// supply rate) without maintaining that address in config, so it can
+    /// never drift out of sync if the adapter is later swapped via
+    /// `set_adapter`.
+    fn get_pool(env: Env) -> Address;
+    /// Returns a stable, lowercase identifier for the protocol this adapter
+    /// wraps (e.g. "blend", "defindex"). A constant per adapter deployment;
+    /// lets off-chain callers pick the right protocol-specific logic to
+    /// interpret the address returned by `get_pool()`, without a manually
+    /// maintained config mapping that could drift out of sync.
+    fn get_protocol(env: Env) -> Symbol;
 }
 
 // ---------------------------------------------------------------------------

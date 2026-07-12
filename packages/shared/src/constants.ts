@@ -14,6 +14,14 @@ export const USDC_ISSUER: Record<string, string> = {
   mainnet: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
 };
 
+// mUSDC is the vault's share token. Issuer = the musdc-issuer key used during
+// deployment (see scripts/deploy-testnet.sh's ADMIN, which becomes the mUSDC
+// asset's issuer before admin control is handed to the vault contract).
+export const MUSDC_ISSUER: Record<string, string> = {
+  testnet: "GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD",
+  mainnet: "",
+};
+
 export const CONTRACT_ADDRESSES = {
   testnet: {
     blend: {
@@ -32,8 +40,8 @@ export const CONTRACT_ADDRESSES = {
     usdc: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
     // Stellar Asset Contract for Circle's testnet EURC (issuer: GB3Q6QDZYTHWT7...).
     eurc: "CCUUDM434BMZMYWYDITHFXHDMIVTGGD6T2I5UKNX5BSLXLW7HVR4MCGZ",
-    musdc: "CAHOYJV2D4IGNZUQ5NP3HTXQL2LQ47YTP3TR56MHR5CJEWHGMEUYRIL3",
-    vault: "CBK5RI4BCA7TLSD2S5Q5TH2LUQAT55GF34OBTWPFUKWZ5O6YXSQDAWOJ",
+    musdc: "CBC5G4HXTOOZHTBCJQACZB3NJ636JHA5NEBQX5Q265QZN6XEG4LVZ5SB",
+    vault: "CBQYEHWIRJWIPWCJFQZAOP3VAZHRWFGAUS5GZHWFDDYKMFHJ5S3YS2Q5",
   },
   mainnet: {
     blend: {
@@ -78,13 +86,4 @@ export const APP_ADDRESSES = CONTRACT_ADDRESSES[_networkKey];
 
 export function isDefindexConfigured(): boolean {
   return Boolean(process.env.DEFINDEX_VAULT_ID ?? APP_ADDRESSES.defindex.vault);
-}
-
-/** Build the asset SAC addresses consumed by stellar-sdk-helpers. Protocol
- *  contract addresses are resolved from KNOWN_POOLS inside the SDK by vault ID. */
-export function buildTxAddresses() {
-  return {
-    usdc: APP_ADDRESSES.usdc,
-    eurc: APP_ADDRESSES.eurc,
-  };
 }

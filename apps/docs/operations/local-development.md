@@ -89,19 +89,26 @@ Or build a single package:
 pnpm --filter @meridian/shared build
 ```
 
-## Working with the vault contract
+## Working with the contracts
+
+`packages/contracts/` has four crates: `vault` (the coordinator), `router` (reserved for v2), and two yield adapters, `blend-adapter` and `defindex-adapter`. Build and test them all together from the `contracts` package root, or individually:
 
 ```bash
-cd packages/contracts/vault
+cd packages/contracts
 
-# Build the WASM
+# Build every crate's WASM (outputs to target/wasm32v1-none/release/)
 stellar contract build
 
-# Run Rust tests
+# Run every crate's Rust tests
 cargo test
+
+# Or a single crate
+cargo test --manifest-path blend-adapter/Cargo.toml
 ```
 
-See [Testnet Deployment](./testnet-deployment.md) for deploying the contract to testnet.
+`stellar contract build` targets `wasm32v1-none`, not `wasm32-unknown-unknown` — install it with `rustup target add wasm32v1-none` if you haven't already.
+
+See [Testnet Deployment](./testnet-deployment.md) for deploying the contracts to testnet, and [Vault Contract](../architecture/vault-contract.md) for how the vault and adapters fit together.
 
 ## Freighter wallet
 

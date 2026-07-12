@@ -67,10 +67,13 @@ meridian/
 │   │       └── utils.ts          # Pure utility functions
 │   │
 │   └── contracts/                # Rust/Soroban smart contracts
-│       └── vault/src/lib.rs      # MeridianVault contract
+│       ├── vault/src/lib.rs           # MeridianVault: protocol-agnostic coordinator
+│       ├── router/src/lib.rs          # Reserved for v2 atomic rebalancing
+│       ├── blend-adapter/src/lib.rs   # Supplies USDC into a Blend lending pool
+│       └── defindex-adapter/src/lib.rs # Deposits USDC into a DeFindex vault
 │
 ├── apps/landing/                 # Static landing page
-├── scripts/                      # Build and deploy helpers
+├── scripts/                      # deploy-testnet.sh (fresh stack), redeploy-blend-adapter.sh (swap adapter on a live vault)
 ├── vercel.json                   # Vercel routing config
 └── turbo.json                    # Turborepo task graph
 ```

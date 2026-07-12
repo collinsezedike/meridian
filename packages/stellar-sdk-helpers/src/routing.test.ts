@@ -77,6 +77,14 @@ describe("selectBestVault", () => {
     expect(best?.id).toBe("r2");
   });
 
+  it("routes to the Meridian coordinator vault", () => {
+    const best = selectBestVault(
+      [vault({ id: "meridian-usdc", protocol: "meridian", apy: 8 })],
+      opts
+    );
+    expect(best?.id).toBe("meridian-usdc");
+  });
+
   it("returns null when nothing is routable", () => {
     expect(selectBestVault([vault({ protocol: "ondo" })], opts)).toBeNull();
     expect(selectBestVault([], opts)).toBeNull();

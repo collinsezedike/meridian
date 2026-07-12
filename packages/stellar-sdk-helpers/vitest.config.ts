@@ -8,9 +8,10 @@ export default defineConfig({
       exclude: ["dist/**"],
       thresholds: {
         lines: 70,
-        // coordinator.ts (added in #329) has no tests yet; tracked in #332,
-        // which will raise this back once it lands.
-        branches: 74.55,
+        // Restored after #332 added coverage for coordinator.ts and
+        // simulateView (measured branch coverage is 76.66% as of that PR;
+        // a small margin below that keeps CI from flaking on minor drift).
+        branches: 76,
         functions: 70,
         statements: 70,
       },

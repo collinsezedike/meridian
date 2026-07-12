@@ -14,17 +14,17 @@ Meridian is a **testnet technical preview**, not a finished product. Be clear-ey
 
 **Working today (testnet)**
 
-- Live APY / TVL feed across Stellar stablecoin pools (via DeFiLlama) with a risk heuristic
+- Live APY / TVL feed across Stellar stablecoin pools (via DeFiLlama on mainnet; direct on-chain queries on testnet, since DeFiLlama doesn't index it) with a risk heuristic
 - Non-custodial signing flow: the API builds an unsigned Soroban XDR, your wallet (Freighter) signs and submits it — keys never leave the browser
-- **Direct deposit / withdraw against a real Blend pool**: funds supply straight into Blend from your wallet and the resulting bToken position is yours — no Meridian-controlled custody
-- Live position reads from the Blend pool and (when a DeFindex vault is configured) DeFindex vault — current supplied value
+- **Deposit / withdraw through the live `MeridianVault` coordinator contract**: the vault forwards your USDC to its active adapter contract (`BlendAdapter` today), which supplies it straight into a real Blend pool — you receive mUSDC shares representing the position, no Meridian-controlled custody of the underlying funds
+- Live TVL and per-address position reads directly from the vault (`get_total_assets`, `get_position`)
 - Best-rate routing: the API recommends the highest-APY vault it can actually deposit into, skipping display-only protocols and pools flagged risky
-- `MeridianVault` Soroban contract (ERC-4626-style share accounting hardened against the first-depositor inflation attack, pause + admin-rotation rails) with unit tests — reserved for the v2 single-transaction rebalancing router
+- Protocol-agnostic adapter architecture: `MeridianVault` (ERC-4626-style share accounting hardened against the first-depositor inflation attack, pause + admin-rotation rails), `BlendAdapter` (live), and a `DefindexAdapter` contract (built, not yet wired to a live vault) — swapping which protocol a vault routes to is an admin-only `set_adapter` call, no vault redeploy required. A `router` contract exists reserved for a future v2 single-transaction rebalancing feature. All four have unit test coverage.
 
 **In progress — the core promise is not finished**
 
-- Direct deposit/withdraw against real DeFindex vaults — _transaction builders are implemented; gated behind `DEFINDEX_VAULT_ID` until a real testnet vault is wired_
-- Per-position yield earned (cost-basis tracking for direct Blend/DeFindex positions)
+- Deposit/withdraw against a real DeFindex vault through `DefindexAdapter` — the adapter contract and transaction builders are implemented; gated behind `DEFINDEX_VAULT_ID` until a real testnet vault is wired
+- Per-position yield earned (cost-basis tracking is implemented on-chain via `get_principal`; UI display is still in progress)
 - Mainnet configuration and a security audit before any real-funds use
 
 Until a DeFindex vault is configured, the DeFindex deposit path throws a configuration error rather than silently routing elsewhere. Track progress in the [Roadmap](#roadmap) and [open issues](../../issues).
@@ -49,8 +49,8 @@ meridian/
 ├── packages/
 │   ├── stellar-sdk-helpers/  # Blend & DeFindex client wrappers
 │   ├── shared/               # Zod schemas, constants, pure utils
-│   └── contracts/            # Soroban smart contracts (Rust)
-└── scripts/          # Deploy helpers for testnet / mainnet
+│   └── contracts/            # Soroban smart contracts (Rust): vault, router, blend-adapter, defindex-adapter
+└── scripts/          # deploy-testnet.sh (fresh stack), redeploy-blend-adapter.sh (swap adapter on a live vault)
 ```
 
 This is a **pnpm + Turborepo** monorepo. All packages are TypeScript-first with strict mode enabled.
@@ -61,10 +61,10 @@ This is a **pnpm + Turborepo** monorepo. All packages are TypeScript-first with 
 User browser
   └─► Vite + React frontend
         └─► Vercel Serverless Functions (builds unsigned XDR)
-              ├─► Blend Protocol (pool data + deposit tx)
-              └─► DeFindex Protocol (vault data + deposit tx)
-                        │
-                   Stellar RPC (Soroban)
+              └─► MeridianVault coordinator contract
+                    └─► active adapter (BlendAdapter today) ─► underlying protocol pool
+                              │
+                         Stellar RPC (Soroban)
 ```
 
 In production, API routes are Vercel serverless functions (`api/v1/...`). The Fastify server in `apps/api` is used for local development only.
@@ -94,7 +94,7 @@ The API never holds private keys. It builds an unsigned Soroban transaction, ret
 
 - Node.js ≥ 20
 - pnpm ≥ 9 (`npm i -g pnpm`)
-- Rust + `wasm32-unknown-unknown` target (for contracts)
+- Rust + `wasm32v1-none` target (for contracts)
 - Stellar CLI (`cargo install stellar-cli`)
 
 ### Install
@@ -164,9 +164,9 @@ Issues are tagged `good first issue`, `medium`, and `hard`. Pick your level.
 
 ## Roadmap
 
-### Q2 2026: Deposit, withdraw and earn (testnet)
+### Q2 2026: Deposit, withdraw and earn (testnet) — shipped for Blend
 
-Non-custodial USDC deposits into Blend and DeFindex vaults on Stellar testnet. Freighter wallet connects in one click, the best-rate vault is selected automatically, and the signed transaction never leaves the browser. Live APY and TVL across protocols with risk-tier labelling. Withdraw at any time, no lock-up.
+Non-custodial USDC deposits into the `MeridianVault` coordinator contract on Stellar testnet, live and working end-to-end for Blend via `BlendAdapter`. Freighter wallet connects in one click, the best-rate vault is selected automatically, and the signed transaction never leaves the browser. Live APY and TVL across protocols with risk-tier labelling. Withdraw at any time, no lock-up. DeFindex support is built (`DefindexAdapter`) but not yet wired to a live testnet vault.
 
 ### Q3 2026: Yield tracking and position history
 

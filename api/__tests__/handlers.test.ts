@@ -200,11 +200,11 @@ describe("POST /api/v1/tx/submit", () => {
 });
 
 describe("GET /api/v1/vaults", () => {
-  it("returns the vault list with a CDN cache header", async () => {
+  it("returns the vault list with no-store on testnet (APP_NETWORK default in tests)", async () => {
     const res = makeRes();
     await vaultsHandler(fakeReq({ method: "GET" }), res);
     expect(res.statusCode).toBe(200);
-    expect(res.headers["Cache-Control"]).toContain("s-maxage=60");
+    expect(res.headers["Cache-Control"]).toBe("no-store");
     expect(res.body).toMatchObject({
       vaults: [{ id: "blend-usdc-fixed" }],
       recommendedVaultId: "blend-usdc-fixed",

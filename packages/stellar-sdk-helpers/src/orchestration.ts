@@ -8,11 +8,6 @@ import type { StellarNetwork } from "./types";
 import type { PositionInfo } from "./positions";
 import { KNOWN_POOLS } from "./known-pools";
 
-export interface ProtocolAddresses {
-  usdc: string;
-  eurc: string;
-}
-
 /**
  * Look up the registry entry for `vaultId` on the given network. Throws if the
  * vault is unknown or its contract address is not yet configured.
@@ -38,7 +33,6 @@ export async function buildDepositTx(
   vaultId: string,
   walletAddress: string,
   amount: string,
-  _addresses: ProtocolAddresses,
   network: StellarNetwork
 ): Promise<{ xdr: string; fee: string }> {
   const entry = resolveVaultEntry(vaultId, network);
@@ -57,7 +51,6 @@ export async function buildWithdrawTx(
   vaultId: string,
   walletAddress: string,
   shares: string,
-  _addresses: ProtocolAddresses,
   network: StellarNetwork
 ): Promise<{ xdr: string; fee: string }> {
   const entry = resolveVaultEntry(vaultId, network);
@@ -75,8 +68,7 @@ export async function buildWithdrawTx(
  */
 export async function resolvePositions(
   publicKey: string,
-  network: StellarNetwork,
-  _addresses: ProtocolAddresses
+  network: StellarNetwork
 ): Promise<PositionInfo[]> {
   const pools = Object.values(
     network.network === "testnet" ? KNOWN_POOLS.testnet : KNOWN_POOLS.mainnet

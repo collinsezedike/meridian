@@ -54,10 +54,34 @@ import { api } from "../../lib/api";
 import { signTransaction } from "../../lib/wallet";
 
 const KEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-// Matches USDC_ISSUER.testnet in @meridian/shared (Blend TestnetV2 issuer).
+// Matches USDC_ISSUER.testnet / MUSDC_ISSUER.testnet in @meridian/shared.
 const BLEND_TESTNET_USDC_ISSUER =
   "GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56";
+const MUSDC_TESTNET_ISSUER =
+  "GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD";
 const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
+
+function bothTrustlinesHorizonResponse() {
+  return new Response(
+    JSON.stringify({
+      balances: [
+        {
+          asset_type: "credit_alphanum4",
+          asset_code: "USDC",
+          asset_issuer: BLEND_TESTNET_USDC_ISSUER,
+          balance: "100.0000000",
+        },
+        {
+          asset_type: "credit_alphanum4",
+          asset_code: "MUSDC",
+          asset_issuer: MUSDC_TESTNET_ISSUER,
+          balance: "0.0000000",
+        },
+      ],
+    }),
+    { status: 200 }
+  );
+}
 
 function zeroBalanceHorizonResponse() {
   return new Response(JSON.stringify({ balances: [] }), { status: 200 });
@@ -87,26 +111,13 @@ beforeEach(() => {
   setQueryData.mockClear();
   getQueryData.mockClear();
   vi.clearAllMocks();
-  // Stub fetch so hasBlendUsdcBalance returns true (balance > 0), skipping the
-  // testnet faucet path. Tests that need the faucet path override this per-test.
+  // Stub fetch so both the proactive trustline check and hasBlendUsdcBalance
+  // see USDC + mUSDC trustlines and a positive USDC balance, skipping the
+  // add-trustline and testnet-faucet paths. Tests that need either path
+  // override this per-test.
   vi.stubGlobal(
     "fetch",
-    vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            balances: [
-              {
-                asset_type: "credit_alphanum4",
-                asset_code: "USDC",
-                asset_issuer: BLEND_TESTNET_USDC_ISSUER,
-                balance: "100.0000000",
-              },
-            ],
-          }),
-          { status: 200 }
-        )
-    )
+    vi.fn(async () => bothTrustlinesHorizonResponse())
   );
 });
 
@@ -138,20 +149,61 @@ describe("useVaultActions — deposit", () => {
       kind: "success",
       message: "Deposited 10 USDC",
     });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["vaults"] });
   });
 
-  it("sets needsTrustline when the API signals a missing trustline", async () => {
-    vi.mocked(api.buildDeposit).mockRejectedValueOnce(
-      new Error("USDC trustline missing")
+  it("silently establishes a missing mUSDC trustline before depositing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        // Trustline check: mUSDC trustline missing.
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              balances: [
+                {
+                  asset_type: "credit_alphanum4",
+                  asset_code: "USDC",
+                  asset_issuer: BLEND_TESTNET_USDC_ISSUER,
+                  balance: "100.0000000",
+                },
+              ],
+            }),
+            { status: 200 }
+          )
+        )
+        // hasBlendUsdcBalance check, called after the trustline is established.
+        .mockResolvedValueOnce(bothTrustlinesHorizonResponse())
     );
+    const { result } = renderHook(() => useVaultActions());
+
+    let ok: boolean | undefined;
+    await act(async () => {
+      ok = await result.current.deposit("10", "blend-usdc-fixed", "USDC");
+    });
+
+    expect(ok).toBe(true);
+    expect(api.addTrustline).toHaveBeenCalledWith(KEY);
+    expect(api.buildDeposit).toHaveBeenCalled();
+    // Once to sign the trustline transaction, once for the deposit itself.
+    expect(signTransaction).toHaveBeenCalledTimes(2);
+    expect(useToastStore.getState().toasts).toContainEqual(
+      expect.objectContaining({
+        kind: "success",
+        message: "Vault assets added to wallet",
+      })
+    );
+  });
+
+  it("does not attempt a trustline transaction when both already exist", async () => {
     const { result } = renderHook(() => useVaultActions());
 
     await act(async () => {
       await result.current.deposit("10", "blend-usdc-fixed", "USDC");
     });
 
-    expect(result.current.needsTrustline).toBe(true);
-    expect(useToastStore.getState().toasts[0]).toMatchObject({ kind: "error" });
+    expect(api.addTrustline).not.toHaveBeenCalled();
   });
 
   it("returns false without calling the API when no publicKey", async () => {
@@ -183,6 +235,9 @@ describe("useVaultActions — deposit", () => {
       "fetch",
       vi
         .fn()
+        // Trustline check: both already present.
+        .mockResolvedValueOnce(bothTrustlinesHorizonResponse())
+        // hasBlendUsdcBalance check: no USDC balance yet.
         .mockResolvedValueOnce(zeroBalanceHorizonResponse())
         .mockResolvedValueOnce(legitimate)
     );
@@ -212,6 +267,7 @@ describe("useVaultActions — deposit", () => {
       "fetch",
       vi
         .fn()
+        .mockResolvedValueOnce(bothTrustlinesHorizonResponse())
         .mockResolvedValueOnce(zeroBalanceHorizonResponse())
         .mockResolvedValueOnce(malicious)
     );
@@ -251,6 +307,7 @@ describe("useVaultActions — withdraw", () => {
       kind: "success",
       message: "Withdrew 5 USDC",
     });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["vaults"] });
   });
 
   it("pushes an error toast and returns false when withdraw fails", async () => {

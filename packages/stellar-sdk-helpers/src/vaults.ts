@@ -38,9 +38,67 @@ export function isVaultCacheWarm(): boolean {
 }
 
 /**
+ * Reads the live supply APY for the Blend pool at `poolId`, matching the
+ * reserve for `assetId`. Returns 0 if the pool has no such reserve.
+ */
+async function fetchBlendApy(
+  network: { rpc: string; passphrase: string },
+  poolId: string,
+  assetId: string
+): Promise<number> {
+  const pool = await withRaceTimeout(
+    () => PoolV2.load(network, poolId),
+    10_000,
+    "Blend RPC"
+  );
+  const reserve = pool.reserves.get(assetId);
+  return reserve ? Number((reserve.estSupplyApy * 100).toFixed(2)) : 0;
+}
+
+/**
+ * Discovers the live APY for a Meridian coordinator vault by reading its
+ * active adapter's underlying protocol on-chain (get_adapter -> get_pool /
+ * get_protocol) rather than tracking it in config. This makes rate discovery
+ * self-updating if the adapter is ever swapped via `set_adapter`: there is no
+ * config entry that could drift out of sync with the actual deployment.
+ *
+ * DeFindex has no live-rate SDK integration wired up yet, so vaults backed by
+ * a DefindexAdapter report apy: 0 until that is added. Any adapter protocol
+ * this function doesn't recognise also reports apy: 0 rather than throwing,
+ * so a future protocol degrades gracefully (TVL is unaffected) until its
+ * rate-fetching branch is added here.
+ */
+async function fetchMeridianApy(
+  server: ReturnType<typeof getRpcServer>,
+  network: { rpc: string; passphrase: string },
+  vaultId: string,
+  assetId: string
+): Promise<number> {
+  const adapterId = (await simulateView(
+    server,
+    vaultId,
+    network.passphrase,
+    "get_adapter"
+  )) as string;
+
+  const [poolId, protocol] = (await Promise.all([
+    simulateView(server, adapterId, network.passphrase, "get_pool"),
+    simulateView(server, adapterId, network.passphrase, "get_protocol"),
+  ])) as [string, string];
+
+  if (protocol === "blend") {
+    return fetchBlendApy(network, poolId, assetId);
+  }
+
+  return 0;
+}
+
+/**
  * Query each pool in KNOWN_POOLS.testnet on-chain and return its TVL and APY.
- * Blend pools use PoolV2.load; Meridian coordinator vaults read get_total_assets
- * directly. Adding a new testnet pool only requires a new entry in KNOWN_POOLS.testnet.
+ * Blend pools use PoolV2.load directly; Meridian coordinator vaults read
+ * get_total_assets for TVL and discover their active adapter's protocol
+ * on-chain for APY (see fetchMeridianApy). Adding a new testnet pool only
+ * requires a new entry in KNOWN_POOLS.testnet.
  */
 async function fetchTestnetVaults(): Promise<ApiVault[]> {
   const network = {
@@ -62,19 +120,27 @@ async function fetchTestnetVaults(): Promise<ApiVault[]> {
       vaults.push({ ...meta, apy, tvl, userBalance: 0, riskLevel: "safe" });
     } else if (meta.protocol === "meridian") {
       const server = getRpcServer(network.rpc, 10_000);
-      const raw = await withRaceTimeout(
-        () =>
-          simulateView(
-            server,
-            meta.contractId,
-            network.passphrase,
-            "get_total_assets"
-          ),
-        10_000,
-        "Meridian RPC"
-      );
-      const tvl = Math.round(Number(toBigInt(raw)) / 1e7);
-      vaults.push({ ...meta, apy: 0, tvl, userBalance: 0, riskLevel: "safe" });
+      const [totalAssetsRaw, apy] = await Promise.all([
+        withRaceTimeout(
+          () =>
+            simulateView(
+              server,
+              meta.contractId,
+              network.passphrase,
+              "get_total_assets"
+            ),
+          10_000,
+          "Meridian RPC"
+        ),
+        withRaceTimeout(
+          () =>
+            fetchMeridianApy(server, network, meta.contractId, meta.assetId),
+          10_000,
+          "Meridian adapter RPC"
+        ),
+      ]);
+      const tvl = Math.round(Number(toBigInt(totalAssetsRaw)) / 1e7);
+      vaults.push({ ...meta, apy, tvl, userBalance: 0, riskLevel: "safe" });
     }
   }
 

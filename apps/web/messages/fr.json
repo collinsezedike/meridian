@@ -25,10 +25,10 @@
     "connectUSDC": "Connectez votre portefeuille Freighter pour déposer des USDC et commencer à générer du rendement automatiquement.",
     "amount": "Montant",
     "balance": "Solde",
-    "addAssets": "Ajouter les actifs du coffre au portefeuille",
     "position": "Vous n'avez aucune position active à retirer.",
     "shares": "Parts",
-    "waiting": "En attente de signature..."
+    "waiting": "En attente de signature...",
+    "positionsError": "Impossible de charger votre position. Les dépôts et retraits fonctionnent toujours."
   },
 
   "vaultActions": {
@@ -44,6 +44,7 @@
   "common": {
     "connectWallet": "Connecter le portefeuille",
     "connecting": "Connexion...",
-    "installFreighter": "Installer Freighter"
+    "installFreighter": "Installer Freighter",
+    "retry": "Réessayer"
   }
 }

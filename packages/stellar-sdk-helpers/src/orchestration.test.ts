@@ -3,7 +3,6 @@ import {
   buildDepositTx,
   buildWithdrawTx,
   resolvePositions,
-  type ProtocolAddresses,
 } from "./orchestration";
 import type { StellarNetwork } from "./types";
 import type { PositionInfo } from "./positions";
@@ -77,24 +76,13 @@ const network: StellarNetwork = {
   passphrase: "Test SDF Network ; September 2015",
 };
 
-const addresses: ProtocolAddresses = {
-  usdc: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
-  eurc: "CCUUDM434BMZMYWYDITHFXHDMIVTGGD6T2I5UKNX5BSLXLW7HVR4MCGZ",
-};
-
 const WALLET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 
 beforeEach(() => vi.clearAllMocks());
 
 describe("buildDepositTx", () => {
   it("routes a meridian vault deposit through buildCoordinatorDepositTx", async () => {
-    const result = await buildDepositTx(
-      "meridian-usdc",
-      WALLET,
-      "10",
-      addresses,
-      network
-    );
+    const result = await buildDepositTx("meridian-usdc", WALLET, "10", network);
     expect(result).toEqual({ xdr: "COORDINATOR_DEPOSIT_XDR", fee: "200" });
     expect(buildCoordinatorDepositTx).toHaveBeenCalledWith(
       { contractId: VAULT_CONTRACT, network },
@@ -105,20 +93,14 @@ describe("buildDepositTx", () => {
 
   it("throws for a vault not in KNOWN_POOLS", async () => {
     await expect(
-      buildDepositTx("unknown-vault", WALLET, "10", addresses, network)
+      buildDepositTx("unknown-vault", WALLET, "10", network)
     ).rejects.toThrow(/Vault not configured/);
   });
 });
 
 describe("buildWithdrawTx", () => {
   it("routes a meridian vault withdrawal through buildCoordinatorWithdrawTx", async () => {
-    const result = await buildWithdrawTx(
-      "meridian-usdc",
-      WALLET,
-      "5",
-      addresses,
-      network
-    );
+    const result = await buildWithdrawTx("meridian-usdc", WALLET, "5", network);
     expect(result).toEqual({ xdr: "COORDINATOR_WITHDRAW_XDR", fee: "200" });
     expect(buildCoordinatorWithdrawTx).toHaveBeenCalledWith(
       { contractId: VAULT_CONTRACT, network },
@@ -129,14 +111,14 @@ describe("buildWithdrawTx", () => {
 
   it("throws for a vault not in KNOWN_POOLS", async () => {
     await expect(
-      buildWithdrawTx("unknown-vault", WALLET, "5", addresses, network)
+      buildWithdrawTx("unknown-vault", WALLET, "5", network)
     ).rejects.toThrow(/Vault not configured/);
   });
 });
 
 describe("resolvePositions", () => {
   it("calls fetchCoordinatorPosition for every meridian vault in KNOWN_POOLS", async () => {
-    const positions = await resolvePositions(WALLET, network, addresses);
+    const positions = await resolvePositions(WALLET, network);
     expect(fetchCoordinatorPosition).toHaveBeenCalledWith(
       { contractId: VAULT_CONTRACT, network },
       "meridian-usdc",
@@ -155,7 +137,7 @@ describe("resolvePositions", () => {
     vi.mocked(fetchCoordinatorPosition).mockImplementationOnce(async () => {
       throw new Error("RPC down");
     });
-    const positions = await resolvePositions(WALLET, network, addresses);
+    const positions = await resolvePositions(WALLET, network);
     expect(positions).toHaveLength(1);
   });
 
@@ -163,7 +145,7 @@ describe("resolvePositions", () => {
     vi.mocked(fetchCoordinatorPosition).mockRejectedValue(
       new Error("RPC down")
     );
-    const positions = await resolvePositions(WALLET, network, addresses);
+    const positions = await resolvePositions(WALLET, network);
     expect(positions).toEqual([]);
   });
 });

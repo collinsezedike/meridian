@@ -18,6 +18,7 @@ import {
   withRetry,
   withRaceTimeout,
   USDC_ISSUER,
+  MUSDC_ISSUER,
   CONTRACT_ADDRESSES,
 } from "@meridian/shared";
 import { buildHorizonServer } from "./horizon";
@@ -45,12 +46,6 @@ const withSorobanTimeout = <T>(
       throw new SorobanTimeoutError(ms);
     throw err;
   });
-
-// mUSDC is the vault's share token. Issuer = the musdc-issuer key used during deployment.
-const MUSDC_ISSUER: Record<string, string> = {
-  testnet: "GAZOB5KAE27U7QMGCJLA74TKGECONNND73GL2GIMYBXYNBVG4U5IHBX7",
-  mainnet: "",
-};
 
 function usdcAsset(network: StellarNetwork): Asset {
   const issuer = USDC_ISSUER[network.network];
@@ -157,8 +152,13 @@ export async function prepareSorobanTx(
     .setTimeout(300)
     .build();
   const sim = await withSorobanTimeout(() => server.simulateTransaction(tx));
-  if (rpc.Api.isSimulationError(sim))
-    throw new Error(`Simulation failed: ${simErrorMessage(sim.error)}`);
+  if (rpc.Api.isSimulationError(sim)) {
+    const error = new Error(
+      `Simulation failed: ${simErrorMessage(sim.error)}`
+    ) as Error & { cause?: unknown };
+    error.cause = sim.error;
+    throw error;
+  }
   const prepared = rpc.assembleTransaction(tx, sim).build();
   return {
     xdr: prepared.toEnvelope().toXDR("base64"),
@@ -267,11 +267,19 @@ export async function waitForTransaction(
 }
 
 /**
- * Extract the first-line summary from a Soroban simulation error string.
- * Subsequent lines are stack frames that belong in logs, not user-facing
- * messages. Returns a generic fallback when the string is empty.
+ * Extract a safe, one-line summary from a Soroban simulation error string.
+ * The first line is usually just a terse error code (e.g. "Error(Contract,
+ * #13)") with no actionable detail; the useful diagnostic text is buried
+ * several lines down in the event log. When that log names a missing
+ * trustline, surface that specific message instead so callers like
+ * useVaultActions' isMissingTrustline() can detect it and prompt the user to
+ * add the trustline rather than showing an opaque failure. Otherwise falls
+ * back to the first line. Returns a generic fallback when the string is
+ * empty.
  */
 export function simErrorMessage(raw: string): string {
+  const trustlineDetail = raw.match(/data:\["([^"]*trustline[^"]*)"/i)?.[1];
+  if (trustlineDetail) return trustlineDetail;
   return raw.split("\n")[0]?.trim() || "Simulation failed (no detail)";
 }
 

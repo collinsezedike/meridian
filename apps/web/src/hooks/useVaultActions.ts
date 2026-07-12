@@ -1,6 +1,11 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { STELLAR_NETWORKS, APP_NETWORK, USDC_ISSUER } from "@meridian/shared";
+import {
+  STELLAR_NETWORKS,
+  APP_NETWORK,
+  USDC_ISSUER,
+  MUSDC_ISSUER,
+} from "@meridian/shared";
 import { assertFaucetPayment } from "@meridian/stellar-sdk-helpers";
 import { useWalletStore } from "../store/wallet";
 import { signTransaction } from "../lib/wallet";
@@ -14,37 +19,67 @@ const BLEND_FAUCET_URL =
   import.meta.env.VITE_BLEND_FAUCET_URL ??
   "https://ewqw4hx7oa.execute-api.us-east-1.amazonaws.com/getAssets";
 
-function isMissingTrustline(msg: string) {
-  return msg.toLowerCase().includes("trustline");
+function horizonUrlFor(network: string) {
+  return network === "mainnet"
+    ? "https://horizon.stellar.org"
+    : "https://horizon-testnet.stellar.org";
+}
+
+async function fetchBalances(publicKey: string, network: string) {
+  const res = await fetch(`${horizonUrlFor(network)}/accounts/${publicKey}`);
+  if (!res.ok) return null;
+  return (await res.json()) as {
+    balances: {
+      asset_type: string;
+      asset_code?: string;
+      asset_issuer?: string;
+      balance: string;
+    }[];
+  };
 }
 
 async function hasBlendUsdcBalance(
   publicKey: string,
   network: string
 ): Promise<boolean> {
-  const horizonUrl =
-    network === "mainnet"
-      ? "https://horizon.stellar.org"
-      : "https://horizon-testnet.stellar.org";
   const issuer = USDC_ISSUER[network];
   if (!issuer) return true;
   try {
-    const res = await fetch(`${horizonUrl}/accounts/${publicKey}`);
-    if (!res.ok) return true;
-    const account = (await res.json()) as {
-      balances: {
-        asset_type: string;
-        asset_code?: string;
-        asset_issuer?: string;
-        balance: string;
-      }[];
-    };
+    const account = await fetchBalances(publicKey, network);
+    if (!account) return true;
     return account.balances.some(
       (b) =>
         b.asset_code === "USDC" &&
         b.asset_issuer === issuer &&
         parseFloat(b.balance) > 0
     );
+  } catch {
+    return true;
+  }
+}
+
+// A trustline just needs to exist (balance can be 0) to receive that asset,
+// unlike hasBlendUsdcBalance above which also requires a positive balance.
+// Checked proactively before depositing so a first-time depositor's missing
+// mUSDC (or USDC) trustline is established silently up front, instead of the
+// deposit failing on-chain and the user having to notice and click a
+// separate "Add Assets" step.
+async function hasRequiredTrustlines(
+  publicKey: string,
+  network: string
+): Promise<boolean> {
+  const usdcIssuer = USDC_ISSUER[network];
+  const musdcIssuer = MUSDC_ISSUER[network];
+  try {
+    const account = await fetchBalances(publicKey, network);
+    if (!account) return true;
+    const hasTrustline = (code: string, issuer: string) =>
+      account.balances.some(
+        (b) => b.asset_code === code && b.asset_issuer === issuer
+      );
+    const hasUsdc = !usdcIssuer || hasTrustline("USDC", usdcIssuer);
+    const hasMusdc = !musdcIssuer || hasTrustline("MUSDC", musdcIssuer);
+    return hasUsdc && hasMusdc;
   } catch {
     return true;
   }
@@ -57,7 +92,6 @@ export function useVaultActions() {
   const { push } = useToastStore();
   const [isDepositing, setIsDepositing] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
-  const [needsTrustline, setNeedsTrustline] = useState(false);
 
   const passphrase =
     STELLAR_NETWORKS[network as keyof typeof STELLAR_NETWORKS]?.passphrase;
@@ -76,7 +110,6 @@ export function useVaultActions() {
     try {
       const { xdr } = await api.addTrustline(publicKey);
       await signAndSubmit(xdr);
-      setNeedsTrustline(false);
       push("success", t("vaultActions.assetsAdded"));
       return true;
     } catch (err) {
@@ -122,8 +155,17 @@ export function useVaultActions() {
     if (!publicKey || !passphrase) return false;
     setIsDepositing(true);
     try {
+      // Establish any missing trustline(s) first, silently, before the user
+      // has any reason to expect more than one signature — same one-click,
+      // two-signature shape as the faucet funding step below.
+      const hasTrustlines = await hasRequiredTrustlines(publicKey, network);
+      if (!hasTrustlines) {
+        const ok = await addTrustline();
+        if (!ok) return false;
+      }
+
       // On testnet, automatically fund the wallet from Blend's faucet when the
-      // user has no USDC balance. Covers both missing trustline and zero balance.
+      // user has no USDC balance.
       if (APP_NETWORK.network === "testnet") {
         const hasFunds = await hasBlendUsdcBalance(publicKey, network);
         if (!hasFunds) {
@@ -138,16 +180,15 @@ export function useVaultActions() {
         amount,
       });
       await signAndSubmit(xdr);
-      setNeedsTrustline(false);
       queryClient.invalidateQueries({ queryKey: ["positions", publicKey] });
+      // Without this, the vault panel's TVL/APY keep serving their cached
+      // value for up to staleTime (5 min) after a deposit actually lands.
+      queryClient.invalidateQueries({ queryKey: ["vaults"] });
       push("success", `${t("vaultActions.deposited")} ${amount} ${asset}`);
       return true;
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : t("vaultActions.depositFailed");
-      if (isMissingTrustline(msg)) {
-        setNeedsTrustline(true);
-      }
       push("error", msg);
       return false;
     } finally {
@@ -182,6 +223,10 @@ export function useVaultActions() {
       });
 
       await signAndSubmit(xdr);
+
+      // Without this, the vault panel's TVL/APY keep serving their cached
+      // value for up to staleTime (5 min) after a withdrawal actually lands.
+      queryClient.invalidateQueries({ queryKey: ["vaults"] });
 
       // Optimistic update: partial withdrawal scales the position down in-place
       // so the position card stays visible with an approximate remaining balance.
@@ -247,10 +292,7 @@ export function useVaultActions() {
   return {
     deposit,
     withdraw,
-    addTrustline,
-    needsTrustline,
     isDepositing,
     isWithdrawing,
-    clearNeedsTrustline: () => setNeedsTrustline(false),
   };
 }

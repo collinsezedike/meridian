@@ -1,7 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import {
   APP_NETWORK,
-  buildTxAddresses,
   DepositRequestSchema,
   WithdrawRequestSchema,
   TrustlineRequestSchema,
@@ -31,7 +30,6 @@ export const txRoute: FastifyPluginAsync = async (app) => {
           vaultId,
           walletAddress,
           amount,
-          buildTxAddresses(),
           APP_NETWORK
         );
         reply.send(result);
@@ -58,7 +56,6 @@ export const txRoute: FastifyPluginAsync = async (app) => {
           vaultId,
           walletAddress,
           shares,
-          buildTxAddresses(),
           APP_NETWORK
         );
         reply.send(result);

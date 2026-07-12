@@ -2,7 +2,6 @@
 import { buildWithdrawTx } from "@meridian/stellar-sdk-helpers";
 import {
   APP_NETWORK,
-  buildTxAddresses,
   WithdrawRequestSchema,
   formatZodError,
   sanitizeTxError,
@@ -25,12 +24,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       vaultId,
       walletAddress,
       shares,
-      buildTxAddresses(),
       APP_NETWORK
     );
     return res.json(result);
   } catch (err) {
-    console.error("[tx/withdraw] build failed:", err);
+    const cause = (err as { cause?: unknown } | undefined)?.cause;
+    console.error("[tx/withdraw] build failed:", err, cause ? { cause } : "");
     res.status(500).json({
       error: sanitizeTxError(err, "Failed to build withdraw transaction"),
     });

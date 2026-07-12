@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { VaultPanel } from "./components/dashboard/VaultPanel";
 import { WalletConnect } from "./components/onboarding/WalletConnect";
 import { Toasts } from "./components/ui/Toasts";
+import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { useWalletStore } from "./store/wallet";
 import { useTranslation } from "react-i18next";
 
@@ -36,7 +37,9 @@ function Dashboard() {
       </header>
 
       <main className="max-w-xl mx-auto px-6 py-10">
-        <VaultPanel />
+        <ErrorBoundary>
+          <VaultPanel />
+        </ErrorBoundary>
       </main>
     </div>
   );

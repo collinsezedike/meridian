@@ -7,6 +7,7 @@ import {
   Contract,
   Operation,
   TransactionBuilder,
+  nativeToScVal,
   xdr,
 } from "@stellar/stellar-sdk";
 import {
@@ -20,6 +21,7 @@ import {
   assertSubmittable,
 } from "./tx";
 import type { StellarNetwork } from "./types";
+import { CONTRACT_ADDRESSES } from "@meridian/shared";
 
 const { SUCCESS, FAILED, NOT_FOUND } = rpc.Api.GetTransactionStatus;
 
@@ -62,6 +64,16 @@ describe("simErrorMessage", () => {
     expect(simErrorMessage("")).toBe("Simulation failed (no detail)");
     expect(simErrorMessage("\n\n")).toBe("Simulation failed (no detail)");
   });
+
+  it("surfaces a buried trustline diagnostic instead of the terse first line", () => {
+    const raw =
+      "HostError: Error(Contract, #13)\n\n" +
+      "Event log (newest first):\n" +
+      '   0: [Diagnostic Event] contract:CBQ..., topics:[error, Error(Contract, #13)], data:"escalating error to VM trap from failed host function call: call"\n' +
+      '   1: [Diagnostic Event] contract:CBQ..., topics:[error, Error(Contract, #13)], data:["contract call failed", mint, [GAAA..., 100000000]]\n' +
+      '   2: [Failed Diagnostic Event (not emitted)] contract:CBC..., topics:[error, Error(Contract, #13)], data:["trustline entry is missing for account", GAAA...]\n';
+    expect(simErrorMessage(raw)).toBe("trustline entry is missing for account");
+  });
 });
 
 describe("simulateView RPC timeout", () => {
@@ -102,6 +114,81 @@ describe("simulateView RPC timeout", () => {
 
     const timeouts = setTimeoutSpy.mock.calls.map(([, ms]) => ms);
     expect(timeouts).toContain(10_000);
+  });
+});
+
+describe("simulateView", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const CONTRACT_ID =
+    "CBK5RI4BCA7TLSD2S5Q5TH2LUQAT55GF34OBTWPFUKWZ5O6YXSQDAWOJ";
+  const PASSPHRASE = "Test SDF Network ; September 2015";
+
+  it("simulates a call to the given contract/method/args and decodes the result", async () => {
+    const server = {
+      simulateTransaction: vi.fn(async () => ({
+        transactionData: {},
+        result: { retval: nativeToScVal(42, { type: "i128" }) },
+      })),
+    } as unknown as rpc.Server;
+
+    const arg = nativeToScVal(7, { type: "u32" });
+    const result = await simulateView(
+      server,
+      CONTRACT_ID,
+      PASSPHRASE,
+      "get_total_assets",
+      arg
+    );
+
+    expect(result).toBe(42n);
+    expect(server.simulateTransaction).toHaveBeenCalledTimes(1);
+
+    // Verify the operation actually built targets the right contract/method/args.
+    const [builtTx] = vi.mocked(server.simulateTransaction).mock.calls[0]!;
+    const invocation = builtTx
+      .toEnvelope()
+      .v1()
+      .tx()
+      .operations()[0]!
+      .body()
+      .invokeHostFunctionOp()
+      .hostFunction()
+      .invokeContract();
+    expect(invocation.contractAddress().contractId().toString("hex")).toBe(
+      new Contract(CONTRACT_ID).address().toBuffer().toString("hex")
+    );
+    expect(invocation.functionName().toString()).toBe("get_total_assets");
+    expect(invocation.args()).toEqual([arg]);
+  });
+
+  it("returns null when the simulation succeeds with no return value", async () => {
+    const server = {
+      simulateTransaction: vi.fn(async () => ({
+        transactionData: {},
+        result: undefined,
+      })),
+    } as unknown as rpc.Server;
+
+    const result = await simulateView(
+      server,
+      CONTRACT_ID,
+      PASSPHRASE,
+      "no_return_method"
+    );
+    expect(result).toBeNull();
+  });
+
+  it("throws a sanitized message when simulation fails", async () => {
+    const server = {
+      simulateTransaction: vi.fn(async () => ({
+        error: "HostError: Error(Contract, #1)\nEvent log ...",
+      })),
+    } as unknown as rpc.Server;
+
+    await expect(
+      simulateView(server, CONTRACT_ID, PASSPHRASE, "failing_method")
+    ).rejects.toThrow("HostError: Error(Contract, #1)");
   });
 });
 
@@ -156,7 +243,7 @@ const TESTNET: StellarNetwork = {
 const USDC_ISSUER_TESTNET =
   "GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56";
 const MUSDC_ISSUER_TESTNET =
-  "GAZOB5KAE27U7QMGCJLA74TKGECONNND73GL2GIMYBXYNBVG4U5IHBX7";
+  "GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD";
 
 function makeBalance(
   code: string,
@@ -338,8 +425,7 @@ describe("assertSubmittable", () => {
     passphrase: "Test SDF Network ; September 2015",
   };
 
-  const KNOWN_VAULT =
-    "CBK5RI4BCA7TLSD2S5Q5TH2LUQAT55GF34OBTWPFUKWZ5O6YXSQDAWOJ";
+  const KNOWN_VAULT = CONTRACT_ADDRESSES.testnet.vault;
   // Circle's mainnet USDC SAC: a validly-formed contract ID that is not on the
   // testnet allowlist.
   const UNKNOWN_CONTRACT =
@@ -347,7 +433,7 @@ describe("assertSubmittable", () => {
   const USDC_ISSUER_TESTNET =
     "GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56";
   const MUSDC_ISSUER_TESTNET =
-    "GAZOB5KAE27U7QMGCJLA74TKGECONNND73GL2GIMYBXYNBVG4U5IHBX7";
+    "GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD";
   // Circle's mainnet USDC issuer: a validly-formed address that is not on the
   // testnet allowlist.
   const UNKNOWN_ISSUER =
