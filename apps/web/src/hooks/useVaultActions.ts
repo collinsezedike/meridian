@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useState, useRef } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   STELLAR_NETWORKS,
   APP_NETWORK,
@@ -92,7 +92,51 @@ export function useVaultActions() {
   const { push } = useToastStore();
   const [isDepositing, setIsDepositing] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
+  const [isPollingPositions, setIsPollingPositions] = useState(false);
+  const pollTargetRef = useRef<{
+    vaultId: string;
+    sharesBefore: number;
+    startedAt: number;
+    failures: number;
+  } | null>(null);
+  useQuery({
+    queryKey: ["positions", publicKey],
+    queryFn: async () => {
+      if (!publicKey) throw new Error("No public key");
+      const data = await api.getPositions(publicKey);
+      return data.positions;
+    },
+    enabled: isPollingPositions && !!publicKey,
+    retry: false,
+    refetchInterval: (query) => {
+      const target = pollTargetRef.current;
+      if (!target) return false;
 
+      if (Date.now() - target.startedAt > 30_000) {
+        setIsPollingPositions(false);
+        return false;
+      }
+
+      if (query.state.status === "error") {
+        target.failures += 1;
+        console.warn("[positions poll] failed, attempt", target.failures);
+        if (target.failures === 3) {
+          push("info", t("vaultActions.syncDelayed"));
+        }
+        return 3_000;
+      }
+      target.failures = 0;
+
+      const data = query.state.data as ApiPosition[] | undefined;
+      const live = data?.find((p) => p.vaultId === target.vaultId) ?? data?.[0];
+      if ((live?.shares ?? 0) < target.sharesBefore) {
+        setIsPollingPositions(false);
+        return false;
+      }
+
+      return 3_000;
+    },
+  });
   const passphrase =
     STELLAR_NETWORKS[network as keyof typeof STELLAR_NETWORKS]?.passphrase;
 
@@ -249,33 +293,17 @@ export function useVaultActions() {
         queryClient.setQueryData(["positions", publicKey], []);
       }
 
-      // Poll every 3 s until the RPC reflects the new ledger state, then write
-      // the real data into the cache. Give up after 30 s.
-      const key = publicKey;
-      const startedAt = Date.now();
-      let consecutiveFailures = 0;
-      const syncWhenReady = async (): Promise<void> => {
-        if (Date.now() - startedAt > 30_000) return;
-        try {
-          const data = await api.getPositions(key);
-          consecutiveFailures = 0;
-          const live =
-            data.positions.find((p) => p.vaultId === vaultId) ??
-            data.positions[0];
-          if ((live?.shares ?? 0) < sharesBefore) {
-            queryClient.setQueryData(["positions", key], data.positions);
-            return;
-          }
-        } catch (err) {
-          consecutiveFailures += 1;
-          console.warn("[syncWhenReady] poll failed:", err);
-          if (consecutiveFailures === 3) {
-            push("info", t("vaultActions.syncDelayed"));
-          }
-        }
-        setTimeout(() => void syncWhenReady(), 3_000);
+      // Hand off to the refetchInterval query above — it re-checks every 3s,
+      // stops once the live share count drops below sharesBefore, and gives
+      // up after 30s. Delayed by 3s to match the original poll cadence
+      // (first check happens one interval in, not immediately).
+      pollTargetRef.current = {
+        vaultId,
+        sharesBefore,
+        startedAt: Date.now(),
+        failures: 0,
       };
-      setTimeout(() => void syncWhenReady(), 3_000);
+      setTimeout(() => setIsPollingPositions(true), 3_000);
       push("success", `${t("vaultActions.withdrew")} ${shares} ${asset}`);
       return true;
     } catch (err) {
