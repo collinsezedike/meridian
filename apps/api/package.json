@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@fastify/cors": "^11.2.0",
+    "@fastify/cors": "^11.3.0",
     "@fastify/rate-limit": "^11.1.0",
     "@meridian/api-core": "workspace:*",
     "@meridian/shared": "workspace:*",
