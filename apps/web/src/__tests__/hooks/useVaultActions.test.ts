@@ -408,6 +408,7 @@ describe("useVaultActions — withdraw", () => {
     warnSpy.mockRestore();
     vi.useRealTimers();
   });
+
   it("stops polling when the component unmounts mid-poll", async () => {
     vi.useFakeTimers();
     vi.mocked(api.getPositions).mockRejectedValue(new Error("RPC down"));
@@ -436,5 +437,36 @@ describe("useVaultActions — withdraw", () => {
     );
 
     vi.useRealTimers();
+  });
+
+  it("does not activate polling if unmounted before the 3s activation delay", async () => {
+    vi.useFakeTimers();
+    vi.mocked(api.getPositions).mockResolvedValue({ positions: [] });
+
+    const { result, unmount } = renderHook(() => useVaultActions());
+
+    await act(async () => {
+      await result.current.withdraw("5", "blend-usdc-fixed", "USDC");
+    });
+
+    // Still inside the 3s activation window — polling has not started yet.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+    expect(api.getPositions).not.toHaveBeenCalled();
+
+    // Unmount before the activation timeout fires. The pending timeout
+    // should be cancelled by the hook's cleanup effect rather than firing
+    // setIsPollingPositions on a hook instance whose owning component is
+    // already gone.
+    unmount();
+
+    // Advance well past the original 3s mark and beyond.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    // Polling never activated, so getPositions should never have been called.
+    expect(api.getPositions).not.toHaveBeenCalled();
   });
 });
