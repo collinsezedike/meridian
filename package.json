@@ -11,7 +11,8 @@
     "typecheck": "turbo run typecheck",
     "typecheck:api": "tsc --noEmit -p api/tsconfig.json",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "verify:contracts": "tsx scripts/verify-contract-addresses.ts"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^14.0.0"
@@ -20,6 +21,7 @@
     "@types/node": "^20.0.0",
     "esbuild": "^0.28.1",
     "turbo": "^2.10.4",
+    "tsx": "^4.23.0",
     "typescript": "^6.0.3",
     "prettier": "^3.9.4",
     "@eslint/js": "^9.0.0",

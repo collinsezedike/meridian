@@ -1,0 +1,35 @@
+name: Verify Contract Addresses
+
+# Guards against a specific supply-chain risk: a PR can submit clean,
+# reviewable contract source while pointing a contract address at different,
+# unreviewed bytecode the contributor deployed themselves. Only triggers on
+# PRs touching the files where deployed vault addresses are recorded.
+on:
+  pull_request:
+    paths:
+      - "packages/shared/src/constants.ts"
+      - "packages/stellar-sdk-helpers/src/known-pools.ts"
+  workflow_dispatch: {}
+
+jobs:
+  verify:
+    name: Verify On-Chain Bytecode
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/contracts
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+      - name: Verify contract addresses match on-chain bytecode
+        run: pnpm verify:contracts

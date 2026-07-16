@@ -91,10 +91,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/contracts
+      - name: Check formatting
+        working-directory: packages/contracts
+        run: cargo fmt --all -- --check
       - name: Run clippy
         working-directory: packages/contracts
         run: cargo clippy --all-targets -- -D warnings
