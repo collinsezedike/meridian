@@ -116,11 +116,12 @@ export function useVaultActions() {
   );
 
   useEffect(() => {
+    const timeouts = activationTimeoutsRef.current;
     return () => {
-      for (const id of activationTimeoutsRef.current) {
+      for (const id of timeouts) {
         clearTimeout(id);
       }
-      activationTimeoutsRef.current.clear();
+      timeouts.clear();
     };
   }, []);
 
