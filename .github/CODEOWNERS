@@ -1,0 +1,5 @@
+# Contract addresses deployed from this repo's source. Any change here must be
+# independently verified against the actual on-chain bytecode before merging,
+# not trusted from the PR description alone.
+/packages/shared/src/constants.ts @collinsezedike
+/packages/stellar-sdk-helpers/src/known-pools.ts @collinsezedike
