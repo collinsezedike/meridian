@@ -94,6 +94,8 @@ pub enum ContractError {
     WithdrawalTooSmall = 8,
     /// An intermediate arithmetic operation would overflow `i128`.
     Overflow = 9,
+    /// `set_adapter` was called while the vault still has shares outstanding.
+    AdapterSwapUnsafe = 10,
 }
 
 // ---------------------------------------------------------------------------
@@ -352,10 +354,14 @@ impl MeridianVault {
     /// Replace the yield adapter. The caller is responsible for migrating funds
     /// out of the old adapter before calling this. Resets the adapter-share
     /// counter so the new adapter starts at zero.
-    pub fn set_adapter(env: Env, new_adapter: Address) {
+    pub fn set_adapter(env: Env, new_adapter: Address) -> Result<(), ContractError> {
         Self::require_admin(&env);
+        if Self::get_total_shares(env.clone()) > 0 {
+            return Err(ContractError::AdapterSwapUnsafe);
+        }
         env.storage().instance().set(&ADAPTER, &new_adapter);
         env.storage().instance().set(&ADPT_SH, &0_i128);
+        Ok(())
     }
 
     /// Returns the current adapter address.
@@ -762,5 +768,27 @@ mod tests {
         let (_env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
         let result = vault.try_withdraw(&user, &1_i128);
         assert_eq!(result, Err(Ok(ContractError::NoSharesOutstanding)));
+    }
+
+    #[test]
+    fn set_adapter_fails_with_shares_outstanding() {
+        let (env, admin, user, _usdc, _musdc, adapter_id, vault) = setup();
+        let amount = 100_0000000_i128;
+        vault.deposit(&user, &amount);
+
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&_usdc);
+        let result = vault.try_set_adapter(&admin, &new_adapter_id);
+        assert_eq!(result, Err(Ok(ContractError::AdapterSwapUnsafe)));
+    }
+
+    #[test]
+    fn set_adapter_succeeds_with_no_shares_outstanding() {
+        let (env, admin, _user, _usdc, _musdc, _adapter, vault) = setup();
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&_usdc);
+        let result = vault.try_set_adapter(&admin, &new_adapter_id);
+        assert_eq!(result, Ok(Ok(())));
+        assert_eq!(vault.get_adapter(), new_adapter_id);
     }
 }
