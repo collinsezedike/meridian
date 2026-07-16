@@ -351,9 +351,9 @@ impl MeridianVault {
         env.storage().instance().get(&ADMIN).unwrap()
     }
 
-    /// Replace the yield adapter. The vault must have no shares outstanding
-    /// before calling this. Resets the adapter-share counter so the new adapter
-    /// starts at zero.
+    /// Replace the yield adapter. The caller is responsible for migrating funds
+    /// out of the old adapter before calling this. Resets the adapter-share
+    /// counter so the new adapter starts at zero.
     pub fn set_adapter(env: Env, new_adapter: Address) -> Result<(), ContractError> {
         Self::require_admin(&env);
         if Self::get_total_shares(env.clone()) > 0 {
@@ -772,22 +772,22 @@ mod tests {
 
     #[test]
     fn set_adapter_fails_with_shares_outstanding() {
-        let (env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
+        let (env, admin, user, _usdc, _musdc, adapter_id, vault) = setup();
         let amount = 100_0000000_i128;
         vault.deposit(&user, &amount);
 
         let new_adapter_id = env.register(MockAdapter, ());
         MockAdapterClient::new(&env, &new_adapter_id).initialize(&_usdc);
-        let result = vault.try_set_adapter(&new_adapter_id);
+        let result = vault.try_set_adapter(&admin, &new_adapter_id);
         assert_eq!(result, Err(Ok(ContractError::AdapterSwapUnsafe)));
     }
 
     #[test]
     fn set_adapter_succeeds_with_no_shares_outstanding() {
-        let (env, _admin, _user, _usdc, _musdc, _adapter, vault) = setup();
+        let (env, admin, _user, _usdc, _musdc, _adapter, vault) = setup();
         let new_adapter_id = env.register(MockAdapter, ());
         MockAdapterClient::new(&env, &new_adapter_id).initialize(&_usdc);
-        let result = vault.try_set_adapter(&new_adapter_id);
+        let result = vault.try_set_adapter(&admin, &new_adapter_id);
         assert_eq!(result, Ok(Ok(())));
         assert_eq!(vault.get_adapter(), new_adapter_id);
     }
