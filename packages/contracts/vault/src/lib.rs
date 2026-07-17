@@ -164,13 +164,10 @@ impl MeridianVault {
             return Err(ContractError::DepositTooSmall);
         }
 
-        // Pull USDC from caller to vault, then forward to adapter.
-        TokenClient::new(&env, &usdc).transfer(&caller, &env.current_contract_address(), &amount);
-        TokenClient::new(&env, &usdc).transfer(
-            &env.current_contract_address(),
-            &adapter_addr,
-            &amount,
-        );
+        // Pull USDC from caller directly to the adapter.
+        // The adapter address is known at this point, and the intermediate
+        // vault-owned balance is never used.
+        TokenClient::new(&env, &usdc).transfer(&caller, &adapter_addr, &amount);
 
         // Adapter deploys USDC to the underlying protocol and returns its own shares.
         let adapter_shares = AdapterClient::new(&env, &adapter_addr).deposit(&amount);
