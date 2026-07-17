@@ -15,7 +15,7 @@
     "verify:contracts": "tsx scripts/verify-contract-addresses.ts"
   },
   "dependencies": {
-    "@stellar/stellar-sdk": "^14.0.0"
+    "@stellar/stellar-sdk": "^14.6.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
