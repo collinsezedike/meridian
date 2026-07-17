@@ -146,6 +146,8 @@ npm install -g pnpm@9
    pnpm lint && pnpm typecheck && pnpm test
    ```
 
+   Note: generated Soroban contract test snapshots under `packages/contracts/**/test_snapshots` are ignored by Git and should not be committed manually.
+
 ---
 
 ## Project Structure
