@@ -2,9 +2,9 @@
 
 Meridian has two API implementations that share the same interface:
 
-| Implementation              | Used in           | Location    |
-| --------------------------- | ----------------- | ----------- |
-| Vercel serverless functions | Production        | `api/v1/`   |
+| Implementation              | Used in           | Location          |
+| --------------------------- | ----------------- | ----------------- |
+| Vercel serverless functions | Production        | `api/v1/`         |
 | Fastify server              | Local development | `apps/api-local/` |
 
 ## Endpoints
