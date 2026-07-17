@@ -125,7 +125,7 @@ export function useVaultActions() {
     };
   }, []);
 
-  useQuery({
+  useQuery<ApiPosition[]>({
     queryKey: ["positions", publicKey],
     queryFn: async () => {
       if (!publicKey) throw new Error("No public key");
@@ -134,12 +134,22 @@ export function useVaultActions() {
     },
     enabled: isPollingPositions && !!publicKey,
     retry: false,
+
     refetchInterval: (query) => {
       const targets = pollTargetsRef.current;
       if (targets.size === 0) return false;
 
+      // Before this observer's first fetch resolves, status is "pending"
+      // and data is undefined. Skip the tick entirely rather than letting
+      // it fall through to the success path below — undefined data would
+      // otherwise look like every target's shares already dropped to zero,
+      // deleting all targets on the very first tick.
+      if (query.state.status === "pending") {
+        return 3_000;
+      }
+
       const isError = query.state.status === "error";
-      const data = query.state.data as ApiPosition[] | undefined;
+      const data = query.state.data;
 
       for (const [id, target] of targets) {
         if (Date.now() - target.startedAt > 30_000) {
@@ -157,9 +167,13 @@ export function useVaultActions() {
         }
         target.failures = 0;
 
-        const live =
-          data?.find((p) => p.vaultId === target.vaultId) ?? data?.[0];
-        if ((live?.shares ?? 0) < target.sharesBefore) {
+        const live = data?.find((p) => p.vaultId === target.vaultId);
+        if (!live) {
+          // This target's vault isn't in the latest fetch — wait for the
+          // next tick instead of comparing against an unrelated position.
+          continue;
+        }
+        if (live.shares < target.sharesBefore) {
           targets.delete(id);
         }
       }
