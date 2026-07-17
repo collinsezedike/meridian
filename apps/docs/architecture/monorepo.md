@@ -83,7 +83,8 @@ meridian/
 | Boundary                    | Rule                                                                                                                                                                                                                                                    |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `api/` serverless functions | Imports from `@meridian/shared` and `@meridian/stellar-sdk-helpers` via pre-built `dist/` bundles. `scripts/build-vercel.sh` runs esbuild on each package before the Vercel build so the handlers can import compiled JS rather than TypeScript source. |
-| `apps/api` Fastify server   | Imports the same workspace packages directly via `tsx` (TypeScript-native). Used for local development only.                                                                                                                                            |
+| `apps/api-local` Fastify server | Imports the same workspace packages directly via `tsx` (TypeScript-native). Used for local development only. |
+
 | `apps/web`                  | No direct Soroban SDK usage. All blockchain interaction goes through the API.                                                                                                                                                                           |
 | `packages/contracts`        | Rust only. No TypeScript.                                                                                                                                                                                                                               |
 

@@ -6,7 +6,7 @@
 | -------------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `VITE_API_URL` | No       | `""`    | Base URL of the API server. Empty means same origin. In local dev, Vite proxies `/api` to `localhost:3001` so this is not needed. |
 
-## API: serverless (`api/v1/`) and Fastify (`apps/api`)
+## API: serverless (`api/v1/`) and Fastify (`apps/api-local`)
 
 | Variable            | Required | Default                            | Description                                                                                                                                                                                                                                             |
 | ------------------- | -------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -44,7 +44,7 @@ Variables prefixed with `VITE_` are inlined at build time and exposed to the bro
 Create `.env` files at the package level if needed:
 
 ```bash
-# apps/api/.env
+# apps/api-local/.env
 PORT=3001
 DEFINDEX_VAULT_ID=C...   # optional, leave empty to use the address in constants.ts
 ```

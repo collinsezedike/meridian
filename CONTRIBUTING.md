@@ -283,7 +283,7 @@ Commits that do not match the `^(feat|fix|docs|chore|refactor|test|style|ci|perf
 
 ## Code Standards
 
-### TypeScript (`apps/web`, `apps/api`, `packages/*`)
+### TypeScript (`apps/web`, `apps/api-local`, `packages/*`)
 
 - **Formatting:** Run `pnpm format` before committing. Prettier with default settings.
 - **Linting:** Must pass `pnpm lint` with zero errors.

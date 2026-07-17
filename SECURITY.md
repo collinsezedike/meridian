@@ -22,7 +22,7 @@ The following are considered in scope for vulnerability reports:
 
 - **Soroban smart contracts** (`packages/contracts/`) on Stellar **mainnet** — treat any finding here as **Critical severity**
 - **Soroban smart contracts** on Stellar **testnet** — treat as High severity
-- **API server** (`apps/api/`) — authentication bypass, injection, SSRF, exposed secrets, improper input validation
+- **API server** (`apps/api-local/`) — authentication bypass, injection, SSRF, exposed secrets, improper input validation
 - **Frontend** (`apps/web/`) — XSS, insecure wallet interaction, transaction manipulation before signing
 - **SDK helpers** (`packages/stellar-sdk-helpers/`) — incorrect transaction construction, signing logic flaws, improper RPC handling
 - **Dependency vulnerabilities** that directly affect on-chain behaviour or user funds

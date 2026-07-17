@@ -1,5 +1,5 @@
 {
-  "name": "@meridian/api-functions",
+  "name": "@meridian/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",

@@ -67,7 +67,7 @@ User browser
                          Stellar RPC (Soroban)
 ```
 
-In production, API routes are Vercel serverless functions (`api/v1/...`). The Fastify server in `apps/api` is used for local development only.
+In production, API routes are Vercel serverless functions (`api/v1/...`). The Fastify server in `apps/api-local` is used for local development only.
 
 The API never holds private keys. It builds an unsigned Soroban transaction, returns the XDR, and the frontend forwards it to the user's wallet (Freighter) for signing and submission. See [`docs/signing-flow.md`](docs/signing-flow.md) for the full sequence diagram and endpoint reference.
 

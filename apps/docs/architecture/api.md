@@ -5,7 +5,7 @@ Meridian has two API implementations that share the same interface:
 | Implementation              | Used in           | Location    |
 | --------------------------- | ----------------- | ----------- |
 | Vercel serverless functions | Production        | `api/v1/`   |
-| Fastify server              | Local development | `apps/api/` |
+| Fastify server              | Local development | `apps/api-local/` |
 
 ## Endpoints
 
@@ -145,7 +145,7 @@ Both implementations share the same handler logic and import from the same works
 
 The Vercel functions (`api/v1/`) import workspace packages that are pre-built into self-contained JS bundles by `scripts/build-vercel.sh` before deployment. The build script runs esbuild on each package's entry point with `--bundle --packages=external`, inlining all relative imports while leaving npm packages external. Vercel then bundles the resulting `dist/index.js` files alongside the function handlers at deploy time.
 
-The Fastify server (`apps/api/`) runs the same packages directly via `tsx`, which handles TypeScript natively in the development process.
+The Fastify server (`apps/api-local/`) runs the same packages directly via `tsx`, which handles TypeScript natively in the development process.
 
 ## Vault ID to protocol mapping
 
