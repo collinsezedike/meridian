@@ -13,9 +13,63 @@ import { useToastStore } from "../../store/toast";
 const invalidateQueries = vi.fn();
 const setQueryData = vi.fn();
 const getQueryData = vi.fn(() => undefined);
-vi.mock("@tanstack/react-query", () => ({
-  useQueryClient: () => ({ invalidateQueries, setQueryData, getQueryData }),
-}));
+vi.mock("@tanstack/react-query", async () => {
+  const { useEffect, useRef, useState } = await import("react");
+
+  function useQuery(options: {
+    queryFn: () => Promise<unknown>;
+    enabled?: boolean;
+    refetchInterval?: (query: {
+      state: { status: string; data: unknown };
+    }) => number | false;
+  }) {
+    const [state, setState] = useState<{ status: string; data: unknown }>({
+      status: "pending",
+      data: undefined,
+    });
+    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(() => {
+      if (!options.enabled) return;
+      let cancelled = false;
+
+      function scheduleNext(current: { status: string; data: unknown }) {
+        const next = options.refetchInterval?.({ state: current });
+        if (next === false || next === undefined) return;
+        timerRef.current = setTimeout(tick, next);
+      }
+
+      async function tick() {
+        try {
+          const data = await options.queryFn();
+          if (cancelled) return;
+          const next = { status: "success", data };
+          setState(next);
+          scheduleNext(next);
+        } catch {
+          if (cancelled) return;
+          const next = { status: "error", data: undefined };
+          setState(next);
+          scheduleNext(next);
+        }
+      }
+
+      void tick();
+      return () => {
+        cancelled = true;
+        if (timerRef.current) clearTimeout(timerRef.current);
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [options.enabled]);
+
+    return state;
+  }
+
+  return {
+    useQueryClient: () => ({ invalidateQueries, setQueryData, getQueryData }),
+    useQuery,
+  };
+});
 
 vi.mock("../../lib/wallet", () => ({
   signTransaction: vi.fn(async () => "SIGNED_XDR"),
@@ -336,17 +390,14 @@ describe("useVaultActions — withdraw", () => {
       await result.current.withdraw("5", "blend-usdc-fixed", "USDC");
     });
 
-    // syncWhenReady polls every 3 s; three consecutive failures triggers the toast.
-    for (let i = 0; i < 3; i++) {
+    // Initial 3s delay before polling starts, then 3 failed attempts at 3s intervals.
+    for (let i = 0; i < 4; i++) {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(3_000);
       });
     }
 
-    expect(warnSpy).toHaveBeenCalledWith(
-      "[syncWhenReady] poll failed:",
-      expect.any(Error)
-    );
+    expect(warnSpy).toHaveBeenCalledWith("[positions poll] failed, attempt", 3);
     expect(useToastStore.getState().toasts).toContainEqual(
       expect.objectContaining({
         kind: "info",
@@ -356,5 +407,66 @@ describe("useVaultActions — withdraw", () => {
 
     warnSpy.mockRestore();
     vi.useRealTimers();
+  });
+
+  it("stops polling when the component unmounts mid-poll", async () => {
+    vi.useFakeTimers();
+    vi.mocked(api.getPositions).mockRejectedValue(new Error("RPC down"));
+
+    const { result, unmount } = renderHook(() => useVaultActions());
+
+    await act(async () => {
+      await result.current.withdraw("5", "blend-usdc-fixed", "USDC");
+    });
+
+    // Let polling start (3s delay) and complete one attempt.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    const callsBeforeUnmount = vi.mocked(api.getPositions).mock.calls.length;
+
+    unmount();
+
+    // Advance well past several more would-be poll intervals.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+
+    expect(vi.mocked(api.getPositions).mock.calls.length).toBe(
+      callsBeforeUnmount
+    );
+
+    vi.useRealTimers();
+  });
+
+  it("does not activate polling if unmounted before the 3s activation delay", async () => {
+    vi.useFakeTimers();
+    vi.mocked(api.getPositions).mockResolvedValue({ positions: [] });
+
+    const { result, unmount } = renderHook(() => useVaultActions());
+
+    await act(async () => {
+      await result.current.withdraw("5", "blend-usdc-fixed", "USDC");
+    });
+
+    // Still inside the 3s activation window — polling has not started yet.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+    expect(api.getPositions).not.toHaveBeenCalled();
+
+    // Unmount before the activation timeout fires. The pending timeout
+    // should be cancelled by the hook's cleanup effect rather than firing
+    // setIsPollingPositions on a hook instance whose owning component is
+    // already gone.
+    unmount();
+
+    // Advance well past the original 3s mark and beyond.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    // Polling never activated, so getPositions should never have been called.
+    expect(api.getPositions).not.toHaveBeenCalled();
   });
 });
