@@ -102,8 +102,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # apps/api-local imports its workspace deps (@meridian/shared etc.) by
       # package resolution, which needs their dist/ output built first - the
-      # dev server doesn't build them itself.
-      - run: pnpm build
+      # dev server doesn't build them itself. Scoped to api-local's own
+      # dependency graph so this doesn't also try to build contracts/docs.
+      - run: pnpm exec turbo run build --filter=@meridian/api-local...
       - run: pnpm --filter @meridian/web exec playwright install --with-deps chromium
       - run: pnpm --filter @meridian/web test:e2e
 
