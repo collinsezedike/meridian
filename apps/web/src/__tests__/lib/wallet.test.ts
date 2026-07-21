@@ -90,14 +90,15 @@ describe("lib/wallet — e2e mock wallet path", () => {
     address?: string;
     sign?: (xdr: string, networkPassphrase: string) => Promise<string>;
   }) {
-    (window as unknown as { __E2E_MOCK_WALLET__: unknown }).__E2E_MOCK_WALLET__ =
-      {
-        installed: true,
-        authorized: true,
-        address: ADDRESS,
-        sign: async () => "MOCK_SIGNED",
-        ...overrides,
-      };
+    (
+      window as unknown as { __E2E_MOCK_WALLET__: unknown }
+    ).__E2E_MOCK_WALLET__ = {
+      installed: true,
+      authorized: true,
+      address: ADDRESS,
+      sign: async () => "MOCK_SIGNED",
+      ...overrides,
+    };
   }
 
   it("short-circuits isFreighterInstalled without calling the real API", async () => {
