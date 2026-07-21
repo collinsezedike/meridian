@@ -385,6 +385,23 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all
 ```
 
+### End-to-end tests
+
+The e2e suite (`apps/web/e2e/`) drives the real `apps/web` and `apps/api-local` dev servers with a real headless browser via [Playwright](https://playwright.dev). It hits the real API and real Stellar testnet RPC end to end; only Freighter's wallet-signing step is mocked (see `apps/web/e2e/fixtures.ts`), since a real browser extension can't run in CI. Only needed when modifying `apps/web`, `apps/api-local`, or anything the deposit/withdraw/vault-list flows depend on.
+
+```bash
+# One-time: install the browser binary
+pnpm --filter @meridian/web exec playwright install chromium
+
+# Run the full suite (boots both dev servers automatically)
+pnpm --filter @meridian/web test:e2e
+
+# Interactive UI mode, useful for debugging a failing spec
+pnpm --filter @meridian/web test:e2e:ui
+```
+
+Because it depends on live testnet RPC, this suite is non-blocking in CI (see the `E2E Tests` job) — treat a failure there as a signal to investigate, not necessarily a blocker for your PR.
+
 ---
 
 ## Getting Help

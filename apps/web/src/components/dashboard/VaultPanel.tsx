@@ -222,6 +222,7 @@ export function VaultPanel() {
           {(["deposit", "withdraw"] as Tab[]).map((t) => (
             <button
               key={t}
+              data-testid={`vault-tab-${t}`}
               onClick={() => handleTabChange(t)}
               className={`flex-1 py-3 text-sm font-semibold transition-colors duration-150 ${
                 tab === t
@@ -285,6 +286,7 @@ export function VaultPanel() {
               />
             </div>
             <button
+              data-testid="vault-deposit-submit"
               onClick={handleDeposit}
               disabled={!amount || !bestVault || isDepositing}
               className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 disabled:text-gray-600 text-white text-sm font-semibold py-3.5 transition-all duration-150 disabled:cursor-not-allowed"
@@ -306,6 +308,7 @@ export function VaultPanel() {
                       {t("vaultPanel.amount")}
                     </span>
                     <button
+                      data-testid="vault-withdraw-max"
                       onClick={() => setAmount(position.shares.toFixed(7))}
                       className="text-xs text-emerald-500 hover:text-emerald-400 transition-colors duration-150"
                     >
@@ -320,6 +323,7 @@ export function VaultPanel() {
                   />
                 </div>
                 <button
+                  data-testid="vault-withdraw-submit"
                   onClick={handleWithdraw}
                   disabled={
                     !amount ||

@@ -20,6 +20,16 @@ const serveLanding = {
 export default defineConfig({
   plugins: [react(), serveLanding],
   base: "/app/",
+  // packages/shared's dist/constants.ts reads process.env.STELLAR_NETWORK for
+  // its Node-side (API) consumers. Vite's dev server serves that pre-built
+  // file to the browser as-is (via @fs/) rather than replacing process.env
+  // references the way a production `vite build` does, so `process` is
+  // genuinely undefined at runtime and the app fails to boot. Defining it as
+  // an empty object matches Node's own `undefined` lookup behavior for unset
+  // vars (constants.ts already falls back to "testnet" in that case).
+  define: {
+    "process.env": "{}",
+  },
   server: {
     port: 3000,
     strictPort: true,
