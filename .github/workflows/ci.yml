@@ -100,6 +100,10 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # apps/api-local imports its workspace deps (@meridian/shared etc.) by
+      # package resolution, which needs their dist/ output built first - the
+      # dev server doesn't build them itself.
+      - run: pnpm build
       - run: pnpm --filter @meridian/web exec playwright install --with-deps chromium
       - run: pnpm --filter @meridian/web test:e2e
 
