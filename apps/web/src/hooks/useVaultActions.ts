@@ -3,7 +3,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   APP_NETWORK,
   USDC_ISSUER,
-  MUSDC_ISSUER,
 } from "@meridian/shared";
 import { assertFaucetPayment } from "@meridian/stellar-sdk-helpers";
 import { useWalletStore } from "../store/wallet";
@@ -11,6 +10,7 @@ import { api, type ApiPosition } from "../lib/api";
 import { useToastStore } from "../store/toast";
 import { fetchBalances } from "../lib/horizonAccount";
 import { useSignAndSubmit } from "./useSignAndSubmit";
+import { useTrustlines } from "./useTrustlines";
 import { useTranslation } from "react-i18next";
 
 // Configurable so the faucet can be rotated or disabled without a code
@@ -41,32 +41,6 @@ async function hasBlendUsdcBalance(
   }
 }
 
-// A trustline just needs to exist (balance can be 0) to receive that asset,
-// unlike hasBlendUsdcBalance above which also requires a positive balance.
-// Checked proactively before depositing so a first-time depositor's missing
-// mUSDC (or USDC) trustline is established silently up front, instead of the
-// deposit failing on-chain and the user having to notice and click a
-// separate "Add Assets" step.
-async function hasRequiredTrustlines(
-  publicKey: string,
-  network: string
-): Promise<boolean> {
-  const usdcIssuer = USDC_ISSUER[network];
-  const musdcIssuer = MUSDC_ISSUER[network];
-  try {
-    const account = await fetchBalances(publicKey, network);
-    if (!account) return true;
-    const hasTrustline = (code: string, issuer: string) =>
-      account.balances.some(
-        (b) => b.asset_code === code && b.asset_issuer === issuer
-      );
-    const hasUsdc = !usdcIssuer || hasTrustline("USDC", usdcIssuer);
-    const hasMusdc = !musdcIssuer || hasTrustline("MUSDC", musdcIssuer);
-    return hasUsdc && hasMusdc;
-  } catch {
-    return true;
-  }
-}
 
 export function useVaultActions() {
   const { t } = useTranslation();
@@ -170,22 +144,8 @@ export function useVaultActions() {
     },
   });
   const { signAndSubmit, passphrase } = useSignAndSubmit();
+  const { hasRequiredTrustlines, addTrustline } = useTrustlines();
 
-  async function addTrustline(): Promise<boolean> {
-    if (!publicKey || !passphrase) return false;
-    try {
-      const { xdr } = await api.addTrustline(publicKey);
-      await signAndSubmit(xdr);
-      push("success", t("vaultActions.assetsAdded"));
-      return true;
-    } catch (err) {
-      push(
-        "error",
-        err instanceof Error ? err.message : t("vaultActions.failedAssets")
-      );
-      return false;
-    }
-  }
 
   // Calls Blend's testnet faucet to fund the wallet with test USDC before the
   // first deposit. Only triggered on testnet when the user has no USDC balance.
