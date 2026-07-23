@@ -250,6 +250,12 @@ impl MeridianBlendAdapter {
         env.storage().instance().get(&POOL_KEY).unwrap()
     }
 
+    /// Refreshes the cached USDC value using the live b_rate from Blend.
+    /// Alias for `accrue()` to support the trait required by the vault.
+    pub fn refresh(env: Env) {
+        Self::accrue(env)
+    }
+
     /// Returns "blend", identifying which protocol this adapter wraps.
     pub fn get_protocol(env: Env) -> Symbol {
         Symbol::new(&env, "blend")

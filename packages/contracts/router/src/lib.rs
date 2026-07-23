@@ -95,6 +95,19 @@ mod tests {
             let usdc: Address = env.storage().instance().get(&TA_USDC).unwrap();
             TokenClient::new(&env, &usdc).balance(&env.current_contract_address())
         }
+
+        pub fn refresh(_env: Env) {
+            // No-op for test adapter.
+        }
+
+        pub fn get_pool(env: Env) -> Address {
+            // Return the USDC address as a dummy pool for testing.
+            env.storage().instance().get(&TA_USDC).unwrap()
+        }
+
+        pub fn get_protocol(env: Env) -> Symbol {
+            Symbol::new(&env, "test")
+        }
     }
 
     fn make_vault(

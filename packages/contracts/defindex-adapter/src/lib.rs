@@ -122,6 +122,11 @@ impl MeridianDefindexAdapter {
         env.storage().instance().get(&DFX_VAULT).unwrap()
     }
 
+    /// No-op; DeFindex adapter computes total_assets live.
+    pub fn refresh(_env: Env) {
+        // DeFindex adapter already prices live; no cache to refresh.
+    }
+
     /// Returns "defindex", identifying which protocol this adapter wraps.
     pub fn get_protocol(env: Env) -> Symbol {
         Symbol::new(&env, "defindex")

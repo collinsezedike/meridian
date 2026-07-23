@@ -39,8 +39,13 @@ pub trait YieldAdapterInterface {
     fn deposit(env: Env, amount: i128) -> i128;
     fn withdraw(env: Env, shares: i128, recipient: Address) -> i128;
     fn total_assets(env: Env) -> i128;
+    /// Refreshes any cached state needed to compute an up-to-date
+    /// `total_assets()`. Called by the vault before any deposit or
+    /// withdrawal price calculation to ensure the share price reflects
+    /// currently accrued yield.
+    fn refresh(env: Env);
     /// Returns the address of the underlying protocol contract this adapter
-    /// wraps (a lending pool for Blend, a vault for DeFindex, etc). Lets
+    /// wraps (a lending pool for Blend, a vault for DeFindex, etc.). Lets
     /// off-chain callers discover where to read live protocol data (e.g. a
     /// supply rate) without maintaining that address in config, so it can
     /// never drift out of sync if the adapter is later swapped via
@@ -148,6 +153,9 @@ impl MeridianVault {
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
         let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
 
+        // Refresh the adapter's cached state before computing the share price.
+        AdapterClient::new(&env, &adapter_addr).refresh();
+
         // Share price is based on the adapter's total assets (includes yield).
         let total_assets = AdapterClient::new(&env, &adapter_addr).total_assets();
 
@@ -222,6 +230,10 @@ impl MeridianVault {
         let adapter_addr: Address = env.storage().instance().get(&ADAPTER).unwrap();
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
         let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
+
+        // Refresh the adapter's cached state for consistency, even though
+        // the actual USDC payout is computed live by the underlying protocol.
+        AdapterClient::new(&env, &adapter_addr).refresh();
 
         if total_shares <= 0 {
             return Err(ContractError::NoSharesOutstanding);
@@ -455,6 +467,10 @@ mod tests {
         pub fn total_assets(env: Env) -> i128 {
             let usdc: Address = env.storage().instance().get(&MA_USDC).unwrap();
             TokenClient::new(&env, &usdc).balance(&env.current_contract_address())
+        }
+
+        pub fn refresh(_env: Env) {
+            // Mock adapter doesn't need refreshing; it computes total_assets live.
         }
     }
 
