@@ -1,8 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  APP_NETWORK,
-} from "@meridian/shared";
+import { APP_NETWORK } from "@meridian/shared";
 import { useWalletStore } from "../store/wallet";
 import { api, type ApiPosition } from "../lib/api";
 import { useToastStore } from "../store/toast";
@@ -11,8 +9,6 @@ import { useTrustlines } from "./useTrustlines";
 import { useBlendFaucet } from "./useBlendFaucet";
 import { usePositionPolling } from "./usePositionPolling";
 import { useTranslation } from "react-i18next";
-
-
 
 export function useVaultActions() {
   const { t } = useTranslation();
@@ -26,7 +22,6 @@ export function useVaultActions() {
   const { hasRequiredTrustlines, addTrustline } = useTrustlines();
   const { hasBlendUsdcBalance, fundFromBlendFaucet } = useBlendFaucet();
   const { startPolling } = usePositionPolling();
-
 
   async function deposit(
     amount: string,
@@ -155,9 +150,3 @@ export function useVaultActions() {
     isWithdrawing,
   };
 }
-
-
-
-
-
-

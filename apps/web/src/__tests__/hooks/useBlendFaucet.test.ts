@@ -6,7 +6,10 @@ import {
   Operation,
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
-import { useBlendFaucet, hasBlendUsdcBalance } from "../../hooks/useBlendFaucet";
+import {
+  useBlendFaucet,
+  hasBlendUsdcBalance,
+} from "../../hooks/useBlendFaucet";
 import { useWalletStore } from "../../store/wallet";
 import { useToastStore } from "../../store/toast";
 
@@ -105,7 +108,10 @@ describe("useBlendFaucet", () => {
         amount: "1000",
       })
     );
-    vi.stubGlobal("fetch", vi.fn(async () => legitimate));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => legitimate)
+    );
     const { result } = renderHook(() => useBlendFaucet());
 
     let ok: boolean | undefined;
@@ -127,7 +133,10 @@ describe("useBlendFaucet", () => {
         amount: "1000",
       })
     );
-    vi.stubGlobal("fetch", vi.fn(async () => malicious));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => malicious)
+    );
     const { result } = renderHook(() => useBlendFaucet());
 
     let ok: boolean | undefined;

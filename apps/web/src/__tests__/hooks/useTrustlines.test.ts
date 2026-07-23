@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useTrustlines, hasRequiredTrustlines } from "../../hooks/useTrustlines";
+import {
+  useTrustlines,
+  hasRequiredTrustlines,
+} from "../../hooks/useTrustlines";
 import { useWalletStore } from "../../store/wallet";
 import { useToastStore } from "../../store/toast";
 

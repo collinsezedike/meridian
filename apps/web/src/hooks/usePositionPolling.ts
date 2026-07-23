@@ -13,7 +13,17 @@ export function usePositionPolling() {
 
   // Keyed by a per-withdrawal id so concurrent withdrawals each track their
   // own exit condition instead of one overwriting another's poll target.
-  const pollTargetsRef = useRef<Map<string, { vaultId: string; sharesBefore: number; startedAt: number; failures: number }>>(new Map());
+  const pollTargetsRef = useRef<
+    Map<
+      string,
+      {
+        vaultId: string;
+        sharesBefore: number;
+        startedAt: number;
+        failures: number;
+      }
+    >
+  >(new Map());
 
   // Tracks pending "start polling" timeouts (the 3s activation delay after a
   // withdrawal) so they can be cancelled on unmount instead of calling
