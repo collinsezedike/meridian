@@ -2,44 +2,15 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   APP_NETWORK,
-  USDC_ISSUER,
 } from "@meridian/shared";
-import { assertFaucetPayment } from "@meridian/stellar-sdk-helpers";
 import { useWalletStore } from "../store/wallet";
 import { api, type ApiPosition } from "../lib/api";
 import { useToastStore } from "../store/toast";
-import { fetchBalances } from "../lib/horizonAccount";
 import { useSignAndSubmit } from "./useSignAndSubmit";
 import { useTrustlines } from "./useTrustlines";
+import { useBlendFaucet } from "./useBlendFaucet";
 import { useTranslation } from "react-i18next";
 
-// Configurable so the faucet can be rotated or disabled without a code
-// deploy; falls back to Blend's public testnet faucet.
-const BLEND_FAUCET_URL =
-  import.meta.env.VITE_BLEND_FAUCET_URL ??
-  "https://ewqw4hx7oa.execute-api.us-east-1.amazonaws.com/getAssets";
-
-
-
-async function hasBlendUsdcBalance(
-  publicKey: string,
-  network: string
-): Promise<boolean> {
-  const issuer = USDC_ISSUER[network];
-  if (!issuer) return true;
-  try {
-    const account = await fetchBalances(publicKey, network);
-    if (!account) return true;
-    return account.balances.some(
-      (b) =>
-        b.asset_code === "USDC" &&
-        b.asset_issuer === issuer &&
-        parseFloat(b.balance) > 0
-    );
-  } catch {
-    return true;
-  }
-}
 
 
 export function useVaultActions() {
@@ -145,33 +116,8 @@ export function useVaultActions() {
   });
   const { signAndSubmit, passphrase } = useSignAndSubmit();
   const { hasRequiredTrustlines, addTrustline } = useTrustlines();
+  const { hasBlendUsdcBalance, fundFromBlendFaucet } = useBlendFaucet();
 
-
-  // Calls Blend's testnet faucet to fund the wallet with test USDC before the
-  // first deposit. Only triggered on testnet when the user has no USDC balance.
-  // The faucet is a third-party endpoint outside Meridian's control, so the
-  // returned transaction is validated before it is ever shown to Freighter:
-  // every operation must credit the caller's own address in a known asset,
-  // never debit it or touch anything else.
-  async function fundFromBlendFaucet(): Promise<boolean> {
-    if (!publicKey || !passphrase) return false;
-    try {
-      push("info", "Funding testnet wallet with Blend test USDC...");
-      const res = await fetch(`${BLEND_FAUCET_URL}?userId=${publicKey}`);
-      if (!res.ok) throw new Error(`Blend faucet returned ${res.status}`);
-      const xdr = await res.text();
-      assertFaucetPayment(xdr, passphrase, network, publicKey);
-      await signAndSubmit(xdr);
-      push("success", "Testnet wallet funded");
-      return true;
-    } catch (err) {
-      push(
-        "error",
-        err instanceof Error ? err.message : "Failed to fund testnet wallet"
-      );
-      return false;
-    }
-  }
 
   async function deposit(
     amount: string,
@@ -195,7 +141,7 @@ export function useVaultActions() {
       if (APP_NETWORK.network === "testnet") {
         const hasFunds = await hasBlendUsdcBalance(publicKey, network);
         if (!hasFunds) {
-          const ok = await fundFromBlendFaucet();
+          const ok = await fundFromBlendFaucet(publicKey, network);
           if (!ok) return false;
         }
       }
