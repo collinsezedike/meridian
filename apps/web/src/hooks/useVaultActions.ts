@@ -1,16 +1,16 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  STELLAR_NETWORKS,
   APP_NETWORK,
   USDC_ISSUER,
   MUSDC_ISSUER,
 } from "@meridian/shared";
 import { assertFaucetPayment } from "@meridian/stellar-sdk-helpers";
 import { useWalletStore } from "../store/wallet";
-import { signTransaction } from "../lib/wallet";
 import { api, type ApiPosition } from "../lib/api";
 import { useToastStore } from "../store/toast";
+import { fetchBalances } from "../lib/horizonAccount";
+import { useSignAndSubmit } from "./useSignAndSubmit";
 import { useTranslation } from "react-i18next";
 
 // Configurable so the faucet can be rotated or disabled without a code
@@ -19,24 +19,7 @@ const BLEND_FAUCET_URL =
   import.meta.env.VITE_BLEND_FAUCET_URL ??
   "https://ewqw4hx7oa.execute-api.us-east-1.amazonaws.com/getAssets";
 
-function horizonUrlFor(network: string) {
-  return network === "mainnet"
-    ? "https://horizon.stellar.org"
-    : "https://horizon-testnet.stellar.org";
-}
 
-async function fetchBalances(publicKey: string, network: string) {
-  const res = await fetch(`${horizonUrlFor(network)}/accounts/${publicKey}`);
-  if (!res.ok) return null;
-  return (await res.json()) as {
-    balances: {
-      asset_type: string;
-      asset_code?: string;
-      asset_issuer?: string;
-      balance: string;
-    }[];
-  };
-}
 
 async function hasBlendUsdcBalance(
   publicKey: string,
@@ -87,7 +70,7 @@ async function hasRequiredTrustlines(
 
 export function useVaultActions() {
   const { t } = useTranslation();
-  const { publicKey, network, revalidate } = useWalletStore();
+  const { publicKey, network } = useWalletStore();
   const queryClient = useQueryClient();
   const { push } = useToastStore();
   const [isDepositing, setIsDepositing] = useState(false);
@@ -186,17 +169,7 @@ export function useVaultActions() {
       return 3_000;
     },
   });
-  const passphrase =
-    STELLAR_NETWORKS[network as keyof typeof STELLAR_NETWORKS]?.passphrase;
-
-  async function signAndSubmit(xdr: string) {
-    await revalidate();
-    if (!useWalletStore.getState().connected) {
-      throw new Error(t("walletConnect.walletDisconnected"));
-    }
-    const signedXdr = await signTransaction(xdr, passphrase);
-    await api.submitTx({ xdr: signedXdr });
-  }
+  const { signAndSubmit, passphrase } = useSignAndSubmit();
 
   async function addTrustline(): Promise<boolean> {
     if (!publicKey || !passphrase) return false;
@@ -383,3 +356,9 @@ export function useVaultActions() {
     isWithdrawing,
   };
 }
+
+
+
+
+
+
