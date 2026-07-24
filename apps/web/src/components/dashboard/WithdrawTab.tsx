@@ -28,9 +28,7 @@ export function WithdrawTab({
   return (
     <div className="space-y-4">
       {!hasPosition ? (
-        <p className="text-sm text-gray-500 py-2">
-          {t("vaultPanel.position")}
-        </p>
+        <p className="text-sm text-gray-500 py-2">{t("vaultPanel.position")}</p>
       ) : (
         <>
           <div>
@@ -64,9 +62,7 @@ export function WithdrawTab({
             }
             className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 disabled:text-gray-600 text-white text-sm font-semibold py-3.5 transition-all duration-150 disabled:cursor-not-allowed"
           >
-            {isWithdrawing
-              ? t("vaultPanel.waiting")
-              : t("vaultPanel.withdraw")}
+            {isWithdrawing ? t("vaultPanel.waiting") : t("vaultPanel.withdraw")}
           </button>
         </>
       )}
