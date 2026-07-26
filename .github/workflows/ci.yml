@@ -132,3 +132,49 @@ jobs:
       - name: Build wasm
         working-directory: packages/contracts
         run: cargo build --target wasm32-unknown-unknown --release
+
+  verify-contracts:
+    name: Verify Contract Addresses
+    runs-on: ubuntu-latest
+    # Only run on PRs that touch the files that record on-chain addresses, per
+    # #389's original scope. Running on every PR would waste CI minutes and hit
+    # Soroban RPC on unrelated changes.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Detect changed address files
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            addresses:
+              - 'packages/shared/src/constants.ts'
+              - 'packages/stellar-sdk-helpers/src/known-pools.ts'
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.filter.outputs.addresses == 'true'
+        with:
+          # stellar contract build uses wasm32v1-none; the toolchain action
+          # resolves the target name automatically with recent Rust toolchains.
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+        if: steps.filter.outputs.addresses == 'true'
+        with:
+          workspaces: packages/contracts
+      - name: Install Stellar CLI
+        if: steps.filter.outputs.addresses == 'true'
+        run: cargo install stellar-cli --locked
+      - uses: pnpm/action-setup@v6
+        if: steps.filter.outputs.addresses == 'true'
+      - uses: actions/setup-node@v6
+        if: steps.filter.outputs.addresses == 'true'
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        if: steps.filter.outputs.addresses == 'true'
+      - name: Verify contract addresses against on-chain bytecode
+        if: steps.filter.outputs.addresses == 'true'
+        # The script itself retries the on-chain fetch up to 3 times with a
+        # 3-second delay (see retry() in scripts/verify-contract-addresses.ts),
+        # so no extra shell-level retry is needed here.
+        run: pnpm verify:contracts

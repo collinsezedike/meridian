@@ -788,4 +788,71 @@ mod tests {
         assert_eq!(result, Ok(Ok(())));
         assert_eq!(vault.get_adapter(), new_adapter_id);
     }
+
+    // -----------------------------------------------------------------------
+    // Rounding edge cases: DepositTooSmall and WithdrawalTooSmall
+    // -----------------------------------------------------------------------
+
+    // shares_to_mint = amount * (total_shares + OFFSET) / (total_assets + OFFSET)
+    //
+    // After an initial deposit of 1 stroop (giving 1 share) and then a large
+    // direct donation to the adapter (inflating total_assets without minting
+    // any extra shares), the share price becomes very high. Depositing 1 stroop
+    // at that inflated price yields:
+    //   1 * (1 + 1_000) / (1 + 1_000_000_001 + 1_000) = 1_001 / 1_000_001_001 = 0
+    // which rounds to 0, triggering DepositTooSmall.
+    #[test]
+    fn deposit_too_small_fails() {
+        let (env, _admin, user, usdc_id, _musdc, adapter_id, vault) = setup();
+
+        // Seed the vault with a first deposit of 1 stroop so total_shares = 1.
+        vault.deposit(&user, &1_i128);
+
+        // Massively inflate total_assets by donating 10 USDC directly to the
+        // adapter. The vault's share count stays at 1, but its asset base is
+        // now ~10_0000000 + 1 stroops.
+        let donation = 10_0000000_i128;
+        StellarAssetClient::new(&env, &usdc_id).mint(&adapter_id, &donation);
+
+        // 1 stroop deposit at the inflated price rounds down to 0 shares.
+        let result = vault.try_deposit(&user, &1_i128);
+        assert_eq!(result, Err(Ok(ContractError::DepositTooSmall)));
+    }
+
+    // adapter_shares_to_burn = shares * total_adapter_shares / total_shares
+    // usdc_out = adapter_shares_to_burn * adapter_balance / adapter_total_sh
+    //
+    // The vault mints shares 1:1 against initial USDC. The adapter also tracks
+    // its own internal shares 1:1 against deposited USDC (MockAdapter.deposit
+    // returns amount as the adapter-share count). So after a 1-stroop deposit:
+    //   total_shares = 1, total_adapter_shares = 1, adapter.balance = 1
+    //
+    // Then we drain the adapter's USDC balance to 0 via a fake transfer (simulating
+    // a scenario where the adapter's protocol lost all its underlying assets),
+    // leaving adapter_balance = 0. A 1-share withdrawal then computes:
+    //   adapter_shares_to_burn = 1 * 1 / 1 = 1
+    //   usdc_out = 1 * 0 / 1 = 0
+    // which triggers WithdrawalTooSmall.
+    #[test]
+    fn withdrawal_too_small_fails() {
+        let (env, _admin, user, usdc_id, _musdc, adapter_id, vault) = setup();
+
+        // Deposit 1 stroop so the vault has 1 share and the adapter holds 1 stroop.
+        vault.deposit(&user, &1_i128);
+
+        // Drain the adapter's USDC balance to zero. This simulates a worst-case
+        // scenario (e.g. protocol insolvency) where every share maps to 0 USDC.
+        let drain_target = Address::generate(&env);
+        let usdc = TokenClient::new(&env, &usdc_id);
+        let adapter_balance = usdc.balance(&adapter_id);
+        if adapter_balance > 0 {
+            // Transfer the adapter's full USDC balance away so its internal
+            // balance is 0 — any withdrawal will compute usdc_out = 0.
+            usdc.transfer(&adapter_id, &drain_target, &adapter_balance);
+        }
+
+        let shares = vault.get_position(&user);
+        let result = vault.try_withdraw(&user, &shares);
+        assert_eq!(result, Err(Ok(ContractError::WithdrawalTooSmall)));
+    }
 }
