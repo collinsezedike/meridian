@@ -37,10 +37,10 @@ export function useTrustlines() {
   const { t } = useTranslation();
   const { publicKey } = useWalletStore();
   const { push } = useToastStore();
-  const { signAndSubmit } = useSignAndSubmit();
+  const { signAndSubmit, passphrase } = useSignAndSubmit();
 
   async function addTrustline(): Promise<boolean> {
-    if (!publicKey) return false;
+    if (!publicKey || !passphrase) return false;
     try {
       const { xdr } = await api.addTrustline(publicKey);
       await signAndSubmit(xdr);
