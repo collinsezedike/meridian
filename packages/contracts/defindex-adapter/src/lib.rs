@@ -357,6 +357,28 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "already initialized")]
+    fn initialize_panics_when_called_twice() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&env);
+        let vault = Address::generate(&env);
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let dfx_id = env.register(MockDefindexVault, ());
+        MockDefindexVaultClient::new(&env, &dfx_id).initialize(&usdc_id);
+
+        let adapter_id = env.register(MeridianDefindexAdapter, ());
+        let adapter = MeridianDefindexAdapterClient::new(&env, &adapter_id);
+
+        adapter.initialize(&vault, &dfx_id, &usdc_id);
+        // Second call must panic with "already initialized".
+        adapter.initialize(&vault, &dfx_id, &usdc_id);
+    }
+
+    #[test]
     #[should_panic]
     fn withdraw_requires_vault_auth() {
         let env = Env::default();

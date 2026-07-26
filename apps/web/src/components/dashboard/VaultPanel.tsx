@@ -4,7 +4,9 @@ import { usePositions } from "../../hooks/usePositions";
 import { useVaultActions } from "../../hooks/useVaultActions";
 import { useWalletStore } from "../../store/wallet";
 import { useWalletConnect } from "../../hooks/useWalletConnect";
-import { AmountInput } from "../ui/AmountInput";
+import { PositionSummary } from "./PositionSummary";
+import { DepositTab } from "./DepositTab";
+import { WithdrawTab } from "./WithdrawTab";
 import { useTranslation } from "react-i18next";
 
 const PROTOCOL_LABEL: Record<string, string> = {
@@ -12,15 +14,6 @@ const PROTOCOL_LABEL: Record<string, string> = {
   defindex: "DeFindex",
   meridian: "Meridian",
 };
-
-function formatUsd(value: number, locale: string) {
-  return value.toLocaleString(locale === "fr" ? "fr-FR" : "en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
 
 function formatTvl(value: number): string {
   if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
@@ -33,7 +26,7 @@ type Tab = "deposit" | "withdraw";
 export function VaultPanel() {
   const { data, isLoading: vaultsLoading } = useVaults();
   const vaults = data?.vaults;
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const { connected, publicKey } = useWalletStore();
   const { handleConnect, status: connectStatus } = useWalletConnect();
   const {
@@ -179,25 +172,8 @@ export function VaultPanel() {
       </div>
 
       {/* Position summary */}
-      {connected && hasPosition && (
-        <div className="mx-7 my-5 rounded-xl border border-gray-800 bg-gray-900/50 px-4 py-3.5 flex items-center justify-between">
-          <div>
-            <p className="text-xs text-gray-500 mb-1">
-              {t("vaultPanel.yourPosition")}
-            </p>
-            <p className="text-base font-bold text-white">
-              {formatUsd(position.deposited, i18n.language)}
-            </p>
-          </div>
-          <div className="text-right">
-            <p className="text-xs text-gray-500 mb-1">
-              {t("vaultPanel.earned")}
-            </p>
-            <p className="text-base font-bold text-emerald-400">
-              +{formatUsd(position.earned, i18n.language)}
-            </p>
-          </div>
-        </div>
+      {connected && hasPosition && position && (
+        <PositionSummary position={position} />
       )}
 
       {/* Position load error — deposit/withdraw stay usable, only the
@@ -265,81 +241,27 @@ export function VaultPanel() {
             )}
           </div>
         ) : tab === "deposit" ? (
-          <div className="space-y-4">
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-medium text-gray-500">
-                  {t("vaultPanel.amount")}
-                </span>
-                {hasPosition && (
-                  <span className="text-xs text-gray-600">
-                    {t("vaultPanel.balance")}:{" "}
-                    {formatUsd(position.deposited, i18n.language)}
-                  </span>
-                )}
-              </div>
-              <AmountInput
-                currency="USDC"
-                value={amount}
-                onChange={setAmount}
-                onKeyDown={onAmountKeyDown}
-              />
-            </div>
-            <button
-              data-testid="vault-deposit-submit"
-              onClick={handleDeposit}
-              disabled={!amount || !bestVault || isDepositing}
-              className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 disabled:text-gray-600 text-white text-sm font-semibold py-3.5 transition-all duration-150 disabled:cursor-not-allowed"
-            >
-              {isDepositing ? t("vaultPanel.waiting") : t("vaultPanel.deposit")}
-            </button>
-          </div>
+          <DepositTab
+            amount={amount}
+            onAmountChange={setAmount}
+            onAmountKeyDown={onAmountKeyDown}
+            bestVault={bestVault}
+            position={position}
+            hasPosition={!!hasPosition}
+            isDepositing={isDepositing}
+            onSubmit={handleDeposit}
+          />
         ) : (
-          <div className="space-y-4">
-            {!hasPosition ? (
-              <p className="text-sm text-gray-500 py-2">
-                {t("vaultPanel.position")}
-              </p>
-            ) : (
-              <>
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-gray-500">
-                      {t("vaultPanel.amount")}
-                    </span>
-                    <button
-                      data-testid="vault-withdraw-max"
-                      onClick={() => setAmount(position.shares.toFixed(7))}
-                      className="text-xs text-emerald-500 hover:text-emerald-400 transition-colors duration-150"
-                    >
-                      Max: {position.shares.toFixed(2)}
-                    </button>
-                  </div>
-                  <AmountInput
-                    currency="mUSDC"
-                    value={amount}
-                    onChange={setAmount}
-                    onKeyDown={onAmountKeyDown}
-                  />
-                </div>
-                <button
-                  data-testid="vault-withdraw-submit"
-                  onClick={handleWithdraw}
-                  disabled={
-                    !amount ||
-                    !bestVault ||
-                    isWithdrawing ||
-                    parseFloat(amount) > (position?.shares ?? 0)
-                  }
-                  className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 disabled:text-gray-600 text-white text-sm font-semibold py-3.5 transition-all duration-150 disabled:cursor-not-allowed"
-                >
-                  {isWithdrawing
-                    ? t("vaultPanel.waiting")
-                    : t("vaultPanel.withdraw")}
-                </button>
-              </>
-            )}
-          </div>
+          <WithdrawTab
+            amount={amount}
+            onAmountChange={setAmount}
+            onAmountKeyDown={onAmountKeyDown}
+            bestVault={bestVault}
+            position={position}
+            hasPosition={!!hasPosition}
+            isWithdrawing={isWithdrawing}
+            onSubmit={handleWithdraw}
+          />
         )}
       </div>
     </div>
