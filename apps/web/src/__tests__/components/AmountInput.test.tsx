@@ -4,9 +4,7 @@ import { AmountInput } from "../../components/ui/AmountInput";
 
 describe("AmountInput — accessible name", () => {
   it("input has an accessible name that includes the currency", () => {
-    render(
-      <AmountInput currency="USDC" value="0" onChange={() => {}} />
-    );
+    render(<AmountInput currency="USDC" value="0" onChange={() => {}} />);
 
     const input = screen.getByRole("spinbutton", { name: /amount in usdc/i });
     expect(input).toBeDefined();
@@ -38,9 +36,7 @@ describe("AmountInput — regression: existing props unaffected", () => {
   it("remains disabled when disabled prop is passed and still has an accessible name", () => {
     // AmountInput does not yet expose a disabled prop, but the input's
     // native attributes (min, max, type) must survive the aria-label addition.
-    render(
-      <AmountInput currency="USDC" value="0" onChange={() => {}} />
-    );
+    render(<AmountInput currency="USDC" value="0" onChange={() => {}} />);
 
     const input = screen.getByRole("spinbutton", { name: /amount in usdc/i });
     expect(input).toHaveProperty("min", "0");
@@ -59,9 +55,7 @@ describe("AmountInput — regression: existing props unaffected", () => {
   });
 
   it("renders the currency badge as visible text alongside the input", () => {
-    render(
-      <AmountInput currency="mUSDC" value="0" onChange={() => {}} />
-    );
+    render(<AmountInput currency="mUSDC" value="0" onChange={() => {}} />);
 
     // The span next to the input must still display the currency ticker.
     expect(screen.getByText("mUSDC")).toBeDefined();
