@@ -144,7 +144,11 @@ impl MeridianVault {
 
         let usdc = Self::usdc(&env)?;
         let musdc = Self::musdc(&env)?;
-        let adapter_addr: Address = env.storage().instance().get(&ADAPTER).unwrap();
+        let adapter_addr: Address = env
+            .storage()
+            .instance()
+            .get(&ADAPTER)
+            .ok_or(ContractError::NotInitialized)?;
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
         let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
 
@@ -219,7 +223,11 @@ impl MeridianVault {
 
         let usdc = Self::usdc(&env)?;
         let musdc = Self::musdc(&env)?;
-        let adapter_addr: Address = env.storage().instance().get(&ADAPTER).unwrap();
+        let adapter_addr: Address = env
+            .storage()
+            .instance()
+            .get(&ADAPTER)
+            .ok_or(ContractError::NotInitialized)?;
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
         let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
 
@@ -311,9 +319,13 @@ impl MeridianVault {
 
     /// Total USDC value managed by the vault as reported by the adapter.
     /// Includes yield accrued by the underlying protocol.
-    pub fn get_total_assets(env: Env) -> i128 {
-        let adapter_addr: Address = env.storage().instance().get(&ADAPTER).unwrap();
-        AdapterClient::new(&env, &adapter_addr).total_assets()
+    pub fn get_total_assets(env: Env) -> Result<i128, ContractError> {
+        let adapter_addr: Address = env
+            .storage()
+            .instance()
+            .get(&ADAPTER)
+            .ok_or(ContractError::NotInitialized)?;
+        Ok(AdapterClient::new(&env, &adapter_addr).total_assets())
     }
 
     /// Returns total mUSDC shares outstanding.
@@ -327,9 +339,10 @@ impl MeridianVault {
 
     /// Admin-only emergency switch. While paused, new deposits are rejected.
     /// Withdrawals are deliberately left open so a pause can never trap funds.
-    pub fn set_paused(env: Env, paused: bool) {
-        Self::require_admin(&env);
+    pub fn set_paused(env: Env, paused: bool) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         env.storage().instance().set(&PAUSED, &paused);
+        Ok(())
     }
 
     /// Returns whether deposits are currently paused.
@@ -338,21 +351,25 @@ impl MeridianVault {
     }
 
     /// Admin-only key rotation.
-    pub fn set_admin(env: Env, new_admin: Address) {
-        Self::require_admin(&env);
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         env.storage().instance().set(&ADMIN, &new_admin);
+        Ok(())
     }
 
     /// Returns the current admin address.
-    pub fn get_admin(env: Env) -> Address {
-        env.storage().instance().get(&ADMIN).unwrap()
+    pub fn get_admin(env: Env) -> Result<Address, ContractError> {
+        env.storage()
+            .instance()
+            .get(&ADMIN)
+            .ok_or(ContractError::NotInitialized)
     }
 
     /// Replace the yield adapter. The vault must have no shares outstanding
     /// before calling this. Resets the adapter-share counter so the new adapter
     /// starts at zero.
     pub fn set_adapter(env: Env, new_adapter: Address) -> Result<(), ContractError> {
-        Self::require_admin(&env);
+        Self::require_admin(&env)?;
         if Self::get_total_shares(env.clone()) > 0 {
             return Err(ContractError::AdapterSwapUnsafe);
         }
@@ -362,17 +379,25 @@ impl MeridianVault {
     }
 
     /// Returns the current adapter address.
-    pub fn get_adapter(env: Env) -> Address {
-        env.storage().instance().get(&ADAPTER).unwrap()
+    pub fn get_adapter(env: Env) -> Result<Address, ContractError> {
+        env.storage()
+            .instance()
+            .get(&ADAPTER)
+            .ok_or(ContractError::NotInitialized)
     }
 
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
 
-    fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
+    fn require_admin(env: &Env) -> Result<(), ContractError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN)
+            .ok_or(ContractError::NotInitialized)?;
         admin.require_auth();
+        Ok(())
     }
 
     fn usdc(env: &Env) -> Result<Address, ContractError> {
@@ -787,5 +812,89 @@ mod tests {
         let result = vault.try_set_adapter(&new_adapter_id);
         assert_eq!(result, Ok(Ok(())));
         assert_eq!(vault.get_adapter(), new_adapter_id);
+    }
+
+    #[test]
+    fn get_admin_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let result = vault.try_get_admin();
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
+    fn get_adapter_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let result = vault.try_get_adapter();
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
+    fn get_total_assets_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let result = vault.try_get_total_assets();
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
+    fn set_paused_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let result = vault.try_set_paused(&true);
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
+    fn set_admin_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let new_admin = Address::generate(&env);
+        let result = vault.try_set_admin(&new_admin);
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
+    fn set_adapter_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let new_adapter = Address::generate(&env);
+        let result = vault.try_set_adapter(&new_adapter);
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
+    fn deposit_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let user = Address::generate(&env);
+        let result = vault.try_deposit(&user, &100_0000000_i128);
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
+    fn withdraw_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let user = Address::generate(&env);
+        let result = vault.try_withdraw(&user, &100_0000000_i128);
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
     }
 }
