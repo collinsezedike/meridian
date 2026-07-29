@@ -14,7 +14,7 @@
 | `DEFINDEX_VAULT_ID` | No       | `""`                               | Overrides the DeFindex vault contract address at runtime. When empty, the address from `CONTRACT_ADDRESSES.testnet.defindex.vault` in `packages/shared/src/constants.ts` is used. Blend and vault contract addresses are always sourced from constants. |
 | `PORT`              | No       | `3001`                             | Fastify server port (local dev only).                                                                                                                                                                                                                   |
 | `ALLOWED_ORIGIN`    | No       | `"https://usemeridian.vercel.app"` | CORS allowed origin for the Fastify server. Set to your frontend domain in production if running Fastify as a standalone server.                                                                                                                        |
-| `REDIS_URL`         | No       | `""`                               | Redis URL for `@fastify/rate-limit` in `apps/api-local` (ioredis). Unset: in-memory store (single process); production: set for distributed rate limits. |
+| `REDIS_URL`         | No       | `""`                               | Redis URL for `@fastify/rate-limit` in `apps/api-local` (ioredis). Unset: in-memory store (single process); production: set for distributed rate limits.                                                                                                |
 
 ## Deploy scripts (`scripts/`)
 
