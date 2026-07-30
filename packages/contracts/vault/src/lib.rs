@@ -897,4 +897,59 @@ mod tests {
         let result = vault.try_withdraw(&user, &100_0000000_i128);
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
     }
+
+    // Rounding edge cases -------------------------------------------------------
+
+    #[test]
+    fn deposit_too_small_after_share_price_inflation() {
+        // After a large yield donation inflates the share price, a tiny deposit
+        // must round down to zero shares and return DepositTooSmall rather than
+        // minting zero shares silently.
+        //
+        // Setup: deposit 1 stroop so the vault has shares outstanding, then
+        // donate 1_000_000_000 stroops (100 USDC) directly to the adapter to
+        // inflate total_assets without changing total_shares. At that point the
+        // share price is ~1_000_000_001 stroops per share, so depositing 1 stroop
+        // gives shares_to_mint = 1 * (1 + 1_000) / (1_000_000_001 + 1_000) ≈ 0.
+        let (env, _admin, user, usdc_id, _musdc, adapter_id, vault) = setup();
+
+        // Seed the vault with a 1-stroop deposit so total_shares > 0.
+        vault.deposit(&user, &1_i128);
+
+        // Inflate the adapter's USDC balance to make the share price enormous.
+        StellarAssetClient::new(&env, &usdc_id).mint(&adapter_id, &1_000_000_000_i128);
+
+        // 1-stroop deposit now rounds down to 0 shares.
+        let result = vault.try_deposit(&user, &1_i128);
+        assert_eq!(result, Err(Ok(ContractError::DepositTooSmall)));
+    }
+
+    #[test]
+    fn withdrawal_too_small_when_usdc_drained_from_adapter() {
+        // When the adapter's USDC balance has been almost fully drained (simulating
+        // a loss scenario or an edge case where adapter balance < adapter shares),
+        // burning a small number of vault shares must return WithdrawalTooSmall
+        // rather than transferring zero USDC silently.
+        //
+        // Setup: deposit 1_000_000_000 stroops (100 USDC) — vault and adapter both
+        // have 1_000_000_000 shares outstanding and 1_000_000_000 stroops of USDC.
+        // Transfer all but 1 stroop of USDC away from the adapter so its balance
+        // drops to 1 stroop. Burning 2 vault shares then yields:
+        //   adapter_shares_to_burn = 2 * 1_000_000_000 / 1_000_000_000 = 2
+        //   usdc_out = 2 * 1 / 1_000_000_000 = 0  → WithdrawalTooSmall
+        let (env, _admin, user, usdc_id, _musdc, adapter_id, vault) = setup();
+
+        let deposit = 1_000_000_000_i128;
+        vault.deposit(&user, &deposit);
+
+        // Drain the adapter's USDC balance down to 1 stroop. mock_all_auths lets
+        // us transfer from any address without a real signature.
+        let drain_amount = deposit - 1;
+        let drain_sink = Address::generate(&env);
+        TokenClient::new(&env, &usdc_id).transfer(&adapter_id, &drain_sink, &drain_amount);
+
+        // Burning just 2 vault shares now rounds down to 0 USDC out.
+        let result = vault.try_withdraw(&user, &2_i128);
+        assert_eq!(result, Err(Ok(ContractError::WithdrawalTooSmall)));
+    }
 }
