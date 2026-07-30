@@ -3,6 +3,7 @@ import { USDC_ISSUER } from "@meridian/shared";
 import { fetchBalances } from "../lib/horizonAccount";
 import { useSignAndSubmit } from "./useSignAndSubmit";
 import { useToastStore } from "../store/toast";
+import { useTranslation } from "react-i18next";
 
 // Configurable so the faucet can be rotated or disabled without a code
 // deploy; falls back to Blend's public testnet faucet.
@@ -31,6 +32,7 @@ export async function hasBlendUsdcBalance(
 }
 
 export function useBlendFaucet() {
+  const { t } = useTranslation();
   const { push } = useToastStore();
   const { signAndSubmit, passphrase } = useSignAndSubmit();
 
@@ -46,18 +48,18 @@ export function useBlendFaucet() {
   ): Promise<boolean> {
     if (!publicKey || !passphrase) return false;
     try {
-      push("info", "Funding testnet wallet with Blend test USDC...");
+      push("info", t("vaultActions.fundingWallet"));
       const res = await fetch(`${BLEND_FAUCET_URL}?userId=${publicKey}`);
       if (!res.ok) throw new Error(`Blend faucet returned ${res.status}`);
       const xdr = await res.text();
       assertFaucetPayment(xdr, passphrase, network, publicKey);
       await signAndSubmit(xdr);
-      push("success", "Testnet wallet funded");
+      push("success", t("vaultActions.walletFunded"));
       return true;
     } catch (err) {
       push(
         "error",
-        err instanceof Error ? err.message : "Failed to fund testnet wallet"
+        err instanceof Error ? err.message : t("vaultActions.faucetFailed")
       );
       return false;
     }
