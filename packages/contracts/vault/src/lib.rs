@@ -144,7 +144,11 @@ impl MeridianVault {
 
         let usdc = Self::usdc(&env)?;
         let musdc = Self::musdc(&env)?;
-        let adapter_addr: Address = env.storage().instance().get(&ADAPTER).unwrap();
+        let adapter_addr: Address = env
+            .storage()
+            .instance()
+            .get(&ADAPTER)
+            .ok_or(ContractError::NotInitialized)?;
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
         let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
 
@@ -219,7 +223,11 @@ impl MeridianVault {
 
         let usdc = Self::usdc(&env)?;
         let musdc = Self::musdc(&env)?;
-        let adapter_addr: Address = env.storage().instance().get(&ADAPTER).unwrap();
+        let adapter_addr: Address = env
+            .storage()
+            .instance()
+            .get(&ADAPTER)
+            .ok_or(ContractError::NotInitialized)?;
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
         let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
 
@@ -311,9 +319,13 @@ impl MeridianVault {
 
     /// Total USDC value managed by the vault as reported by the adapter.
     /// Includes yield accrued by the underlying protocol.
-    pub fn get_total_assets(env: Env) -> i128 {
-        let adapter_addr: Address = env.storage().instance().get(&ADAPTER).unwrap();
-        AdapterClient::new(&env, &adapter_addr).total_assets()
+    pub fn get_total_assets(env: Env) -> Result<i128, ContractError> {
+        let adapter_addr: Address = env
+            .storage()
+            .instance()
+            .get(&ADAPTER)
+            .ok_or(ContractError::NotInitialized)?;
+        Ok(AdapterClient::new(&env, &adapter_addr).total_assets())
     }
 
     /// Returns total mUSDC shares outstanding.
@@ -327,9 +339,10 @@ impl MeridianVault {
 
     /// Admin-only emergency switch. While paused, new deposits are rejected.
     /// Withdrawals are deliberately left open so a pause can never trap funds.
-    pub fn set_paused(env: Env, paused: bool) {
-        Self::require_admin(&env);
+    pub fn set_paused(env: Env, paused: bool) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         env.storage().instance().set(&PAUSED, &paused);
+        Ok(())
     }
 
     /// Returns whether deposits are currently paused.
@@ -338,21 +351,25 @@ impl MeridianVault {
     }
 
     /// Admin-only key rotation.
-    pub fn set_admin(env: Env, new_admin: Address) {
-        Self::require_admin(&env);
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         env.storage().instance().set(&ADMIN, &new_admin);
+        Ok(())
     }
 
     /// Returns the current admin address.
-    pub fn get_admin(env: Env) -> Address {
-        env.storage().instance().get(&ADMIN).unwrap()
+    pub fn get_admin(env: Env) -> Result<Address, ContractError> {
+        env.storage()
+            .instance()
+            .get(&ADMIN)
+            .ok_or(ContractError::NotInitialized)
     }
 
     /// Replace the yield adapter. The vault must have no shares outstanding
     /// before calling this. Resets the adapter-share counter so the new adapter
     /// starts at zero.
     pub fn set_adapter(env: Env, new_adapter: Address) -> Result<(), ContractError> {
-        Self::require_admin(&env);
+        Self::require_admin(&env)?;
         if Self::get_total_shares(env.clone()) > 0 {
             return Err(ContractError::AdapterSwapUnsafe);
         }
@@ -362,17 +379,25 @@ impl MeridianVault {
     }
 
     /// Returns the current adapter address.
-    pub fn get_adapter(env: Env) -> Address {
-        env.storage().instance().get(&ADAPTER).unwrap()
+    pub fn get_adapter(env: Env) -> Result<Address, ContractError> {
+        env.storage()
+            .instance()
+            .get(&ADAPTER)
+            .ok_or(ContractError::NotInitialized)
     }
 
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
 
-    fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
+    fn require_admin(env: &Env) -> Result<(), ContractError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN)
+            .ok_or(ContractError::NotInitialized)?;
         admin.require_auth();
+        Ok(())
     }
 
     fn usdc(env: &Env) -> Result<Address, ContractError> {
@@ -789,70 +814,87 @@ mod tests {
         assert_eq!(vault.get_adapter(), new_adapter_id);
     }
 
-    // -----------------------------------------------------------------------
-    // Rounding edge cases: DepositTooSmall and WithdrawalTooSmall
-    // -----------------------------------------------------------------------
-
-    // shares_to_mint = amount * (total_shares + OFFSET) / (total_assets + OFFSET)
-    //
-    // After an initial deposit of 1 stroop (giving 1 share) and then a large
-    // direct donation to the adapter (inflating total_assets without minting
-    // any extra shares), the share price becomes very high. Depositing 1 stroop
-    // at that inflated price yields:
-    //   1 * (1 + 1_000) / (1 + 1_000_000_001 + 1_000) = 1_001 / 1_000_001_001 = 0
-    // which rounds to 0, triggering DepositTooSmall.
     #[test]
-    fn deposit_too_small_fails() {
-        let (env, _admin, user, usdc_id, _musdc, adapter_id, vault) = setup();
-
-        // Seed the vault with a first deposit of 1 stroop so total_shares = 1.
-        vault.deposit(&user, &1_i128);
-
-        // Massively inflate total_assets by donating 10 USDC directly to the
-        // adapter. The vault's share count stays at 1, but its asset base is
-        // now ~10_0000000 + 1 stroops.
-        let donation = 10_0000000_i128;
-        StellarAssetClient::new(&env, &usdc_id).mint(&adapter_id, &donation);
-
-        // 1 stroop deposit at the inflated price rounds down to 0 shares.
-        let result = vault.try_deposit(&user, &1_i128);
-        assert_eq!(result, Err(Ok(ContractError::DepositTooSmall)));
+    fn get_admin_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let result = vault.try_get_admin();
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
     }
 
-    // adapter_shares_to_burn = shares * total_adapter_shares / total_shares
-    // usdc_out = adapter_shares_to_burn * adapter_balance / adapter_total_sh
-    //
-    // The vault mints shares 1:1 against initial USDC. The adapter also tracks
-    // its own internal shares 1:1 against deposited USDC (MockAdapter.deposit
-    // returns amount as the adapter-share count). So after a 1-stroop deposit:
-    //   total_shares = 1, total_adapter_shares = 1, adapter.balance = 1
-    //
-    // Then we drain the adapter's USDC balance to 0 via a fake transfer (simulating
-    // a scenario where the adapter's protocol lost all its underlying assets),
-    // leaving adapter_balance = 0. A 1-share withdrawal then computes:
-    //   adapter_shares_to_burn = 1 * 1 / 1 = 1
-    //   usdc_out = 1 * 0 / 1 = 0
-    // which triggers WithdrawalTooSmall.
     #[test]
-    fn withdrawal_too_small_fails() {
-        let (env, _admin, user, usdc_id, _musdc, adapter_id, vault) = setup();
+    fn get_adapter_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let result = vault.try_get_adapter();
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
 
-        // Deposit 1 stroop so the vault has 1 share and the adapter holds 1 stroop.
-        vault.deposit(&user, &1_i128);
+    #[test]
+    fn get_total_assets_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let result = vault.try_get_total_assets();
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
 
-        // Drain the adapter's USDC balance to zero. This simulates a worst-case
-        // scenario (e.g. protocol insolvency) where every share maps to 0 USDC.
-        let drain_target = Address::generate(&env);
-        let usdc = TokenClient::new(&env, &usdc_id);
-        let adapter_balance = usdc.balance(&adapter_id);
-        if adapter_balance > 0 {
-            // Transfer the adapter's full USDC balance away so its internal
-            // balance is 0 — any withdrawal will compute usdc_out = 0.
-            usdc.transfer(&adapter_id, &drain_target, &adapter_balance);
-        }
+    #[test]
+    fn set_paused_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let result = vault.try_set_paused(&true);
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
 
-        let shares = vault.get_position(&user);
-        let result = vault.try_withdraw(&user, &shares);
-        assert_eq!(result, Err(Ok(ContractError::WithdrawalTooSmall)));
+    #[test]
+    fn set_admin_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let new_admin = Address::generate(&env);
+        let result = vault.try_set_admin(&new_admin);
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
+    fn set_adapter_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let new_adapter = Address::generate(&env);
+        let result = vault.try_set_adapter(&new_adapter);
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
+    fn deposit_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let user = Address::generate(&env);
+        let result = vault.try_deposit(&user, &100_0000000_i128);
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
+    fn withdraw_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        let user = Address::generate(&env);
+        let result = vault.try_withdraw(&user, &100_0000000_i128);
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
     }
 }

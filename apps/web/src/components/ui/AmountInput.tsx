@@ -13,11 +13,13 @@ export function AmountInput({
 }: AmountInputProps) {
   return (
     <div className="flex items-center gap-3 rounded-xl border border-gray-700 bg-gray-900/70 px-4 py-3.5 focus-within:border-gray-500 transition-colors duration-150">
+      {/* Accessible name for screen readers — ties the input to its currency denomination */}
       <input
         type="number"
         min="0"
         step="any"
         placeholder="0.00"
+        aria-label={`Amount in ${currency}`}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}

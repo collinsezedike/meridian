@@ -38,7 +38,10 @@
     "withdrawalFailed": "Échec du retrait",
     "withdrew": "Retiré",
     "deposited": "Déposé",
-    "syncDelayed": "Mise à jour de votre solde en cours..."
+    "syncDelayed": "Mise à jour de votre solde en cours...",
+    "fundingWallet": "Financement du portefeuille testnet avec des USDC de test Blend...",
+    "walletFunded": "Portefeuille testnet financé",
+    "faucetFailed": "Échec du financement du portefeuille testnet"
   },
 
   "common": {
