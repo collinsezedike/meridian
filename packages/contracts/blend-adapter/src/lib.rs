@@ -601,4 +601,22 @@ mod tests {
         let recipient = Address::generate(&env);
         adapter.withdraw(&100_0000000_i128, &recipient);
     }
+
+    #[test]
+    #[should_panic]
+    fn reinitializing_fails() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let vault = Address::generate(&env);
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let pool_id = env.register(MockBlendPool, ());
+        MockBlendPoolClient::new(&env, &pool_id).initialize(&SCALAR, &RESERVE_INDEX);
+        let adapter_id = env.register(MeridianBlendAdapter, ());
+        let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
+
+        adapter.initialize(&vault, &pool_id, &usdc_id);
+        adapter.initialize(&vault, &pool_id, &usdc_id);
+    }
 }
