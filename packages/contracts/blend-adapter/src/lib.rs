@@ -2,8 +2,8 @@
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contractclient, contractimpl, contracttype, symbol_short, vec, Address, Env, IntoVal,
-    Map, Symbol, Val, Vec,
+    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, vec,
+    Address, Env, IntoVal, Map, Symbol, Val, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -108,6 +108,18 @@ pub trait BlendPoolInterface {
 }
 
 // ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    /// `initialize` was called on an adapter that already has a vault set.
+    AlreadyInitialized = 1,
+}
+
+// ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
 
@@ -118,14 +130,20 @@ pub struct MeridianBlendAdapter;
 impl MeridianBlendAdapter {
     /// Called once after deployment. Links the adapter to its vault, Blend pool,
     /// and USDC token.
-    pub fn initialize(env: Env, vault: Address, pool: Address, usdc: Address) {
+    pub fn initialize(
+        env: Env,
+        vault: Address,
+        pool: Address,
+        usdc: Address,
+    ) -> Result<(), ContractError> {
         if env.storage().instance().has(&VAULT_KEY) {
-            panic!("already initialized");
+            return Err(ContractError::AlreadyInitialized);
         }
         env.storage().instance().set(&VAULT_KEY, &vault);
         env.storage().instance().set(&POOL_KEY, &pool);
         env.storage().instance().set(&USDC_KEY, &usdc);
         env.storage().instance().set(&TOTAL_KEY, &0_i128);
+        Ok(())
     }
 
     /// Called by the vault after transferring `amount` USDC to this adapter.
@@ -564,6 +582,13 @@ mod tests {
     }
 
     #[test]
+    fn reinitializing_fails() {
+        let (_env, vault, usdc_id, adapter, pool) = setup();
+        let result = adapter.try_initialize(&vault, &pool.address, &usdc_id);
+        assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
+    }
+
+    #[test]
     #[should_panic]
     fn deposit_requires_vault_auth() {
         // No mock_all_auths here: vault.require_auth() inside deposit() must
@@ -600,23 +625,5 @@ mod tests {
 
         let recipient = Address::generate(&env);
         adapter.withdraw(&100_0000000_i128, &recipient);
-    }
-
-    #[test]
-    #[should_panic]
-    fn reinitializing_fails() {
-        let env = Env::default();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let usdc_id = env
-            .register_stellar_asset_contract_v2(admin.clone())
-            .address();
-        let pool_id = env.register(MockBlendPool, ());
-        MockBlendPoolClient::new(&env, &pool_id).initialize(&SCALAR, &RESERVE_INDEX);
-        let adapter_id = env.register(MeridianBlendAdapter, ());
-        let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
-
-        adapter.initialize(&vault, &pool_id, &usdc_id);
-        adapter.initialize(&vault, &pool_id, &usdc_id);
     }
 }

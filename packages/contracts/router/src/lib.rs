@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractclient, contractimpl, Address, Env};
+use soroban_sdk::{contract, contractclient, contracterror, contractimpl, Address, Env};
 
 /// Minimal vault interface used by the router. The generated `VaultClient`
 /// serialises arguments to XDR and calls the target address; no vault code is
@@ -9,6 +9,14 @@ use soroban_sdk::{contract, contractclient, contractimpl, Address, Env};
 pub trait VaultInterface {
     fn withdraw(env: Env, caller: Address, shares: i128) -> i128;
     fn deposit(env: Env, caller: Address, amount: i128) -> i128;
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum RouterError {
+    /// Withdrawal returned fewer stroops than the caller-supplied `min_out`.
+    SlippageExceeded = 1,
 }
 
 #[contract]
@@ -21,8 +29,9 @@ impl MeridianRouter {
     ///
     /// The depositor's signature covers both sub-invocations via Soroban's auth
     /// tree, so the call requires one `signTransaction` on the client side.
-    /// If the withdrawal returns fewer stroops than `min_out`, the function
-    /// panics and the whole transaction reverts (including the withdrawal).
+    /// If the withdrawal returns fewer stroops than `min_out`, returns
+    /// `RouterError::SlippageExceeded` and the whole transaction reverts
+    /// (including the withdrawal).
     ///
     /// Returns the number of shares minted by `to_vault`.
     pub fn rebalance(
@@ -32,7 +41,7 @@ impl MeridianRouter {
         to_vault: Address,
         shares: i128,
         min_out: i128,
-    ) -> i128 {
+    ) -> Result<i128, RouterError> {
         depositor.require_auth();
 
         let from = VaultClient::new(&env, &from_vault);
@@ -41,10 +50,10 @@ impl MeridianRouter {
         let usdc_received = from.withdraw(&depositor, &shares);
 
         if usdc_received < min_out {
-            panic!("slippage: received less than minimum");
+            return Err(RouterError::SlippageExceeded);
         }
 
-        to.deposit(&depositor, &usdc_received)
+        Ok(to.deposit(&depositor, &usdc_received))
     }
 }
 
@@ -148,7 +157,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "slippage")]
     fn rebalance_reverts_when_min_out_not_met() {
         let env = Env::default();
         env.mock_all_auths();
@@ -171,6 +179,7 @@ mod tests {
         vault_a.deposit(&user, &amount);
         let shares = vault_a.get_position(&user);
 
-        router.rebalance(&user, &vault_a_id, &vault_b_id, &shares, &(amount * 2));
+        let result = router.try_rebalance(&user, &vault_a_id, &vault_b_id, &shares, &(amount * 2));
+        assert_eq!(result, Err(Ok(RouterError::SlippageExceeded)));
     }
 }

@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractclient, contractimpl, symbol_short, token::TokenClient, vec, Address, Env,
-    Symbol, Val, Vec,
+    contract, contractclient, contracterror, contractimpl, symbol_short, token::TokenClient, vec,
+    Address, Env, Symbol, Val, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -42,6 +42,18 @@ pub trait DefindexVaultInterface {
 }
 
 // ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    /// `initialize` was called on an adapter that already has a vault set.
+    AlreadyInitialized = 1,
+}
+
+// ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
 
@@ -52,13 +64,19 @@ pub struct MeridianDefindexAdapter;
 impl MeridianDefindexAdapter {
     /// Called once after deployment. Links the adapter to its vault, DeFindex
     /// vault contract, and USDC token.
-    pub fn initialize(env: Env, vault: Address, defindex_vault: Address, usdc: Address) {
+    pub fn initialize(
+        env: Env,
+        vault: Address,
+        defindex_vault: Address,
+        usdc: Address,
+    ) -> Result<(), ContractError> {
         if env.storage().instance().has(&VAULT_KEY) {
-            panic!("already initialized");
+            return Err(ContractError::AlreadyInitialized);
         }
         env.storage().instance().set(&VAULT_KEY, &vault);
         env.storage().instance().set(&DFX_VAULT, &defindex_vault);
         env.storage().instance().set(&USDC_KEY, &usdc);
+        Ok(())
     }
 
     /// Called by the vault after transferring `amount` USDC to this adapter.
@@ -337,6 +355,13 @@ mod tests {
     }
 
     #[test]
+    fn reinitializing_fails() {
+        let (_env, vault, usdc_id, adapter, dfx) = setup();
+        let result = adapter.try_initialize(&vault, &dfx.address, &usdc_id);
+        assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
+    }
+
+    #[test]
     #[should_panic]
     fn deposit_requires_vault_auth() {
         // No mock_all_auths here: vault.require_auth() inside deposit() must
@@ -354,28 +379,6 @@ mod tests {
         adapter.initialize(&vault, &dfx_id, &usdc_id);
 
         adapter.deposit(&100_0000000_i128);
-    }
-
-    #[test]
-    #[should_panic(expected = "already initialized")]
-    fn initialize_panics_when_called_twice() {
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let usdc_id = env
-            .register_stellar_asset_contract_v2(admin.clone())
-            .address();
-        let dfx_id = env.register(MockDefindexVault, ());
-        MockDefindexVaultClient::new(&env, &dfx_id).initialize(&usdc_id);
-
-        let adapter_id = env.register(MeridianDefindexAdapter, ());
-        let adapter = MeridianDefindexAdapterClient::new(&env, &adapter_id);
-
-        adapter.initialize(&vault, &dfx_id, &usdc_id);
-        // Second call must panic with "already initialized".
-        adapter.initialize(&vault, &dfx_id, &usdc_id);
     }
 
     #[test]

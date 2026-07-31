@@ -4,6 +4,9 @@ name: Verify Contract Addresses
 # reviewable contract source while pointing a contract address at different,
 # unreviewed bytecode the contributor deployed themselves. Only triggers on
 # PRs touching the files where deployed vault addresses are recorded.
+#
+# This check is required (blocking) per #389's acceptance criteria.
+# Branch protection must list "Verify On-Chain Bytecode" as a required status.
 on:
   pull_request:
     paths:
@@ -11,10 +14,21 @@ on:
       - "packages/stellar-sdk-helpers/src/known-pools.ts"
   workflow_dispatch: {}
 
+# One run per PR at a time. A new push cancels any in-progress run on the
+# same branch so stale results never gate a merge.
+concurrency:
+  group: verify-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     name: Verify On-Chain Bytecode
     runs-on: ubuntu-latest
+    # Explicitly blocking: a hash mismatch must prevent the PR from merging.
+    # continue-on-error defaults to false; stated here so the intent is clear
+    # to anyone reading this file.
+    continue-on-error: false
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -32,4 +46,6 @@ jobs:
       - name: Install Stellar CLI
         run: cargo install --locked stellar-cli
       - name: Verify contract addresses match on-chain bytecode
+        # The script retries transient Soroban RPC failures internally
+        # (3 attempts, 3 s apart). Exit code is non-zero on any mismatch.
         run: pnpm verify:contracts
