@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@blend-capital/blend-sdk": "3.2.2",
+    "@blend-capital/blend-sdk": "3.3.0",
     "@meridian/shared": "workspace:*",
     "@stellar/stellar-sdk": "^14.6.1",
     "zod": "^4.4.3"
