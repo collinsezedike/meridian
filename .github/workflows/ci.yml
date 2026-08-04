@@ -29,6 +29,28 @@ jobs:
           pnpm --filter @meridian/api-local build
           test -f apps/api-local/dist/index.js
 
+  vercel-build:
+    name: Verify Vercel Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6.0.9
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run the real Vercel build script
+        run: pnpm exec bash scripts/build-vercel.sh
+      - name: Assert every workspace package api/v1/* imports was bundled
+        run: |
+          for pkg in shared stellar-sdk-helpers api-core; do
+            if [ ! -f "packages/$pkg/dist/index.js" ]; then
+              echo "::error::packages/$pkg/dist/index.js was not produced by scripts/build-vercel.sh, but api/v1/* imports @meridian/$pkg. This is the exact failure mode from #398 (ERR_MODULE_NOT_FOUND in production)."
+              exit 1
+            fi
+          done
+
   test:
     name: Test
     runs-on: ubuntu-latest
