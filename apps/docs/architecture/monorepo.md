@@ -68,7 +68,7 @@ meridian/
 │   │
 │   └── contracts/                # Rust/Soroban smart contracts
 │       ├── vault/src/lib.rs           # MeridianVault: protocol-agnostic coordinator
-│       ├── router/src/lib.rs          # Reserved for v2 atomic rebalancing
+│       ├── router/src/lib.rs          # MeridianRouter: atomic rebalance() between vaults, not yet exposed via API/UI
 │       ├── blend-adapter/src/lib.rs   # Supplies USDC into a Blend lending pool
 │       └── defindex-adapter/src/lib.rs # Deposits USDC into a DeFindex vault
 │

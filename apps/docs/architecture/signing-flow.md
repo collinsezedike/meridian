@@ -46,7 +46,7 @@ Browser                    API (Vercel)              Stellar RPC
 
 **The API receives only a public key, never a private key.** It uses the public key to fetch the account's sequence number from the Stellar RPC, which is needed to construct a valid transaction. The private key never leaves the user's device.
 
-**The user sees the transaction before signing.** Freighter displays the contract address, function name, and all arguments including the routing protocol. The user can reject if anything looks wrong.
+**The user sees the transaction before signing.** Freighter displays the contract address, function name, and all arguments. The user can reject if anything looks wrong.
 
 **The API cannot forge a transaction on the user's behalf.** `caller.require_auth()` in the Soroban contract ensures the transaction is only valid if it carries a valid signature from `caller`. The API cannot produce that signature.
 

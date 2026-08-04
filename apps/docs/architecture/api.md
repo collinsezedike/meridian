@@ -147,13 +147,13 @@ The Vercel functions (`api/v1/`) import workspace packages that are pre-built in
 
 The Fastify server (`apps/api-local/`) runs the same packages directly via `tsx`, which handles TypeScript natively in the development process.
 
-## Vault ID to protocol mapping
+## Vault ID to contract address mapping
 
-When building a deposit transaction, the `vaultId` is mapped to the `Protocol` enum expected by the vault contract:
+The vault contract's `deposit`/`withdraw` take no protocol-selection parameter — which protocol a deposit reaches is fixed by whichever adapter the target vault instance has set, not by anything passed in the call. Building a deposit transaction therefore resolves `vaultId` directly to the specific deployed vault contract address to call, via the mapping in `packages/stellar-sdk-helpers/src/known-pools.ts`:
 
-| Vault ID prefix | Protocol   |
-| --------------- | ---------- |
-| `blend-`        | `Blend`    |
-| `defindex-`     | `DeFindex` |
+| Vault ID prefix | Resolves to                                                |
+| --------------- | ---------------------------------------------------------- |
+| `blend-`        | A vault instance with `BlendAdapter` set as its adapter    |
+| `defindex-`     | A vault instance with `DefindexAdapter` set as its adapter |
 
-Any other prefix returns a 500 with a clear mapping error.
+Any unrecognized `vaultId` returns a 500 with a clear mapping error.

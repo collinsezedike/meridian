@@ -19,12 +19,12 @@ Meridian is a **testnet technical preview**, not a finished product. Be clear-ey
 - **Deposit / withdraw through the live `MeridianVault` coordinator contract**: the vault forwards your USDC to its active adapter contract (`BlendAdapter` today), which supplies it straight into a real Blend pool — you receive mUSDC shares representing the position, no Meridian-controlled custody of the underlying funds
 - Live TVL and per-address position reads directly from the vault (`get_total_assets`, `get_position`)
 - Best-rate routing: the API recommends the highest-APY vault it can actually deposit into, skipping display-only protocols and pools flagged risky
-- Protocol-agnostic adapter architecture: `MeridianVault` (ERC-4626-style share accounting hardened against the first-depositor inflation attack, pause + admin-rotation rails), `BlendAdapter` (live), and a `DefindexAdapter` contract (built, not yet wired to a live vault) — swapping which protocol a vault routes to is an admin-only `set_adapter` call, no vault redeploy required. A `router` contract exists reserved for a future v2 single-transaction rebalancing feature. All four have unit test coverage.
+- Protocol-agnostic adapter architecture: `MeridianVault` (ERC-4626-style share accounting hardened against the first-depositor inflation attack, pause + admin-rotation rails), `BlendAdapter` (live), and a `DefindexAdapter` contract (built, not yet wired to a live vault) — swapping which protocol a vault routes to is an admin-only `set_adapter` call, no vault redeploy required. A `router` contract implements a working, tested `rebalance` entry point that atomically moves a user's position between two vault instances in one transaction — it's not yet exposed through the API or UI. All four contracts have unit test coverage.
+- Per-position yield earned: cost-basis tracking via `get_principal`, surfaced in the dashboard alongside the current position value
 
 **In progress — the core promise is not finished**
 
 - Deposit/withdraw against a real DeFindex vault through `DefindexAdapter` — the adapter contract and transaction builders are implemented; gated behind `DEFINDEX_VAULT_ID` until a real testnet vault is wired
-- Per-position yield earned (cost-basis tracking is implemented on-chain via `get_principal`; UI display is still in progress)
 - Mainnet configuration and a security audit before any real-funds use
 
 Until a DeFindex vault is configured, the DeFindex deposit path throws a configuration error rather than silently routing elsewhere. Track progress in the [Roadmap](#roadmap) and [open issues](../../issues).
@@ -80,7 +80,7 @@ The API never holds private keys. It builds an unsigned Soroban transaction, ret
 | Frontend        | Vite 8, React 19, Tailwind CSS, Zustand, TanStack Query |
 | Backend (prod)  | Vercel Serverless Functions, Zod validation             |
 | Backend (local) | Fastify                                                 |
-| Blockchain      | Stellar Soroban, `@stellar/stellar-sdk` v12             |
+| Blockchain      | Stellar Soroban, `@stellar/stellar-sdk` v14             |
 | Protocols       | Blend Capital, DeFindex                                 |
 | Contracts       | Rust / Soroban SDK                                      |
 | Monorepo        | pnpm workspaces, Turborepo                              |
@@ -168,13 +168,13 @@ Issues are tagged `good first issue`, `medium`, and `hard`. Pick your level.
 
 Non-custodial USDC deposits into the `MeridianVault` coordinator contract on Stellar testnet, live and working end-to-end for Blend via `BlendAdapter`. Freighter wallet connects in one click, the best-rate vault is selected automatically, and the signed transaction never leaves the browser. Live APY and TVL across protocols with risk-tier labelling. Withdraw at any time, no lock-up. DeFindex support is built (`DefindexAdapter`) but not yet wired to a live testnet vault.
 
-### Q3 2026: Yield tracking and position history
+### Q3 2026: Yield history and position analytics
 
-Per-position yield tracking with a cost-basis model so users see their actual earnings, not just current balance. A yield history chart broken down by protocol, entry time, and cumulative earned. Position-level analytics that work whether funds are in Blend, DeFindex, or split across both.
+Per-position yield tracking with a cost-basis model is shipped: users already see cumulative earned alongside their current balance. Remaining: a yield history chart broken down by protocol, entry time, and cumulative earned over time. Position-level analytics that work whether funds are in Blend, DeFindex, or split across both.
 
-### Q4 2026: Atomic rebalancing
+### Q4 2026: Atomic rebalancing, exposed
 
-A Soroban router contract that rebalances between vaults in one atomic transaction. No manual withdraw-then-deposit cycle: when a better rate appears, funds move in a single ledger close. Auto-rebalancing triggers with user-defined APY thresholds. The groundwork for supporting new protocols without UI changes.
+The `router` contract's `rebalance` entry point is built and tested: it already moves a user's position between two vaults in one atomic transaction, no manual withdraw-then-deposit cycle. What's missing is exposing it: an API endpoint and UI trigger so a user can actually invoke it, plus auto-rebalancing triggers with user-defined APY thresholds. See [#469](../../issues/469) for the fully-automated (delegated) version of this.
 
 ### Q1 2027: Mainnet and scale
 
