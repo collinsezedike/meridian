@@ -99,10 +99,10 @@ describe("VaultPanel — position load error", () => {
     const amountInput = screen.getByPlaceholderText("0.00");
     fireEvent.change(amountInput, { target: { value: "10" } });
 
-    const depositButton = screen
-      .getByText("vaultPanel.deposit")
-      .closest("button");
-    expect(depositButton?.disabled).toBe(false);
+    const depositButton = screen.getByTestId(
+      "vault-deposit-submit"
+    ) as HTMLButtonElement;
+    expect(depositButton.disabled).toBe(false);
   });
 
   it("does not show the error message once positions load successfully", () => {
@@ -131,6 +131,19 @@ describe("VaultPanel — disconnected", () => {
   });
 });
 
+describe("VaultPanel — tab switcher", () => {
+  it("translates the tab labels instead of rendering raw tab ids", () => {
+    render(<VaultPanel />);
+
+    expect(screen.getByTestId("vault-tab-deposit").textContent).toBe(
+      "vaultPanel.deposit"
+    );
+    expect(screen.getByTestId("vault-tab-withdraw").textContent).toBe(
+      "vaultPanel.withdraw"
+    );
+  });
+});
+
 describe("VaultPanel — deposit", () => {
   it("calls deposit with the entered amount and clears the field on success", async () => {
     render(<VaultPanel />);
@@ -138,7 +151,7 @@ describe("VaultPanel — deposit", () => {
     fireEvent.change(screen.getByPlaceholderText("0.00"), {
       target: { value: "25" },
     });
-    fireEvent.click(screen.getByText("vaultPanel.deposit"));
+    fireEvent.click(screen.getByTestId("vault-deposit-submit"));
 
     await waitFor(() => {
       expect(deposit).toHaveBeenCalledWith("25", "meridian-usdc", "USDC");
@@ -154,14 +167,11 @@ describe("VaultPanel — withdraw", () => {
     mockPositions({ isError: false, data: [POSITION] });
     render(<VaultPanel />);
 
-    // The tab switcher renders a raw capitalized label ("Withdraw"), distinct
-    // from the action button below it, which renders the translated
-    // "vaultPanel.withdraw" key.
-    fireEvent.click(screen.getByText("Withdraw"));
+    fireEvent.click(screen.getByTestId("vault-tab-withdraw"));
     fireEvent.change(screen.getByPlaceholderText("0.00"), {
       target: { value: "10" },
     });
-    fireEvent.click(screen.getByText("vaultPanel.withdraw"));
+    fireEvent.click(screen.getByTestId("vault-withdraw-submit"));
 
     await waitFor(() => {
       expect(withdraw).toHaveBeenCalledWith("10", "meridian-usdc", "USDC");
@@ -172,7 +182,7 @@ describe("VaultPanel — withdraw", () => {
     mockPositions({ isError: false, data: [] });
     render(<VaultPanel />);
 
-    fireEvent.click(screen.getByText("Withdraw"));
+    fireEvent.click(screen.getByTestId("vault-tab-withdraw"));
     expect(screen.getByText("vaultPanel.position")).toBeDefined();
   });
 });
