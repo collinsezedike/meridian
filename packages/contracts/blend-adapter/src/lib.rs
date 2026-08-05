@@ -117,6 +117,8 @@ pub trait BlendPoolInterface {
 pub enum ContractError {
     /// `initialize` was called on an adapter that already has a vault set.
     AlreadyInitialized = 1,
+    /// An intermediate arithmetic operation would overflow `i128`.
+    Overflow = 2,
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +239,7 @@ impl MeridianBlendAdapter {
     /// Reads the adapter's current bToken balance from Blend's own ledger
     /// (`get_positions`) rather than self-tracking it, so there is no risk of
     /// drift between the stored total and Blend's actual accounting.
-    pub fn accrue(env: Env) {
+    pub fn accrue(env: Env) -> Result<(), ContractError> {
         let pool: Address = env.storage().instance().get(&POOL_KEY).unwrap();
         let usdc: Address = env.storage().instance().get(&USDC_KEY).unwrap();
         let adapter = env.current_contract_address();
@@ -249,11 +251,12 @@ impl MeridianBlendAdapter {
 
         let current_value = b_tokens
             .checked_mul(reserve.data.b_rate)
-            .expect("overflow")
+            .ok_or(ContractError::Overflow)?
             .checked_div(RATE_SCALAR)
-            .expect("div zero");
+            .ok_or(ContractError::Overflow)?;
 
         env.storage().instance().set(&TOTAL_KEY, &current_value);
+        Ok(())
     }
 
     /// Returns the cached USDC value of the adapter's Blend position. Reflects
@@ -490,7 +493,7 @@ mod tests {
         // total_assets() is a cache; it must not move until accrue() is called.
         assert_eq!(adapter.total_assets(), amount);
 
-        adapter.accrue();
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
         assert_eq!(adapter.total_assets(), amount + amount / 10);
     }
 
@@ -519,7 +522,7 @@ mod tests {
 
         let new_rate = SCALAR + SCALAR / 10;
         pool.set_rate(&new_rate);
-        adapter.accrue();
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
 
         assert_eq!(adapter.total_assets(), amount + amount / 10);
     }
@@ -532,14 +535,28 @@ mod tests {
         TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
         adapter.deposit(&amount);
 
-        adapter.accrue();
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
         let after_first = adapter.total_assets();
-        adapter.accrue();
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
         let after_second = adapter.total_assets();
 
         assert_eq!(after_first, amount);
         assert_eq!(after_second, amount);
         let _ = pool;
+    }
+
+    #[test]
+    fn accrue_returns_typed_error_on_overflow() {
+        let (env, vault, usdc_id, adapter, pool) = setup();
+        let amount = 2_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        pool.set_rate(&i128::MAX);
+        let result = adapter.try_accrue();
+
+        assert_eq!(result, Err(Ok(ContractError::Overflow)));
     }
 
     #[test]
@@ -568,7 +585,7 @@ mod tests {
 
         let new_rate = SCALAR + SCALAR / 10;
         pool.set_rate(&new_rate);
-        adapter.accrue();
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
         assert_eq!(adapter.total_assets(), amount + amount / 10);
 
         // Fund the mock pool so it can pay out the appreciated amount.
