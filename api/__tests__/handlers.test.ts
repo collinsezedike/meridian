@@ -9,6 +9,35 @@ vi.mock("@meridian/stellar-sdk-helpers", () => ({
   buildWithdrawTx: vi.fn(async () => ({ xdr: "WITHDRAW_XDR", fee: "100" })),
   buildAddTrustlineTx: vi.fn(async () => ({ xdr: "TRUST_XDR" })),
   submitTx: vi.fn(async () => ({ hash: "HASH" })),
+  loadBlendAccrualKeeperConfig: vi.fn(() => ({
+    network: {
+      network: "testnet",
+      rpcUrl: "https://rpc.example",
+      passphrase: "Test SDF Network ; September 2015",
+    },
+    secretKey: "SECRET",
+    maxAttempts: 3,
+    baseDelayMs: 1,
+    rpcTimeoutMs: 100,
+  })),
+  runBlendAccrualKeeper: vi.fn(async () => ({
+    network: "testnet",
+    startedAt: "2026-08-06T00:00:00.000Z",
+    finishedAt: "2026-08-06T00:00:01.000Z",
+    discoveredAdapters: 1,
+    blendAdapters: 1,
+    successes: [
+      {
+        vaultId: "meridian-usdc",
+        adapterId: "CADAPTER",
+        hash: "HASH",
+        ledger: 123,
+        attempts: 1,
+      },
+    ],
+    skipped: [],
+    failures: [],
+  })),
   fetchAllVaults: vi.fn(async () => [
     { id: "blend-usdc-fixed", protocol: "blend" },
   ]),
@@ -31,8 +60,10 @@ import trustlineHandler from "../v1/tx/add-trustline";
 import submitHandler from "../v1/tx/submit";
 import vaultsHandler from "../v1/vaults/index";
 import positionsHandler from "../v1/positions/[publicKey]";
+import keeperHandler from "../v1/keepers/accrue";
 import {
   buildDepositTx,
+  runBlendAccrualKeeper,
   resolvePositions,
 } from "@meridian/stellar-sdk-helpers";
 
@@ -71,7 +102,10 @@ function makeRes(): FakeRes & VercelResponse {
   return r as unknown as FakeRes & VercelResponse;
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  process.env.CRON_SECRET = "cron-secret";
+});
 
 describe("POST /api/v1/tx/deposit", () => {
   it("rejects non-POST methods with 405", async () => {
@@ -253,5 +287,66 @@ describe("GET /api/v1/positions/:publicKey", () => {
     );
     expect(res.statusCode).toBe(503);
     expect(res.body).toEqual({ error: "Failed to read positions" });
+  });
+});
+
+describe("GET /api/v1/keepers/accrue", () => {
+  it("rejects requests without the cron bearer token", async () => {
+    const res = makeRes();
+    await keeperHandler(fakeReq({ method: "GET", headers: {} }), res);
+
+    expect(res.statusCode).toBe(401);
+    expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
+  });
+
+  it("runs the accrual keeper for authorized cron calls", async () => {
+    const res = makeRes();
+    await keeperHandler(
+      fakeReq({
+        method: "GET",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ successes: [{ hash: "HASH" }] });
+    expect(runBlendAccrualKeeper).toHaveBeenCalledOnce();
+  });
+
+  it("returns 500 when a submission fails so the cron run is observable", async () => {
+    vi.mocked(runBlendAccrualKeeper).mockResolvedValueOnce({
+      network: "testnet",
+      startedAt: "2026-08-06T00:00:00.000Z",
+      finishedAt: "2026-08-06T00:00:01.000Z",
+      discoveredAdapters: 1,
+      blendAdapters: 1,
+      successes: [],
+      skipped: [],
+      failures: [
+        {
+          vaultId: "meridian-usdc",
+          adapterId: "CADAPTER",
+          stage: "submit",
+          attempts: 3,
+          transient: true,
+          error: "try again later",
+        },
+      ],
+    });
+
+    const res = makeRes();
+    await keeperHandler(
+      fakeReq({
+        method: "GET",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toMatchObject({
+      failures: [{ vaultId: "meridian-usdc", error: "try again later" }],
+    });
   });
 });

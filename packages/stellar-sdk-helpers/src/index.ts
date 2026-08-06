@@ -1,4 +1,5 @@
 export * from "./blend";
+export * from "./accrual-keeper";
 export * from "./coordinator";
 export * from "./defilamma";
 export * from "./defindex";
