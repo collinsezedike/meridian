@@ -27,40 +27,54 @@ function mockWallet(): E2EMockWallet | undefined {
   return typeof window !== "undefined" ? window.__E2E_MOCK_WALLET__ : undefined;
 }
 
-export async function isFreighterInstalled(): Promise<boolean> {
-  const mock = mockWallet();
-  if (mock) return mock.installed;
-  const result = await isConnected();
-  return result.isConnected;
+/**
+ * Common interface every supported wallet implements. Call sites depend on
+ * this, not on any wallet-specific API, so adding a wallet means adding an
+ * implementation and selecting it below, not touching callers.
+ */
+export interface WalletAdapter {
+  isInstalled(): Promise<boolean>;
+  // Whether the user has granted this site access. False if the wallet is
+  // absent or the site permission was revoked.
+  isAuthorized(): Promise<boolean>;
+  connect(): Promise<string>;
+  sign(xdr: string, networkPassphrase: string): Promise<string>;
 }
 
-// Checks whether the user has granted this site access in Freighter.
-// Returns false if the extension is absent or the site permission was revoked.
-export async function isFreighterAuthorized(): Promise<boolean> {
-  const mock = mockWallet();
-  if (mock) return mock.installed && mock.authorized;
-  const installed = await isFreighterInstalled();
-  if (!installed) return false;
-  const result = await isAllowed();
-  return result.isAllowed;
+class FreighterWallet implements WalletAdapter {
+  async isInstalled(): Promise<boolean> {
+    const mock = mockWallet();
+    if (mock) return mock.installed;
+    const result = await isConnected();
+    return result.isConnected;
+  }
+
+  async isAuthorized(): Promise<boolean> {
+    const mock = mockWallet();
+    if (mock) return mock.installed && mock.authorized;
+    const installed = await this.isInstalled();
+    if (!installed) return false;
+    const result = await isAllowed();
+    return result.isAllowed;
+  }
+
+  async connect(): Promise<string> {
+    const mock = mockWallet();
+    if (mock) return mock.address;
+    const result = await requestAccess();
+    if (result.error) throw new Error(result.error.message);
+    return result.address;
+  }
+
+  async sign(xdr: string, networkPassphrase: string): Promise<string> {
+    const mock = mockWallet();
+    if (mock) return mock.sign(xdr, networkPassphrase);
+    const result = await freighterSign(xdr, { networkPassphrase });
+    if (result.error) throw new Error(result.error.message);
+    if (!result.signedTxXdr) throw new Error("Signing cancelled");
+    return result.signedTxXdr;
+  }
 }
 
-export async function connectFreighter(): Promise<string> {
-  const mock = mockWallet();
-  if (mock) return mock.address;
-  const result = await requestAccess();
-  if (result.error) throw new Error(result.error.message);
-  return result.address;
-}
-
-export async function signTransaction(
-  xdr: string,
-  networkPassphrase: string
-): Promise<string> {
-  const mock = mockWallet();
-  if (mock) return mock.sign(xdr, networkPassphrase);
-  const result = await freighterSign(xdr, { networkPassphrase });
-  if (result.error) throw new Error(result.error.message);
-  if (!result.signedTxXdr) throw new Error("Signing cancelled");
-  return result.signedTxXdr;
-}
+// Freighter is the only supported wallet today.
+export const wallet: WalletAdapter = new FreighterWallet();

@@ -5,8 +5,10 @@ import { useWalletStore } from "../../store/wallet";
 import { useToastStore } from "../../store/toast";
 
 vi.mock("../../lib/wallet", () => ({
-  isFreighterInstalled: vi.fn(),
-  connectFreighter: vi.fn(),
+  wallet: {
+    isInstalled: vi.fn(),
+    connect: vi.fn(),
+  },
 }));
 
 vi.mock("react-i18next", () => {
@@ -28,7 +30,7 @@ vi.mock("react-i18next", () => {
   };
 });
 
-import { isFreighterInstalled, connectFreighter } from "../../lib/wallet";
+import { wallet } from "../../lib/wallet";
 
 const KEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 
@@ -44,7 +46,7 @@ beforeEach(() => {
 
 describe("useWalletConnect", () => {
   it("sets status to no-extension when Freighter is not installed", async () => {
-    vi.mocked(isFreighterInstalled).mockResolvedValue(false);
+    vi.mocked(wallet.isInstalled).mockResolvedValue(false);
     const { result } = renderHook(() => useWalletConnect());
 
     await act(() => result.current.handleConnect());
@@ -54,8 +56,8 @@ describe("useWalletConnect", () => {
   });
 
   it("connects and resets to idle on success", async () => {
-    vi.mocked(isFreighterInstalled).mockResolvedValue(true);
-    vi.mocked(connectFreighter).mockResolvedValue(KEY);
+    vi.mocked(wallet.isInstalled).mockResolvedValue(true);
+    vi.mocked(wallet.connect).mockResolvedValue(KEY);
     const { result } = renderHook(() => useWalletConnect());
 
     await act(() => result.current.handleConnect());
@@ -71,8 +73,8 @@ describe("useWalletConnect", () => {
   });
 
   it("swallows user-cancel errors without a toast", async () => {
-    vi.mocked(isFreighterInstalled).mockResolvedValue(true);
-    vi.mocked(connectFreighter).mockRejectedValue(
+    vi.mocked(wallet.isInstalled).mockResolvedValue(true);
+    vi.mocked(wallet.connect).mockRejectedValue(
       new Error("User declined request")
     );
     const { result } = renderHook(() => useWalletConnect());
@@ -84,8 +86,8 @@ describe("useWalletConnect", () => {
   });
 
   it("shows an error toast for unexpected connect failures", async () => {
-    vi.mocked(isFreighterInstalled).mockResolvedValue(true);
-    vi.mocked(connectFreighter).mockRejectedValue(new Error("Network error"));
+    vi.mocked(wallet.isInstalled).mockResolvedValue(true);
+    vi.mocked(wallet.connect).mockRejectedValue(new Error("Network error"));
     const { result } = renderHook(() => useWalletConnect());
 
     await act(() => result.current.handleConnect());
