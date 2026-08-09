@@ -135,6 +135,10 @@ impl MeridianDefindexAdapter {
         amounts.get(0).unwrap_or(0)
     }
 
+    /// No-op: DeFindex's total_assets() already prices live on every call
+    /// via the vault's exchange rate, so there is no cache to refresh.
+    pub fn refresh(_env: Env) {}
+
     /// Returns the DeFindex vault this adapter deposits into.
     pub fn get_pool(env: Env) -> Address {
         env.storage().instance().get(&DFX_VAULT).unwrap()

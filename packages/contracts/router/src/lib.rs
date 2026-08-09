@@ -104,6 +104,8 @@ mod tests {
             let usdc: Address = env.storage().instance().get(&TA_USDC).unwrap();
             TokenClient::new(&env, &usdc).balance(&env.current_contract_address())
         }
+
+        pub fn refresh(_env: Env) {}
     }
 
     fn make_vault(
