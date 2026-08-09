@@ -501,7 +501,6 @@ mod tests {
         }
     }
 
-
     // -----------------------------------------------------------------------
     // CachedMockAdapter: mimics BlendAdapter's caching behavior. total_assets()
     // returns a cached value that only updates on refresh(), letting these
@@ -540,7 +539,8 @@ mod tests {
                 // independently of the vault's cache-refresh call.
                 let usdc: Address = env.storage().instance().get(&CM_USDC).unwrap();
                 let total_sh: i128 = env.storage().instance().get(&CM_SH).unwrap_or(0);
-                let balance = TokenClient::new(&env, &usdc).balance(&env.current_contract_address());
+                let balance =
+                    TokenClient::new(&env, &usdc).balance(&env.current_contract_address());
 
                 let usdc_out = if total_sh > 0 {
                     shares * balance / total_sh
@@ -566,7 +566,8 @@ mod tests {
 
             pub fn refresh(env: Env) {
                 let usdc: Address = env.storage().instance().get(&CM_USDC).unwrap();
-                let balance = TokenClient::new(&env, &usdc).balance(&env.current_contract_address());
+                let balance =
+                    TokenClient::new(&env, &usdc).balance(&env.current_contract_address());
                 env.storage().instance().set(&CM_TOTAL, &balance);
             }
         }
