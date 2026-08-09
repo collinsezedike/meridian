@@ -66,8 +66,10 @@ vi.mock("@tanstack/react-query", async () => {
 });
 
 vi.mock("../../lib/wallet", () => ({
-  signTransaction: vi.fn(async () => "SIGNED_XDR"),
-  isFreighterAuthorized: vi.fn(async () => true),
+  wallet: {
+    sign: vi.fn(async () => "SIGNED_XDR"),
+    isAuthorized: vi.fn(async () => true),
+  },
 }));
 
 vi.mock("../../lib/api", () => ({
@@ -96,7 +98,7 @@ vi.mock("react-i18next", () => {
 });
 
 import { api } from "../../lib/api";
-import { signTransaction } from "../../lib/wallet";
+import { wallet } from "../../lib/wallet";
 
 const KEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 // Matches USDC_ISSUER.testnet / MUSDC_ISSUER.testnet in @meridian/shared.
@@ -152,7 +154,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("useVaultActions — deposit", () => {
+describe("useVaultActions ï¿½ deposit", () => {
   it("builds, signs, and submits a deposit successfully", async () => {
     const { result } = renderHook(() => useVaultActions());
 
@@ -167,7 +169,7 @@ describe("useVaultActions — deposit", () => {
       vaultId: "blend-usdc-fixed",
       amount: "10",
     });
-    expect(signTransaction).toHaveBeenCalledWith(
+    expect(wallet.sign).toHaveBeenCalledWith(
       "DEPOSIT_XDR",
       expect.stringContaining("Test SDF")
     );
@@ -197,7 +199,7 @@ describe("useVaultActions — deposit", () => {
   });
 });
 
-describe("useVaultActions — withdraw", () => {
+describe("useVaultActions ï¿½ withdraw", () => {
   it("builds, signs, and submits a withdrawal successfully", async () => {
     const { result } = renderHook(() => useVaultActions());
 
@@ -212,7 +214,7 @@ describe("useVaultActions — withdraw", () => {
       vaultId: "blend-usdc-fixed",
       shares: "5",
     });
-    expect(signTransaction).toHaveBeenCalled();
+    expect(wallet.sign).toHaveBeenCalled();
     expect(useToastStore.getState().toasts[0]).toMatchObject({
       kind: "success",
       message: "Withdrew 5 USDC",

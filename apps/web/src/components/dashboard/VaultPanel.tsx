@@ -195,18 +195,18 @@ export function VaultPanel() {
       {/* Tab switcher */}
       {connected && (
         <div className="flex border-b border-gray-800">
-          {(["deposit", "withdraw"] as Tab[]).map((t) => (
+          {(["deposit", "withdraw"] as Tab[]).map((tabId) => (
             <button
-              key={t}
-              data-testid={`vault-tab-${t}`}
-              onClick={() => handleTabChange(t)}
+              key={tabId}
+              data-testid={`vault-tab-${tabId}`}
+              onClick={() => handleTabChange(tabId)}
               className={`flex-1 py-3 text-sm font-semibold transition-colors duration-150 ${
-                tab === t
+                tab === tabId
                   ? "text-white border-b-2 border-emerald-500"
                   : "text-gray-600 hover:text-gray-400"
               }`}
             >
-              {t.charAt(0).toUpperCase() + t.slice(1)}
+              {t(`vaultPanel.${tabId}`)}
             </button>
           ))}
         </div>

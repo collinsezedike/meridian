@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useWalletStore } from "../store/wallet";
-import { isFreighterInstalled, connectFreighter } from "../lib/wallet";
+import { wallet } from "../lib/wallet";
 import { useToastStore } from "../store/toast";
 import { useTranslation } from "react-i18next";
 
@@ -13,7 +13,7 @@ export function useWalletConnect() {
   const [status, setStatus] = useState<ConnectStatus>("idle");
 
   async function handleConnect() {
-    const installed = await isFreighterInstalled();
+    const installed = await wallet.isInstalled();
     if (!installed) {
       setStatus("no-extension");
       return;
@@ -21,7 +21,7 @@ export function useWalletConnect() {
 
     setStatus("connecting");
     try {
-      const key = await connectFreighter();
+      const key = await wallet.connect();
       connect(key);
       setStatus("idle");
       push("success", t("walletConnect.walletConnected"));

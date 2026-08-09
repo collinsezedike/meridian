@@ -1,6 +1,6 @@
 import { STELLAR_NETWORKS } from "@meridian/shared";
 import { useWalletStore } from "../store/wallet";
-import { signTransaction } from "../lib/wallet";
+import { wallet } from "../lib/wallet";
 import { api } from "../lib/api";
 import { useTranslation } from "react-i18next";
 
@@ -15,7 +15,7 @@ export function useSignAndSubmit() {
     if (!useWalletStore.getState().connected) {
       throw new Error(t("walletConnect.walletDisconnected"));
     }
-    const signedXdr = await signTransaction(xdr, passphrase);
+    const signedXdr = await wallet.sign(xdr, passphrase);
     await api.submitTx({ xdr: signedXdr });
   }
 

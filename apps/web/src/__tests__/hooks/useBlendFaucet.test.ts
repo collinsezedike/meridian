@@ -19,8 +19,10 @@ const BLEND_TESTNET_USDC_ISSUER =
 const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
 
 vi.mock("../../lib/wallet", () => ({
-  signTransaction: vi.fn(async () => "SIGNED_XDR"),
-  isFreighterAuthorized: vi.fn(async () => true),
+  wallet: {
+    sign: vi.fn(async () => "SIGNED_XDR"),
+    isAuthorized: vi.fn(async () => true),
+  },
 }));
 
 vi.mock("../../lib/api", () => ({
@@ -36,7 +38,7 @@ vi.mock("react-i18next", () => ({
 }));
 
 import { api } from "../../lib/api";
-import { signTransaction } from "../../lib/wallet";
+import { wallet } from "../../lib/wallet";
 
 function usdcBalanceHorizonResponse(balance: string) {
   return new Response(
@@ -120,7 +122,7 @@ describe("useBlendFaucet", () => {
     });
 
     expect(ok).toBe(true);
-    expect(signTransaction).toHaveBeenCalledTimes(1);
+    expect(wallet.sign).toHaveBeenCalledTimes(1);
     expect(api.submitTx).toHaveBeenCalledWith({ xdr: "SIGNED_XDR" });
   });
 
@@ -145,7 +147,7 @@ describe("useBlendFaucet", () => {
     });
 
     expect(ok).toBe(false);
-    expect(signTransaction).not.toHaveBeenCalled();
+    expect(wallet.sign).not.toHaveBeenCalled();
     expect(useToastStore.getState().toasts).toContainEqual(
       expect.objectContaining({ kind: "error" })
     );
