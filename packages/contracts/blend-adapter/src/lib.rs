@@ -260,6 +260,7 @@ impl MeridianBlendAdapter {
     /// last call, satisfying the shared YieldAdapterInterface contract.
     /// Currently just calls accrue(), which remains a public,
     /// permissionless entry point in its own right.
+    #[allow(unused_must_use)]
     pub fn refresh(env: Env) {
         Self::accrue(env);
     }
