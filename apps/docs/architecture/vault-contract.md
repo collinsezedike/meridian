@@ -68,7 +68,7 @@ Returns the currently active adapter contract address.
 
 ### `set_adapter(new_adapter)` (admin only)
 
-Points the vault at a new adapter contract and resets the adapter-share counter (`ADPT_SH`) to zero. **This is the only way to change which protocol a vault routes to, or to push new adapter code live** — adapter contracts have no in-place upgrade path (no `update_current_contract_wasm`). The caller is responsible for migrating funds out of the old adapter _before_ calling this: any value still sitting in the old adapter becomes unreachable through the vault's normal `withdraw()` flow once the adapter-share counter resets. See `scripts/redeploy-blend-adapter.sh` for the supported procedure.
+Points the vault at a new adapter contract and resets the adapter-share counter (`ADPT_SH`) to zero. **This is the only way to change which protocol a vault routes to, or to push new adapter code live** — adapter contracts have no in-place upgrade path (no `update_current_contract_wasm`). The contract itself rejects the call with `AdapterSwapUnsafe` while the vault still has shares outstanding (`get_total_shares() > 0`), so a swap can't be made while depositors are still in the vault. The caller is still responsible for migrating funds out of the old adapter _before_ shares reach zero and calling this: any value still sitting in the old adapter becomes unreachable through the vault's normal `withdraw()` flow once the adapter-share counter resets. See `scripts/redeploy-blend-adapter.sh` for the supported procedure.
 
 ### `set_paused(paused: bool)` (admin only)
 
@@ -137,17 +137,18 @@ Deposits, but never withdrawals, can be paused via `set_paused(true)` — this i
 
 `ContractError` (defined in `vault/src/lib.rs`) gives fallible entry points typed, stable error codes instead of panic strings:
 
-| Variant               | Code | Meaning                                                        |
-| --------------------- | ---- | -------------------------------------------------------------- |
-| `AlreadyInitialized`  | 1    | `initialize` called on a contract that already has an admin.   |
-| `NotInitialized`      | 2    | A state-mutating call was made before `initialize`.            |
-| `DepositsPaused`      | 3    | `deposit` called while `set_paused(true)` is in effect.        |
-| `ZeroAmount`          | 4    | `deposit`/`withdraw` called with a non-positive amount/shares. |
-| `DepositTooSmall`     | 5    | The deposited amount rounds down to zero shares.               |
-| `NoSharesOutstanding` | 6    | `withdraw` called while the vault has no shares outstanding.   |
-| `InsufficientShares`  | 7    | The caller doesn't hold enough mUSDC to burn.                  |
-| `WithdrawalTooSmall`  | 8    | The shares burned round down to zero USDC.                     |
-| `Overflow`            | 9    | An intermediate arithmetic operation would overflow `i128`.    |
+| Variant               | Code | Meaning                                                                |
+| --------------------- | ---- | ---------------------------------------------------------------------- |
+| `AlreadyInitialized`  | 1    | `initialize` called on a contract that already has an admin.           |
+| `NotInitialized`      | 2    | A state-mutating call was made before `initialize`.                    |
+| `DepositsPaused`      | 3    | `deposit` called while `set_paused(true)` is in effect.                |
+| `ZeroAmount`          | 4    | `deposit`/`withdraw` called with a non-positive amount/shares.         |
+| `DepositTooSmall`     | 5    | The deposited amount rounds down to zero shares.                       |
+| `NoSharesOutstanding` | 6    | `withdraw` called while the vault has no shares outstanding.           |
+| `InsufficientShares`  | 7    | The caller doesn't hold enough mUSDC to burn.                          |
+| `WithdrawalTooSmall`  | 8    | The shares burned round down to zero USDC.                             |
+| `Overflow`            | 9    | An intermediate arithmetic operation would overflow `i128`.            |
+| `AdapterSwapUnsafe`   | 10   | `set_adapter` was called while the vault still has shares outstanding. |
 
 ## Contract storage
 

@@ -259,6 +259,15 @@ impl MeridianBlendAdapter {
         Ok(())
     }
 
+    /// Refreshes the cached total_assets to include yield accrued since the
+    /// last call, satisfying the shared YieldAdapterInterface contract.
+    /// Currently just calls accrue(), which remains a public,
+    /// permissionless entry point in its own right.
+    #[allow(unused_must_use)]
+    pub fn refresh(env: Env) {
+        Self::accrue(env);
+    }
+
     /// Returns the cached USDC value of the adapter's Blend position. Reflects
     /// yield only as of the last `accrue()` call; call `accrue()` first for a
     /// value that includes interest accrued since then.

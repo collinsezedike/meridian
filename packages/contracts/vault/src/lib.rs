@@ -39,6 +39,10 @@ pub trait YieldAdapterInterface {
     fn deposit(env: Env, amount: i128) -> i128;
     fn withdraw(env: Env, shares: i128, recipient: Address) -> i128;
     fn total_assets(env: Env) -> i128;
+    /// Refreshes the adapter's cached total_assets before it is read for
+    /// deposit/withdraw pricing. A no-op for adapters that already price
+    /// live on every call.
+    fn refresh(env: Env);
     /// Returns the address of the underlying protocol contract this adapter
     /// wraps (a lending pool for Blend, a vault for DeFindex, etc). Lets
     /// off-chain callers discover where to read live protocol data (e.g. a
@@ -152,6 +156,10 @@ impl MeridianVault {
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
         let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
 
+        // Refresh the adapter's cached total before pricing so this
+        // depositor's own transaction is priced with up-to-date yield.
+        AdapterClient::new(&env, &adapter_addr).refresh();
+
         // Share price is based on the adapter's total assets (includes yield).
         let total_assets = AdapterClient::new(&env, &adapter_addr).total_assets();
 
@@ -228,6 +236,16 @@ impl MeridianVault {
             .instance()
             .get(&ADAPTER)
             .ok_or(ContractError::NotInitialized)?;
+
+        // Refresh the adapter's cached total for display/cache consistency
+        // ahead of the withdrawal. This refresh does not, by itself, change what
+        // the withdrawer receives: withdraw() currently sizes the adapter-side
+        // redemption from ADPT_SH, a counter that only ever tracks deposited
+        // principal, so payouts today are capped at principal regardless of
+        // yield accrued. Fixing payout sizing itself is tracked separately in
+        // #486.
+        AdapterClient::new(&env, &adapter_addr).refresh();
+
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
         let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
 
@@ -481,6 +499,124 @@ mod tests {
             let usdc: Address = env.storage().instance().get(&MA_USDC).unwrap();
             TokenClient::new(&env, &usdc).balance(&env.current_contract_address())
         }
+
+        pub fn refresh(_env: Env) {
+            // No-op: MockAdapter already prices total_assets() live.
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // CachedMockAdapter: mimics BlendAdapter's caching behavior. total_assets()
+    // returns a cached value that only updates on refresh(), letting these
+    // tests prove the vault's refresh() call -- not just live pricing -- is
+    // what keeps deposit/withdraw pricing correct. Wrapped in its own module
+    // because contractimpl-generated helper items are not namespaced by type,
+    // and would otherwise collide with MockAdapter's identically named methods.
+    // -----------------------------------------------------------------------
+    mod cached_mock {
+        use super::*;
+
+        const CM_USDC: Symbol = symbol_short!("CM_USDC");
+        const CM_SH: Symbol = symbol_short!("CM_SH");
+        const CM_TOTAL: Symbol = symbol_short!("CM_TOTAL");
+
+        #[contract]
+        pub struct CachedMockAdapter;
+
+        #[contractimpl]
+        impl CachedMockAdapter {
+            pub fn initialize(env: Env, usdc: Address) {
+                env.storage().instance().set(&CM_USDC, &usdc);
+                env.storage().instance().set(&CM_SH, &0_i128);
+                env.storage().instance().set(&CM_TOTAL, &0_i128);
+            }
+
+            pub fn deposit(env: Env, amount: i128) -> i128 {
+                let prev: i128 = env.storage().instance().get(&CM_SH).unwrap_or(0);
+                env.storage().instance().set(&CM_SH, &(prev + amount));
+                amount
+            }
+
+            pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
+                // Payout is computed live, proportional to the adapter's current
+                // USDC balance -- unlike BlendAdapter::withdraw() today, which sizes
+                // redemptions off a principal-only share count (see #486). This test
+                // double intentionally uses live pricing so the test below can
+                // isolate what refresh() itself does or doesn't affect, without
+                // being confounded by that separate, pre-existing gap.
+                let usdc: Address = env.storage().instance().get(&CM_USDC).unwrap();
+                let total_sh: i128 = env.storage().instance().get(&CM_SH).unwrap_or(0);
+                let balance =
+                    TokenClient::new(&env, &usdc).balance(&env.current_contract_address());
+
+                let usdc_out = if total_sh > 0 {
+                    shares * balance / total_sh
+                } else {
+                    0
+                };
+
+                if usdc_out > 0 {
+                    TokenClient::new(&env, &usdc).transfer(
+                        &env.current_contract_address(),
+                        &recipient,
+                        &usdc_out,
+                    );
+                }
+                env.storage().instance().set(&CM_SH, &(total_sh - shares));
+                usdc_out
+            }
+
+            pub fn total_assets(env: Env) -> i128 {
+                // Cached: only reflects the balance as of the last refresh() call.
+                env.storage().instance().get(&CM_TOTAL).unwrap_or(0)
+            }
+
+            pub fn refresh(env: Env) {
+                let usdc: Address = env.storage().instance().get(&CM_USDC).unwrap();
+                let balance =
+                    TokenClient::new(&env, &usdc).balance(&env.current_contract_address());
+                env.storage().instance().set(&CM_TOTAL, &balance);
+            }
+        }
+    }
+    use cached_mock::{CachedMockAdapter, CachedMockAdapterClient};
+
+    // Returns (env, admin, user, usdc_id, musdc_id, adapter_id, vault) wired
+    // to CachedMockAdapter instead of the live-pricing MockAdapter.
+    fn setup_cached() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        Address,
+        Address,
+        MeridianVaultClient<'static>,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let musdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        let adapter_id = env.register(CachedMockAdapter, ());
+        CachedMockAdapterClient::new(&env, &adapter_id).initialize(&usdc_id);
+
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        vault.initialize(&admin, &usdc_id, &musdc_id, &adapter_id);
+
+        StellarAssetClient::new(&env, &musdc_id).set_admin(&vault_id);
+
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &10_000_000_000_i128);
+
+        (env, admin, user, usdc_id, musdc_id, adapter_id, vault)
     }
 
     // Returns (env, admin, user, usdc_id, musdc_id, adapter_id, vault)
@@ -951,5 +1087,91 @@ mod tests {
         // Burning just 2 vault shares now rounds down to 0 USDC out.
         let result = vault.try_withdraw(&user, &2_i128);
         assert_eq!(result, Err(Ok(ContractError::WithdrawalTooSmall)));
+    }
+
+    // Acceptance-criteria tests for the refresh() cache mechanism -----------
+
+    #[test]
+    fn depositor_priced_correctly_within_own_transaction_after_yield_accrual() {
+        let (env, _admin, user, usdc_id, _musdc_id, adapter_id, vault) = setup_cached();
+
+        let amount = 100_0000000_i128;
+        vault.deposit(&user, &amount);
+
+        // Simulate yield accruing inside the underlying protocol: USDC lands
+        // directly in the adapter without going through deposit(), so the
+        // adapter's cached total_assets() does not reflect it until refresh()
+        // is called.
+        let yield_amount = 10_0000000_i128;
+        StellarAssetClient::new(&env, &usdc_id).mint(&adapter_id, &yield_amount);
+
+        // A second depositor arrives. Without the vault calling refresh()
+        // ahead of pricing, total_assets() would still return the stale
+        // pre-yield cache and this deposit would be mispriced within the
+        // second depositor's own transaction -- the exact case the
+        // adapter-only fix could not solve.
+        let user2 = Address::generate(&env);
+        StellarAssetClient::new(&env, &usdc_id).mint(&user2, &10_000_000_000_i128);
+        let shares2 = vault.deposit(&user2, &amount);
+
+        assert!(
+            shares2 < amount,
+            "second depositor should be priced against the refreshed total, receiving fewer shares"
+        );
+
+        // The adapter's cache was actually refreshed as a side effect of this
+        // deposit (read here before user2's own transfer lands), proving the
+        // vault's refresh() call -- not stale data -- drove the pricing above.
+        assert_eq!(vault.get_total_assets(), amount + yield_amount);
+    }
+
+    #[test]
+    fn withdraw_payout_is_live_computed_and_unaffected_by_cache_refresh() {
+        let (env, _admin, user, usdc_id, _musdc_id, adapter_id, vault) = setup_cached();
+
+        let amount = 100_0000000_i128;
+        vault.deposit(&user, &amount);
+
+        // Simulate yield accruing directly in the adapter, same as above: the
+        // adapter's cached total_assets() is stale until refresh() runs.
+        let yield_amount = 10_0000000_i128;
+        StellarAssetClient::new(&env, &usdc_id).mint(&adapter_id, &yield_amount);
+
+        let shares = vault.get_position(&user);
+        let usdc_out = vault.withdraw(&user, &shares);
+
+        // CachedMockAdapter's withdraw() is deliberately live-priced (unlike
+        // BlendAdapter's current principal-only withdrawal sizing, see #486), so
+        // this test isolates what refresh() itself affects: the payout here comes
+        // from the adapter's live USDC balance, not from whatever the cache
+        // happened to hold, and refresh() ahead of it only keeps the
+        // cache/display correct -- it doesn't change this number.
+        assert_eq!(
+            usdc_out,
+            amount + yield_amount,
+            "withdrawer should receive the full live-computed value including yield"
+        );
+    }
+
+    #[test]
+    fn deposit_refresh_call_resource_cost_is_within_sanity_ceiling() {
+        let (env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
+
+        let amount = 100_0000000_i128;
+        vault.deposit(&user, &amount);
+
+        // Sanity ceiling, not a tight bound: deposit() (which now includes the
+        // refresh() call ahead of pricing) should stay well under a generous
+        // instruction ceiling against test-double contracts. This guards against
+        // a gross regression (e.g. an accidental loop) rather than pinning an
+        // exact count -- real WASM costs against live protocols will differ, but
+        // Soroban's per-transaction instruction ceiling has wide headroom above
+        // this.
+        let resources = env.cost_estimate().resources();
+        assert!(
+            resources.instructions < 1_000_000,
+            "deposit() instruction count {} exceeds sanity ceiling",
+            resources.instructions
+        );
     }
 }

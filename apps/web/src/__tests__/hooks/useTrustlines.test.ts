@@ -14,8 +14,10 @@ const MUSDC_TESTNET_ISSUER =
   "GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD";
 
 vi.mock("../../lib/wallet", () => ({
-  signTransaction: vi.fn(async () => "SIGNED_XDR"),
-  isFreighterAuthorized: vi.fn(async () => true),
+  wallet: {
+    sign: vi.fn(async () => "SIGNED_XDR"),
+    isAuthorized: vi.fn(async () => true),
+  },
 }));
 
 vi.mock("../../lib/api", () => ({
@@ -38,7 +40,7 @@ vi.mock("react-i18next", () => {
 });
 
 import { api } from "../../lib/api";
-import { signTransaction } from "../../lib/wallet";
+import { wallet } from "../../lib/wallet";
 
 function bothTrustlinesHorizonResponse() {
   return new Response(
@@ -121,7 +123,7 @@ describe("useTrustlines", () => {
 
     expect(ok).toBe(true);
     expect(api.addTrustline).toHaveBeenCalledWith(KEY);
-    expect(signTransaction).toHaveBeenCalledWith(
+    expect(wallet.sign).toHaveBeenCalledWith(
       "TRUSTLINE_XDR",
       expect.stringContaining("Test SDF")
     );
