@@ -2,7 +2,8 @@
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short,
+    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
+    symbol_short,
     token::TokenClient,
     vec, Address, Env, IntoVal, Map, Symbol, Val, Vec,
 };
@@ -31,6 +32,17 @@ const REQUEST_WITHDRAW: u32 = 3;
 // reproduced the deposited amount plus a plausible small yield delta, while
 // dividing by `reserve.scalar` produced a ~100,000x inflated value.
 const RATE_SCALAR: i128 = 1_000_000_000_000;
+
+// Converts a bToken amount to its underlying USDC value at the given
+// `b_rate`, guarding the intermediate multiply against i128 overflow.
+// Shared by accrue() and withdraw() so the two never drift apart.
+fn b_tokens_to_usdc(b_tokens: i128, b_rate: i128) -> Result<i128, ContractError> {
+    b_tokens
+        .checked_mul(b_rate)
+        .ok_or(ContractError::Overflow)?
+        .checked_div(RATE_SCALAR)
+        .ok_or(ContractError::Overflow)
+}
 
 // ---------------------------------------------------------------------------
 // Blend pool interface types
@@ -231,7 +243,10 @@ impl MeridianBlendAdapter {
         let client = BlendPoolClient::new(&env, &pool);
 
         let reserve = client.get_reserve(&usdc);
-        let request_amount = shares * reserve.data.b_rate / RATE_SCALAR;
+        let request_amount = match b_tokens_to_usdc(shares, reserve.data.b_rate) {
+            Ok(amount) => amount,
+            Err(err) => panic_with_error!(&env, err),
+        };
 
         let usdc_client = TokenClient::new(&env, &usdc);
         let before = usdc_client.balance(&recipient);
@@ -284,11 +299,7 @@ impl MeridianBlendAdapter {
         let positions = client.get_positions(&adapter);
         let b_tokens = positions.collateral.get(reserve.config.index).unwrap_or(0);
 
-        let current_value = b_tokens
-            .checked_mul(reserve.data.b_rate)
-            .ok_or(ContractError::Overflow)?
-            .checked_div(RATE_SCALAR)
-            .ok_or(ContractError::Overflow)?;
+        let current_value = b_tokens_to_usdc(b_tokens, reserve.data.b_rate)?;
 
         env.storage().instance().set(&TOTAL_KEY, &current_value);
         Ok(())

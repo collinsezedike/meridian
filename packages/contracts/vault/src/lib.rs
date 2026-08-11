@@ -238,12 +238,10 @@ impl MeridianVault {
             .ok_or(ContractError::NotInitialized)?;
 
         // Refresh the adapter's cached total for display/cache consistency
-        // ahead of the withdrawal. This refresh does not, by itself, change what
-        // the withdrawer receives: withdraw() currently sizes the adapter-side
-        // redemption from ADPT_SH, a counter that only ever tracks deposited
-        // principal, so payouts today are capped at principal regardless of
-        // yield accrued. Fixing payout sizing itself is tracked separately in
-        // #486.
+        // ahead of the withdrawal. BlendAdapter::withdraw() sizes its own
+        // redemption directly from the live b_rate (#486), so this refresh
+        // only keeps the cache/display in sync and does not itself change
+        // what the withdrawer receives.
         AdapterClient::new(&env, &adapter_addr).refresh();
 
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
@@ -539,11 +537,10 @@ mod tests {
 
             pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
                 // Payout is computed live, proportional to the adapter's current
-                // USDC balance -- unlike BlendAdapter::withdraw() today, which sizes
-                // redemptions off a principal-only share count (see #486). This test
-                // double intentionally uses live pricing so the test below can
-                // isolate what refresh() itself does or doesn't affect, without
-                // being confounded by that separate, pre-existing gap.
+                // USDC balance, matching how BlendAdapter::withdraw() sizes
+                // redemptions off the live b_rate (#486). This test double
+                // intentionally uses live pricing so the test below can
+                // isolate what refresh() itself does or doesn't affect.
                 let usdc: Address = env.storage().instance().get(&CM_USDC).unwrap();
                 let total_sh: i128 = env.storage().instance().get(&CM_SH).unwrap_or(0);
                 let balance =
@@ -1140,12 +1137,12 @@ mod tests {
         let shares = vault.get_position(&user);
         let usdc_out = vault.withdraw(&user, &shares);
 
-        // CachedMockAdapter's withdraw() is deliberately live-priced (unlike
-        // BlendAdapter's current principal-only withdrawal sizing, see #486), so
-        // this test isolates what refresh() itself affects: the payout here comes
-        // from the adapter's live USDC balance, not from whatever the cache
-        // happened to hold, and refresh() ahead of it only keeps the
-        // cache/display correct -- it doesn't change this number.
+        // CachedMockAdapter's withdraw() is deliberately live-priced, matching
+        // how BlendAdapter now sizes withdrawals off the live b_rate (#486),
+        // so this test isolates what refresh() itself affects: the payout
+        // here comes from the adapter's live USDC balance, not from whatever
+        // the cache happened to hold, and refresh() ahead of it only keeps
+        // the cache/display correct -- it doesn't change this number.
         assert_eq!(
             usdc_out,
             amount + yield_amount,
