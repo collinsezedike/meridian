@@ -35,6 +35,9 @@ pub enum RouterError {
     /// `rebalance` was called with a `from_vault`/`to_vault` that isn't on
     /// the admin-managed allowlist.
     VaultNotAllowed = 4,
+    /// `rebalance` was called with the same address for `from_vault` and
+    /// `to_vault`.
+    SameVault = 5,
 }
 
 #[contract]
@@ -89,6 +92,14 @@ impl MeridianRouter {
             .ok_or(RouterError::NotInitialized)
     }
 
+    /// Admin-only key rotation. Lets a compromised or retired admin key be
+    /// replaced without redeploying the router.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), RouterError> {
+        Self::require_admin(&env)?;
+        env.storage().instance().set(&ADMIN, &new_admin);
+        Ok(())
+    }
+
     /// Atomically withdraw `shares` from `from_vault` and deposit the returned
     /// USDC into `to_vault`, all within one Soroban transaction.
     ///
@@ -111,6 +122,10 @@ impl MeridianRouter {
         min_out: i128,
     ) -> Result<i128, RouterError> {
         depositor.require_auth();
+
+        if from_vault == to_vault {
+            return Err(RouterError::SameVault);
+        }
 
         if !Self::is_allowed_vault(env.clone(), from_vault.clone())
             || !Self::is_allowed_vault(env.clone(), to_vault.clone())
@@ -386,5 +401,66 @@ mod tests {
 
         let result = router.try_initialize(&admin);
         assert_eq!(result, Err(Ok(RouterError::AlreadyInitialized)));
+    }
+
+    #[test]
+    fn set_admin_rotates_router_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let (vault_a_id, _vault_a) = make_vault(&env, &admin, &usdc_id);
+
+        let router = setup_router(&env, &admin);
+        router.set_admin(&new_admin);
+        assert_eq!(router.get_admin(), new_admin);
+
+        // The new admin can manage the allowlist.
+        router.add_vault(&vault_a_id);
+        assert!(router.is_allowed_vault(&vault_a_id));
+    }
+
+    #[test]
+    fn set_admin_fails_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let router_id = env.register(MeridianRouter, ());
+        let router = MeridianRouterClient::new(&env, &router_id);
+
+        let result = router.try_set_admin(&admin);
+        assert_eq!(result, Err(Ok(RouterError::NotInitialized)));
+    }
+
+    #[test]
+    fn rebalance_rejects_same_vault() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &10_000_000_000_i128);
+
+        let (vault_a_id, vault_a) = make_vault(&env, &admin, &usdc_id);
+
+        let router = setup_router(&env, &admin);
+        router.add_vault(&vault_a_id);
+
+        let amount = 100_0000000_i128;
+        vault_a.deposit(&user, &amount);
+        let shares = vault_a.get_position(&user);
+
+        let result = router.try_rebalance(&user, &vault_a_id, &vault_a_id, &shares, &1_i128);
+        assert_eq!(result, Err(Ok(RouterError::SameVault)));
+        assert_eq!(vault_a.get_position(&user), shares);
     }
 }

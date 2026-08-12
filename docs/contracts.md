@@ -102,7 +102,13 @@ routed into an attacker-controlled contract masquerading as a vault, since
 `rebalance` would otherwise call `withdraw`/`deposit` on whatever address it's
 given with no validation. `scripts/deploy-testnet.sh` initializes the router
 and allowlists the vault it deploys automatically; a router managing multiple
-vaults needs `add_vault` called for each one.
+vaults needs `add_vault` called for each one. `set_admin` rotates the admin key,
+so a lost or compromised one doesn't permanently freeze the allowlist.
+
+`rebalance` also rejects `from_vault == to_vault` with `RouterError::SameVault`,
+a same-vault call can't move funds anywhere an attacker controls (the depositor
+signs it themselves), but it's a pointless round trip that could shift the
+depositor's own position via adapter rounding for no reason.
 
 ### Auth model
 
