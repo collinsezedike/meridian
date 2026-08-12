@@ -68,7 +68,15 @@ Returns the currently active adapter contract address.
 
 ### `set_adapter(new_adapter)` (admin only)
 
-Points the vault at a new adapter contract and resets the adapter-share counter (`ADPT_SH`) to zero. **This is the only way to change which protocol a vault routes to, or to push new adapter code live** — adapter contracts have no in-place upgrade path (no `update_current_contract_wasm`). The contract itself rejects the call with `AdapterSwapUnsafe` while the vault still has shares outstanding (`get_total_shares() > 0`), so a swap can't be made while depositors are still in the vault. The caller is still responsible for migrating funds out of the old adapter _before_ shares reach zero and calling this: any value still sitting in the old adapter becomes unreachable through the vault's normal `withdraw()` flow once the adapter-share counter resets. See `scripts/redeploy-blend-adapter.sh` for the supported procedure.
+Points the vault at a new adapter contract and resets the adapter-share counter (`ADPT_SH`) to zero. **This is the only way to change which protocol a vault routes to, or to push new adapter code live** — adapter contracts have no in-place upgrade path (no `update_current_contract_wasm`). The contract itself rejects the call with `AdapterSwapUnsafe` while the vault still has shares outstanding (`get_total_shares() > 0`). Use this only when the vault has no depositors yet, e.g. right after a fresh deploy. For a vault with real depositors, use `migrate_adapter` instead. See `scripts/redeploy-blend-adapter.sh` for the supported procedure.
+
+### `migrate_adapter(new_adapter, max_slippage_bps) -> Result<(), ContractError>` (admin only)
+
+Moves the vault's entire position from the current adapter to `new_adapter` in one atomic transaction, without requiring depositors to withdraw first. Unlike `set_adapter`, this is safe to call with shares outstanding, it's the supported way to migrate a live vault (e.g. Blend to a higher-yielding DeFindex vault, or replacing a compromised adapter).
+
+Refreshes and reads the old adapter's `total_assets()` as the pre-migration value, withdraws the vault's entire adapter-share position into the vault itself, deposits it into `new_adapter`, and reads the new adapter's `total_assets()` as the post-migration value. Fails with `MigrationValueDrift` if the post-migration value is below `(10_000 - max_slippage_bps) / 10_000` of the pre-migration value, or `SameAdapter` if `new_adapter` is the vault's current adapter. Since Soroban transactions are atomic, a failed invariant check leaves no partial state, nothing moves. On success, `ADAPTER` and `ADPT_SH` are updated; `TOTAL_SH` and every depositor's `Balance`/`Principal`/`Entry` are untouched, since they're denominated in vault mUSDC shares, not adapter shares.
+
+**This does not protect against a malicious or compromised admin key.** The admin chooses `new_adapter`, and a fake adapter could report whatever `total_assets()` it likes to pass the slippage check and then keep the funds. The invariant guards against accidental value loss (slippage, a buggy new adapter), not against the admin key itself, that's a key-custody problem (see the shared testnet admin/deployer/mUSDC-issuer key warning in the deploy scripts), not something this function can close on its own.
 
 ### `set_paused(paused: bool)` (admin only)
 
@@ -137,18 +145,20 @@ Deposits, but never withdrawals, can be paused via `set_paused(true)` — this i
 
 `ContractError` (defined in `vault/src/lib.rs`) gives fallible entry points typed, stable error codes instead of panic strings:
 
-| Variant               | Code | Meaning                                                                |
-| --------------------- | ---- | ---------------------------------------------------------------------- |
-| `AlreadyInitialized`  | 1    | `initialize` called on a contract that already has an admin.           |
-| `NotInitialized`      | 2    | A state-mutating call was made before `initialize`.                    |
-| `DepositsPaused`      | 3    | `deposit` called while `set_paused(true)` is in effect.                |
-| `ZeroAmount`          | 4    | `deposit`/`withdraw` called with a non-positive amount/shares.         |
-| `DepositTooSmall`     | 5    | The deposited amount rounds down to zero shares.                       |
-| `NoSharesOutstanding` | 6    | `withdraw` called while the vault has no shares outstanding.           |
-| `InsufficientShares`  | 7    | The caller doesn't hold enough mUSDC to burn.                          |
-| `WithdrawalTooSmall`  | 8    | The shares burned round down to zero USDC.                             |
-| `Overflow`            | 9    | An intermediate arithmetic operation would overflow `i128`.            |
-| `AdapterSwapUnsafe`   | 10   | `set_adapter` was called while the vault still has shares outstanding. |
+| Variant               | Code | Meaning                                                                                              |
+| --------------------- | ---- | ---------------------------------------------------------------------------------------------------- |
+| `AlreadyInitialized`  | 1    | `initialize` called on a contract that already has an admin.                                         |
+| `NotInitialized`      | 2    | A state-mutating call was made before `initialize`.                                                  |
+| `DepositsPaused`      | 3    | `deposit` called while `set_paused(true)` is in effect.                                              |
+| `ZeroAmount`          | 4    | `deposit`/`withdraw` called with a non-positive amount/shares.                                       |
+| `DepositTooSmall`     | 5    | The deposited amount rounds down to zero shares.                                                     |
+| `NoSharesOutstanding` | 6    | `withdraw` called while the vault has no shares outstanding.                                         |
+| `InsufficientShares`  | 7    | The caller doesn't hold enough mUSDC to burn.                                                        |
+| `WithdrawalTooSmall`  | 8    | The shares burned round down to zero USDC.                                                           |
+| `Overflow`            | 9    | An intermediate arithmetic operation would overflow `i128`.                                          |
+| `AdapterSwapUnsafe`   | 10   | `set_adapter` was called while the vault still has shares outstanding.                               |
+| `SameAdapter`         | 11   | `migrate_adapter` was called with the vault's current adapter as the target.                         |
+| `MigrationValueDrift` | 12   | `migrate_adapter`'s post-migration value fell outside `max_slippage_bps` of the pre-migration value. |
 
 ## Contract storage
 
