@@ -105,9 +105,10 @@ impl MeridianRouter {
     ///
     /// The depositor's signature covers both sub-invocations via Soroban's auth
     /// tree, so the call requires one `signTransaction` on the client side.
-    /// Fails with `VaultNotAllowed` unless both `from_vault` and `to_vault`
-    /// are on the admin-managed allowlist, so a depositor can't be routed
-    /// into an attacker-controlled contract masquerading as a vault. If the
+    /// Fails with `SameVault` if `from_vault` equals `to_vault`, or
+    /// `VaultNotAllowed` unless both `from_vault` and `to_vault` are on the
+    /// admin-managed allowlist, so a depositor can't be routed into an
+    /// attacker-controlled contract masquerading as a vault. If the
     /// withdrawal returns fewer stroops than `min_out`, returns
     /// `RouterError::SlippageExceeded` and the whole transaction reverts
     /// (including the withdrawal).
