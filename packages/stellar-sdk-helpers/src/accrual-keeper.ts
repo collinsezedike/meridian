@@ -14,7 +14,15 @@ import type { StellarNetwork } from "./types";
 
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_BASE_DELAY_MS = 1_000;
-const DEFAULT_RPC_TIMEOUT_MS = 12_000;
+// Capped at 10_000 to match tx.ts's own hardcoded Soroban RPC timeout
+// (SOROBAN_RPC_TIMEOUT_MS): discovery's simulate() calls go through
+// simulateView, which races every call against that fixed 10s ceiling
+// regardless of what's configured here. Submission-side calls in
+// submitAccrualTransaction use config.rpcTimeoutMs directly via
+// withRaceTimeout and are not subject to this cap, only discovery is.
+// A configured MERIDIAN_KEEPER_RPC_TIMEOUT_MS above 10_000 still fully
+// governs submission; it's silently capped at 10s for discovery only.
+const DEFAULT_RPC_TIMEOUT_MS = 10_000;
 
 export interface BlendAccrualKeeperConfig {
   network: StellarNetwork;
@@ -130,6 +138,22 @@ const consoleLogger: KeeperLogger = {
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+// Thrown when a transaction was successfully sent (we have its hash) but
+// confirmation couldn't be observed before rpcTimeoutMs elapsed. Carries the
+// hash so a retry can check whether it actually landed before ever
+// submitting a second, duplicate accrue() call, distinct from a failure
+// before sendTransaction, where nothing was submitted and a fresh attempt
+// is always safe.
+class SubmissionInFlightError extends Error {
+  constructor(
+    readonly sentHash: string,
+    cause: unknown
+  ) {
+    super(errorMessage(cause));
+    this.name = "SubmissionInFlightError";
+  }
+}
+
 class KeeperRetryError extends Error {
   readonly attempts: number;
   readonly transient: boolean;
@@ -191,6 +215,35 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
+// Unlike errorMessage() above (first line only, for concise logging/display),
+// this keeps the full message for transient-error classification: a status
+// code or keyword on a later line (e.g. a wrapped fetch error whose first
+// line is generic) would otherwise be invisible to isTransientKeeperError.
+function rawErrorText(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+// simulateView returns unknown (a decoded ScVal), which can be null or a
+// non-string value depending on how the contract's return type decodes.
+// get_adapter()/get_protocol() are both documented to return a Symbol/
+// Address that decodes to a string; anything else means the on-chain
+// return type didn't match, and using it as a contract ID would otherwise
+// surface as a confusing low-level `Contract` constructor error instead of
+// this clear one.
+function expectString(
+  value: unknown,
+  method: string,
+  contractId: string
+): string {
+  if (typeof value !== "string") {
+    throw new Error(
+      `${method}() on ${contractId} did not return a string (got ${typeof value})`
+    );
+  }
+  return value;
+}
+
 function describeSendError(res: rpc.Api.SendTransactionResponse): string {
   try {
     return res.errorResult?.result().switch().name ?? "unknown error";
@@ -205,14 +258,14 @@ function describeSendError(res: rpc.Api.SendTransactionResponse): string {
 const TRANSIENT_STATUS_CODE = /\b(429|500|502|503|504)\b/;
 
 function isTransientKeeperError(err: unknown): boolean {
-  const message = errorMessage(err).toLowerCase();
+  if (err instanceof SubmissionInFlightError) return true;
+  const message = rawErrorText(err).toLowerCase();
   return (
     message.includes("try again") ||
     message.includes("timeout") ||
     message.includes("timed out") ||
     message.includes("rate limit") ||
     message.includes("temporarily") ||
-    message.includes("not_found") ||
     TRANSIENT_STATUS_CODE.test(message)
   );
 }
@@ -279,18 +332,26 @@ export async function discoverLiveAdapters(
       const vaultContractId = meta.contractId as string;
       return withKeeperRetry(
         async () => {
-          const adapterId = (await simulate(
-            server as never,
-            vaultContractId,
-            network.passphrase,
-            "get_adapter"
-          )) as string;
-          const protocol = (await simulate(
-            server as never,
-            adapterId,
-            network.passphrase,
-            "get_protocol"
-          )) as string;
+          const adapterId = expectString(
+            await simulate(
+              server as never,
+              vaultContractId,
+              network.passphrase,
+              "get_adapter"
+            ),
+            "get_adapter",
+            vaultContractId
+          );
+          const protocol = expectString(
+            await simulate(
+              server as never,
+              adapterId,
+              network.passphrase,
+              "get_protocol"
+            ),
+            "get_protocol",
+            adapterId
+          );
           return {
             vaultId: meta.id,
             vaultContractId,
@@ -344,8 +405,25 @@ export async function discoverLiveAdapters(
 async function submitAccrualTransaction(
   adapter: DiscoveredAdapter,
   config: BlendAccrualKeeperConfig,
-  server: KeeperRpcServer
+  server: KeeperRpcServer,
+  priorHash?: string
 ): Promise<Omit<AccrualSuccess, "attempts" | "vaultId" | "adapterId">> {
+  // An earlier attempt already sent a transaction and only the
+  // confirmation-wait timed out. Check whether it actually landed before
+  // submitting a second, duplicate accrue() call, if it's not confirmed
+  // (or genuinely failed/unknown), fall through and submit fresh below.
+  if (priorHash) {
+    try {
+      const confirmed = await waitForTransaction(server, priorHash, {
+        timeoutMs: config.rpcTimeoutMs,
+      });
+      return { hash: priorHash, ledger: confirmed.ledger };
+    } catch {
+      // Not confirmed within this attempt's window either; proceed to a
+      // fresh submission below rather than waiting indefinitely.
+    }
+  }
+
   const keypair = Keypair.fromSecret(config.secretKey);
   const source = await withRaceTimeout(
     () => server.getAccount(keypair.publicKey()),
@@ -390,10 +468,17 @@ async function submitAccrualTransaction(
     throw new Error("Transaction could not be submitted yet (try again later)");
   }
 
-  const confirmed = await waitForTransaction(server, sent.hash, {
-    timeoutMs: config.rpcTimeoutMs,
-  });
-  return { hash: sent.hash, ledger: confirmed.ledger };
+  try {
+    const confirmed = await waitForTransaction(server, sent.hash, {
+      timeoutMs: config.rpcTimeoutMs,
+    });
+    return { hash: sent.hash, ledger: confirmed.ledger };
+  } catch (err) {
+    // The transaction was sent successfully but confirmation wasn't
+    // observed in time; carry the hash so a retry checks its real status
+    // first instead of blindly submitting a duplicate accrue() call.
+    throw new SubmissionInFlightError(sent.hash, err);
+  }
 }
 
 export async function runBlendAccrualKeeper(
@@ -437,12 +522,23 @@ export async function runBlendAccrualKeeper(
   // these concurrently would have multiple submissions racing for the same
   // sequence number and mostly failing, not a performance win.
   for (const adapter of blendAdapters) {
+    let priorHash: string | undefined;
     try {
       const result = await withKeeperRetry(
         (attempt) =>
           deps.submitAccrual
             ? deps.submitAccrual(adapter, attempt)
-            : submitAccrualTransaction(adapter, config, server),
+            : submitAccrualTransaction(
+                adapter,
+                config,
+                server,
+                priorHash
+              ).catch((err: unknown) => {
+                if (err instanceof SubmissionInFlightError) {
+                  priorHash = err.sentHash;
+                }
+                throw err;
+              }),
         config,
         logger,
         {

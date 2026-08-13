@@ -1,9 +1,10 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
   loadBlendAccrualKeeperConfig,
   runBlendAccrualKeeper,
 } from "@meridian/stellar-sdk-helpers";
+import { checkRateLimit } from "../../_lib/middleware.js";
 
 function authorizationHeader(req: VercelRequest): string | undefined {
   const raw = req.headers.authorization;
@@ -13,12 +14,14 @@ function authorizationHeader(req: VercelRequest): string | undefined {
 // Constant-time comparison: this endpoint authorizes real signed
 // transactions, so the bearer token check shouldn't leak timing
 // information a network attacker could use to guess CRON_SECRET
-// character-by-character.
+// character-by-character. Both inputs are hashed to a fixed 32-byte digest
+// first, so there's no length-based short-circuit before timingSafeEqual,
+// a naive length check up front would itself leak the secret's length via
+// timing before the constant-time comparison ever ran.
 function safeCompare(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
+  const digestA = createHash("sha256").update(a).digest();
+  const digestB = createHash("sha256").update(b).digest();
+  return timingSafeEqual(digestA, digestB);
 }
 
 function isCronAuthorized(req: VercelRequest): boolean {
@@ -38,6 +41,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader("Allow", "GET, POST");
     return res.status(405).json({ error: "Method not allowed" });
   }
+
+  // No applyCors: this endpoint is cron-invoked, never browser-facing. But
+  // it does sign and submit real transactions off the keeper's funded
+  // account, unlike simple reads, so it still gets a rate-limit backstop:
+  // defense-in-depth if CRON_SECRET ever leaks or a non-production instance
+  // is reachable, even though the legitimate cron caller is nowhere near
+  // this limit at one call per 15 minutes.
+  if (!(await checkRateLimit(req, res))) return;
 
   if (!process.env.CRON_SECRET && process.env.VERCEL_ENV !== undefined) {
     return res.status(503).json({ error: "CRON_SECRET is not configured" });

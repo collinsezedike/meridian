@@ -206,7 +206,10 @@ describe("loadBlendAccrualKeeperConfig", () => {
     expect(config.secretKey).toBe("LEGACY_SECRET");
     expect(config.maxAttempts).toBe(3);
     expect(config.baseDelayMs).toBe(1000);
-    expect(config.rpcTimeoutMs).toBe(12000);
+    // 10_000, not 12_000: capped to match tx.ts's own hardcoded Soroban RPC
+    // timeout, which discovery's simulate() calls are subject to regardless
+    // of what's configured here (see the constant's own comment).
+    expect(config.rpcTimeoutMs).toBe(10000);
   });
 
   it("rejects invalid positive integer environment values", () => {
@@ -286,6 +289,30 @@ describe("discoverLiveAdapters", () => {
 
     expect(result.failures).toEqual([]);
     expect(result.adapters).toHaveLength(2);
+  });
+
+  it("fails clearly instead of using a non-string get_adapter() return as a contract ID", async () => {
+    // simulateView returns unknown (a decoded ScVal); if the on-chain return
+    // type doesn't decode to a string, using it as a contract ID should fail
+    // with a clear error, not surface as a confusing low-level Contract
+    // constructor error several calls later.
+    const simulate = vi.fn(async () => null);
+
+    const result = await discoverLiveAdapters({
+      network: NETWORK,
+      server: {} as never,
+      simulate: simulate as never,
+      pools: { "meridian-usdc": VAULT },
+    });
+
+    expect(simulate).toHaveBeenCalledOnce();
+    expect(result.adapters).toEqual([]);
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        error: expect.stringContaining("get_adapter"),
+      },
+    ]);
   });
 
   it("records discovery failures instead of dropping them", async () => {
@@ -419,7 +446,7 @@ describe("discoverLiveAdapters", () => {
       if (contractId === "CVAULT" && method === "get_adapter") {
         return "CADAPTER";
       }
-      throw new Error("not_found");
+      throw new Error("request timed out");
     });
 
     const result = await discoverLiveAdapters({
@@ -442,6 +469,37 @@ describe("discoverLiveAdapters", () => {
         stage: "discover",
         attempts: 2,
         transient: true,
+        error: "request timed out",
+      },
+    ]);
+  });
+
+  it("does not retry a not_found error: a stale/decommissioned contract ID is a permanent misconfiguration, not something that self-heals", async () => {
+    // Regression test: "not_found" was previously always classified as
+    // transient, meaning a stale KNOWN_POOLS entry got retried and reported
+    // "transient: true" on every 15-minute run forever, masking the real
+    // alert that should fire for a permanent configuration bug.
+    const sleep = vi.fn();
+    const simulate = vi.fn(async () => {
+      throw new Error("not_found");
+    });
+
+    const result = await discoverLiveAdapters({
+      network: NETWORK,
+      server: {} as never,
+      simulate: simulate as never,
+      maxAttempts: 3,
+      baseDelayMs: 7,
+      sleep,
+      pools: { "meridian-usdc": VAULT },
+    });
+
+    expect(simulate).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        transient: false,
         error: "not_found",
       },
     ]);
@@ -887,6 +945,52 @@ describe("runBlendAccrualKeeper", () => {
         hash: "SUBMITTED_HASH",
         ledger: 321,
         attempts: 1,
+      },
+    ]);
+  });
+
+  it("checks a prior submission's real status before resubmitting, avoiding a duplicate accrue() call", async () => {
+    // Regression test: if sendTransaction succeeds but waitForTransaction
+    // times out, a naive retry would build, sign, and send a brand new
+    // transaction, an actual second on-chain accrue() call, even though
+    // the first one may have already landed. This proves the retry checks
+    // the first attempt's real hash instead.
+    const server = makeServer({
+      sendTransaction: vi.fn(async () => ({
+        hash: "SUBMITTED_HASH",
+        status: "PENDING",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction
+      .mockRejectedValueOnce(new Error("Soroban RPC timed out after 100ms"))
+      .mockResolvedValueOnce({ ledger: 321 });
+
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      logger: logger(),
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+      sleep: vi.fn(),
+    });
+
+    // Only one real transaction was ever sent, despite two attempts.
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(stellarMocks.waitForTransaction).toHaveBeenCalledTimes(2);
+    expect(stellarMocks.waitForTransaction).toHaveBeenNthCalledWith(
+      2,
+      server,
+      "SUBMITTED_HASH",
+      { timeoutMs: 100 }
+    );
+    expect(result.successes).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        adapterId: "CADAPTERBLEND",
+        hash: "SUBMITTED_HASH",
+        ledger: 321,
+        attempts: 2,
       },
     ]);
   });
