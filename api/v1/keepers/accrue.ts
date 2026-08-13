@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
   loadBlendAccrualKeeperConfig,
@@ -9,10 +10,21 @@ function authorizationHeader(req: VercelRequest): string | undefined {
   return Array.isArray(raw) ? raw[0] : raw;
 }
 
+// Constant-time comparison: this endpoint authorizes real signed
+// transactions, so the bearer token check shouldn't leak timing
+// information a network attacker could use to guess CRON_SECRET
+// character-by-character.
+function safeCompare(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
 function isCronAuthorized(req: VercelRequest): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return process.env.VERCEL_ENV !== "production";
-  return authorizationHeader(req) === `Bearer ${secret}`;
+  return safeCompare(authorizationHeader(req) ?? "", `Bearer ${secret}`);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
