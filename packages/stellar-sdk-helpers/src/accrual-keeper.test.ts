@@ -995,6 +995,47 @@ describe("runBlendAccrualKeeper", () => {
     ]);
   });
 
+  it("does not resubmit when the network confirms the transaction genuinely failed on-chain", async () => {
+    // Regression test: a confirmed on-chain failure is a permanent outcome,
+    // not something a fresh resubmission fixes. Unlike a bare timeout, this
+    // must not be retried, resubmitting would just fail the same way
+    // again (or waste a fee finding out), and reporting it as transient
+    // would mislabel a real bug as a network blip.
+    const server = makeServer({
+      sendTransaction: vi.fn(async () => ({
+        hash: "SUBMITTED_HASH",
+        status: "PENDING",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockRejectedValue(
+      new Error("Transaction SUBMITTED_HASH failed on-chain")
+    );
+
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      logger: logger(),
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+      sleep: vi.fn(),
+    });
+
+    // No retry, and definitely no second transaction sent.
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(result.successes).toEqual([]);
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        adapterId: "CADAPTERBLEND",
+        stage: "submit",
+        attempts: 1,
+        transient: false,
+        error: "Transaction SUBMITTED_HASH failed on-chain",
+      },
+    ]);
+  });
+
   it("records simulation errors from the default transaction path", async () => {
     const server = makeServer({
       simulateTransaction: vi.fn(async () => ({

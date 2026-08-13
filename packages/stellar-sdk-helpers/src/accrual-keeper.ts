@@ -154,6 +154,28 @@ class SubmissionInFlightError extends Error {
   }
 }
 
+// waitForTransaction (tx.ts) throws two meaningfully different errors:
+// "Transaction X failed on-chain" (the network confirmed it, a permanent,
+// known outcome) vs. "Timed out waiting for transaction X to confirm"
+// (the client gave up, the real outcome is still unknown). Only the second
+// is worth treating as transient/retryable-by-rechecking; the first means
+// resubmitting would just fail the same way again (or waste a fee finding
+// out), and should be reported as a definitive submit failure instead.
+function isDefinitiveOnChainFailure(err: unknown): boolean {
+  return rawErrorText(err).includes("failed on-chain");
+}
+
+// Thrown when a prior attempt's transaction was confirmed as genuinely
+// failed on-chain (not merely unconfirmed/timed out). Always non-transient:
+// retrying would resubmit a fresh transaction that has no reason to succeed
+// where the first one didn't.
+class SubmissionFailedError extends Error {
+  constructor(cause: unknown) {
+    super(errorMessage(cause));
+    this.name = "SubmissionFailedError";
+  }
+}
+
 class KeeperRetryError extends Error {
   readonly attempts: number;
   readonly transient: boolean;
@@ -258,6 +280,10 @@ function describeSendError(res: rpc.Api.SendTransactionResponse): string {
 const TRANSIENT_STATUS_CODE = /\b(429|500|502|503|504)\b/;
 
 function isTransientKeeperError(err: unknown): boolean {
+  // Explicit, not incidental: a confirmed on-chain failure must never be
+  // treated as transient, regardless of what its message text happens to
+  // contain.
+  if (err instanceof SubmissionFailedError) return false;
   if (err instanceof SubmissionInFlightError) return true;
   const message = rawErrorText(err).toLowerCase();
   return (
@@ -410,17 +436,24 @@ async function submitAccrualTransaction(
 ): Promise<Omit<AccrualSuccess, "attempts" | "vaultId" | "adapterId">> {
   // An earlier attempt already sent a transaction and only the
   // confirmation-wait timed out. Check whether it actually landed before
-  // submitting a second, duplicate accrue() call, if it's not confirmed
-  // (or genuinely failed/unknown), fall through and submit fresh below.
+  // submitting a second, duplicate accrue() call.
   if (priorHash) {
     try {
       const confirmed = await waitForTransaction(server, priorHash, {
         timeoutMs: config.rpcTimeoutMs,
       });
       return { hash: priorHash, ledger: confirmed.ledger };
-    } catch {
-      // Not confirmed within this attempt's window either; proceed to a
-      // fresh submission below rather than waiting indefinitely.
+    } catch (err) {
+      // The prior transaction was confirmed as genuinely failed, a
+      // permanent outcome, not something a fresh resubmission fixes.
+      // Report it as such instead of silently submitting a new transaction
+      // that has no reason to succeed where the first one didn't.
+      if (isDefinitiveOnChainFailure(err)) {
+        throw new SubmissionFailedError(err);
+      }
+      // Still not confirmed within this attempt's window either (a further
+      // timeout); proceed to a fresh submission below rather than waiting
+      // indefinitely.
     }
   }
 
@@ -474,9 +507,14 @@ async function submitAccrualTransaction(
     });
     return { hash: sent.hash, ledger: confirmed.ledger };
   } catch (err) {
-    // The transaction was sent successfully but confirmation wasn't
-    // observed in time; carry the hash so a retry checks its real status
-    // first instead of blindly submitting a duplicate accrue() call.
+    // The network already confirmed this transaction failed, a permanent
+    // outcome. Report it directly rather than treating it as retryable.
+    if (isDefinitiveOnChainFailure(err)) {
+      throw new SubmissionFailedError(err);
+    }
+    // Otherwise confirmation just wasn't observed in time; carry the hash
+    // so a retry checks its real status first instead of blindly
+    // submitting a duplicate accrue() call.
     throw new SubmissionInFlightError(sent.hash, err);
   }
 }
