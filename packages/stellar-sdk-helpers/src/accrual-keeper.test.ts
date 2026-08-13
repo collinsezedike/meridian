@@ -251,6 +251,43 @@ describe("discoverLiveAdapters", () => {
     expect(simulate).toHaveBeenCalledTimes(2);
   });
 
+  it("discovers independent vaults concurrently, not one at a time", async () => {
+    // Deliberately gate vault A's get_adapter call on vault B's get_adapter
+    // call having already started. If discovery were still sequential, B's
+    // call would never start until A's resolves, and this would deadlock
+    // (the test would time out) instead of resolving.
+    let vaultBStarted = false;
+    const simulate = vi.fn(
+      async (_server, contractId: string, _passphrase, method: string) => {
+        if (contractId === "CVAULT_A" && method === "get_adapter") {
+          await vi.waitFor(() => {
+            if (!vaultBStarted) throw new Error("vault B has not started yet");
+          });
+          return "CADAPTER_A";
+        }
+        if (contractId === "CVAULT_B" && method === "get_adapter") {
+          vaultBStarted = true;
+          return "CADAPTER_B";
+        }
+        if (method === "get_protocol") return "blend";
+        throw new Error(`unexpected call ${contractId}.${method}`);
+      }
+    );
+
+    const result = await discoverLiveAdapters({
+      network: NETWORK,
+      server: {} as never,
+      simulate: simulate as never,
+      pools: {
+        "vault-a": { ...VAULT, id: "vault-a", contractId: "CVAULT_A" },
+        "vault-b": { ...VAULT, id: "vault-b", contractId: "CVAULT_B" },
+      },
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.adapters).toHaveLength(2);
+  });
+
   it("records discovery failures instead of dropping them", async () => {
     const simulate = vi.fn(async () => {
       throw new Error("rpc timed out");

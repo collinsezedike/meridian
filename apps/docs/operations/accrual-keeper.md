@@ -36,8 +36,12 @@ The legacy fallback name `KEEPER_SECRET_KEY` is also accepted, but new
 deployments should use `MERIDIAN_KEEPER_SECRET_KEY`.
 
 Set `CRON_SECRET` as a separate secret. Scheduled calls must include
-`Authorization: Bearer $CRON_SECRET`; production deployments fail closed when
-`CRON_SECRET` is missing.
+`Authorization: Bearer $CRON_SECRET`; both production and preview deployments
+fail closed when `CRON_SECRET` is missing, only true local dev (no
+`VERCEL_ENV` at all) is permissive. Unlike simple rate-limit relaxation
+elsewhere, this endpoint triggers real signed transactions off the keeper's
+funded account, so an unauthenticated preview URL is a real gas-drain risk,
+not just a convenience gap.
 
 ## Discovery
 

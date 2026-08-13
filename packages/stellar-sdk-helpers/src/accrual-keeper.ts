@@ -264,15 +264,20 @@ export async function discoverLiveAdapters(
     maxAttempts: options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
     baseDelayMs: options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS,
   };
-  const adapters: DiscoveredAdapter[] = [];
-  const failures: KeeperFailure[] = [];
+  const targets = Object.values(pools).filter(
+    (meta) => meta.protocol === "meridian" && meta.contractId
+  );
 
-  for (const meta of Object.values(pools)) {
-    if (meta.protocol !== "meridian" || !meta.contractId) continue;
-    const vaultContractId = meta.contractId;
-
-    try {
-      const result = await withKeeperRetry(
+  // Vaults are independent of each other, so discover them concurrently
+  // rather than one at a time: sequential discovery means total wall-clock
+  // time is the sum of every vault's worst case (each with its own retry
+  // budget), which risks exceeding the keeper's function time limit as more
+  // vaults come online. Concurrent discovery bounds total time to the
+  // slowest single vault instead.
+  const settled = await Promise.allSettled(
+    targets.map((meta) => {
+      const vaultContractId = meta.contractId as string;
+      return withKeeperRetry(
         async () => {
           const adapterId = (await simulate(
             server as never,
@@ -302,22 +307,35 @@ export async function discoverLiveAdapters(
         },
         sleepFn
       );
-      adapters.push(result.value);
-    } catch (err) {
-      const attempts = err instanceof KeeperRetryError ? err.attempts : 1;
-      const transient =
-        err instanceof KeeperRetryError
-          ? err.transient
-          : isTransientKeeperError(err);
-      failures.push({
-        vaultId: meta.id,
-        vaultContractId,
-        stage: "discover",
-        attempts,
-        transient,
-        error: errorMessage(err),
-      });
+    })
+  );
+
+  const adapters: DiscoveredAdapter[] = [];
+  const failures: KeeperFailure[] = [];
+
+  const pairs = targets.map((meta, i) => ({ meta, outcome: settled[i] }));
+
+  for (const { meta, outcome } of pairs) {
+    if (!outcome) continue;
+    const vaultContractId = meta.contractId as string;
+    if (outcome.status === "fulfilled") {
+      adapters.push(outcome.value.value);
+      continue;
     }
+    const err = outcome.reason;
+    const attempts = err instanceof KeeperRetryError ? err.attempts : 1;
+    const transient =
+      err instanceof KeeperRetryError
+        ? err.transient
+        : isTransientKeeperError(err);
+    failures.push({
+      vaultId: meta.id,
+      vaultContractId,
+      stage: "discover",
+      attempts,
+      transient,
+      error: errorMessage(err),
+    });
   }
 
   return { adapters, failures };
@@ -413,6 +431,11 @@ export async function runBlendAccrualKeeper(
     discoveryFailures: discovery.failures.length,
   });
 
+  // Deliberately sequential, unlike discovery above: every submission signs
+  // and sends from the same keeper account (config.secretKey), and Stellar
+  // requires a strictly increasing sequence number per account. Running
+  // these concurrently would have multiple submissions racing for the same
+  // sequence number and mostly failing, not a performance win.
   for (const adapter of blendAdapters) {
     try {
       const result = await withKeeperRetry(

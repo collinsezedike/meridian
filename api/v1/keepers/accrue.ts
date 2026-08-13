@@ -23,7 +23,13 @@ function safeCompare(a: string, b: string): boolean {
 
 function isCronAuthorized(req: VercelRequest): boolean {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return process.env.VERCEL_ENV !== "production";
+  // Permissive only for true local dev (no VERCEL_ENV at all). Preview
+  // deployments have their own public URL and, unlike simple rate-limit
+  // relaxation elsewhere, this endpoint triggers real signed transactions
+  // off the keeper's funded account, so an unauthenticated preview caller
+  // could drain its balance by spamming the endpoint. Preview and
+  // production both require CRON_SECRET.
+  if (!secret) return process.env.VERCEL_ENV === undefined;
   return safeCompare(authorizationHeader(req) ?? "", `Bearer ${secret}`);
 }
 
@@ -33,7 +39,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  if (!process.env.CRON_SECRET && process.env.VERCEL_ENV === "production") {
+  if (!process.env.CRON_SECRET && process.env.VERCEL_ENV !== undefined) {
     return res.status(503).json({ error: "CRON_SECRET is not configured" });
   }
 

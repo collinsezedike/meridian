@@ -391,5 +391,20 @@ describe("GET /api/v1/keepers/accrue", () => {
       expect(res.statusCode).toBe(200);
       expect(runBlendAccrualKeeper).toHaveBeenCalledOnce();
     });
+
+    it("fails closed (503) on preview deployments too, unlike simple rate-limit relaxation elsewhere", async () => {
+      // This endpoint triggers real signed transactions off the keeper's
+      // funded account, unlike middleware.ts's rate-limit fallback, so an
+      // unauthenticated preview caller could drain that account by spamming
+      // the endpoint. Preview deploys have their own public URL, so this
+      // must not be treated as equivalent to local dev.
+      process.env.VERCEL_ENV = "preview";
+
+      const res = makeRes();
+      await keeperHandler(fakeReq({ method: "GET", headers: {} }), res);
+
+      expect(res.statusCode).toBe(503);
+      expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
+    });
   });
 });
