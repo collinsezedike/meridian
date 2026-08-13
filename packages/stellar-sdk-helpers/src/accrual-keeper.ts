@@ -33,6 +33,16 @@ const DEFAULT_RPC_TIMEOUT_MS = 10_000;
 // what made the double-submission bug below reachable in normal operation.
 const CONFIRMATION_TIMEOUT_MS = 20_000;
 
+// Vercel Hobby tier hard-caps this endpoint at 60s (see vercel.json's
+// functions."api/v1/keepers/accrue.ts".maxDuration). maxAttempts=3 retries
+// through CONFIRMATION_TIMEOUT_MS=20s waits alone can exceed 60s for a
+// single adapter, before discovery or a second adapter are even counted; a
+// platform-killed invocation returns no structured response and forgets the
+// in-run duplicate-submission tracking above. Budgeted below maxDuration so
+// the run can instead stop starting new work and return a clean partial
+// result while there's still time left to do so.
+const FUNCTION_BUDGET_MS = 50_000;
+
 export interface BlendAccrualKeeperConfig {
   network: StellarNetwork;
   secretKey: string;
@@ -95,6 +105,7 @@ export interface KeeperLogger {
 interface RetryConfig {
   maxAttempts: number;
   baseDelayMs: number;
+  deadlineAt?: number;
 }
 
 interface KeeperRpcServer {
@@ -115,6 +126,7 @@ export interface DiscoverAdaptersOptions {
   simulate?: SimulateFn;
   maxAttempts?: number;
   baseDelayMs?: number;
+  deadlineAt?: number;
   logger?: KeeperLogger;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -130,6 +142,7 @@ export interface BlendAccrualKeeperDeps {
   ) => Promise<Omit<AccrualSuccess, "attempts" | "vaultId" | "adapterId">>;
   logger?: KeeperLogger;
   sleep?: (ms: number) => Promise<void>;
+  deadlineAt?: number;
 }
 
 const consoleLogger: KeeperLogger = {
@@ -324,6 +337,16 @@ async function withKeeperRetry<T>(
       transient = isTransientKeeperError(err);
       if (!transient || attempt >= config.maxAttempts) break;
       const delayMs = config.baseDelayMs * 2 ** (attempt - 1);
+      if (
+        config.deadlineAt !== undefined &&
+        Date.now() + delayMs >= config.deadlineAt
+      ) {
+        logger.warn(
+          "[accrual-keeper] stopping retries; run deadline approaching",
+          { ...context, attempt, delayMs }
+        );
+        break;
+      }
       logger.warn("[accrual-keeper] transient failure; retrying", {
         ...context,
         attempt,
@@ -351,6 +374,7 @@ export async function discoverLiveAdapters(
   const retryConfig = {
     maxAttempts: options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
     baseDelayMs: options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS,
+    ...(options.deadlineAt !== undefined && { deadlineAt: options.deadlineAt }),
   };
   const targets = Object.values(pools).filter(
     (meta) => meta.protocol === "meridian" && meta.contractId
@@ -536,6 +560,7 @@ export async function runBlendAccrualKeeper(
   const logger = deps.logger ?? consoleLogger;
   const sleepFn = deps.sleep ?? sleep;
   const startedAt = new Date().toISOString();
+  const deadlineAt = deps.deadlineAt ?? Date.now() + FUNCTION_BUDGET_MS;
   const server = getRpcServer(config.network.rpcUrl, config.rpcTimeoutMs);
   const discovery = deps.discoverAdapters
     ? await deps.discoverAdapters()
@@ -544,6 +569,7 @@ export async function runBlendAccrualKeeper(
         server,
         maxAttempts: config.maxAttempts,
         baseDelayMs: config.baseDelayMs,
+        deadlineAt,
         logger,
         sleep: sleepFn,
       });
@@ -570,6 +596,27 @@ export async function runBlendAccrualKeeper(
   // these concurrently would have multiple submissions racing for the same
   // sequence number and mostly failing, not a performance win.
   for (const adapter of blendAdapters) {
+    // Sequential processing means each unstarted adapter's cost compounds on
+    // top of the ones before it; stop starting new submissions once the
+    // deadline has already passed rather than risk the platform killing the
+    // invocation mid-retry, which would lose this response entirely.
+    if (Date.now() >= deadlineAt) {
+      failures.push({
+        vaultId: adapter.vaultId,
+        vaultContractId: adapter.vaultContractId,
+        adapterId: adapter.adapterId,
+        protocol: adapter.protocol,
+        stage: "submit",
+        attempts: 0,
+        transient: true,
+        error: "Skipped: run deadline reached before this adapter could start",
+      });
+      logger.warn("[accrual-keeper] skipping adapter; run deadline reached", {
+        vaultId: adapter.vaultId,
+        adapterId: adapter.adapterId,
+      });
+      continue;
+    }
     // Scoped to this run only: an unconfirmed hash from a prior invocation
     // (e.g. the previous cron tick) is not recoverable here, so a run that
     // exhausts its retries mid-confirmation can send a fresh accrue() next
@@ -592,7 +639,7 @@ export async function runBlendAccrualKeeper(
                 }
                 throw err;
               }),
-        config,
+        { ...config, deadlineAt },
         logger,
         {
           vaultId: adapter.vaultId,

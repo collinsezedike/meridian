@@ -1237,4 +1237,57 @@ describe("runBlendAccrualKeeper", () => {
       },
     ]);
   });
+
+  it("skips an adapter instead of starting it once the run deadline has passed", async () => {
+    const submitAccrual = vi.fn();
+
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+      submitAccrual,
+      deadlineAt: Date.now() - 1,
+    });
+
+    expect(submitAccrual).not.toHaveBeenCalled();
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        adapterId: "CADAPTERBLEND",
+        stage: "submit",
+        attempts: 0,
+        transient: true,
+        error: "Skipped: run deadline reached before this adapter could start",
+      },
+    ]);
+  });
+
+  it("stops retrying once the next attempt would run past the deadline, instead of sleeping into it", async () => {
+    const sleep = vi.fn();
+    const submitAccrual = vi
+      .fn()
+      .mockRejectedValue(new Error("try again later"));
+
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      logger: logger(),
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+      submitAccrual,
+      sleep,
+      deadlineAt: Date.now() + 1,
+    });
+
+    expect(submitAccrual).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(result.failures).toMatchObject([
+      {
+        stage: "submit",
+        attempts: 1,
+        transient: true,
+      },
+    ]);
+  });
 });
