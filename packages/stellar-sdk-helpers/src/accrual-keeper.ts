@@ -199,6 +199,11 @@ function describeSendError(res: rpc.Api.SendTransactionResponse): string {
   }
 }
 
+// HTTP status codes are matched with word boundaries so a permanent error
+// whose message happens to contain those digits elsewhere (e.g. an amount or
+// ledger number) isn't misclassified as transient.
+const TRANSIENT_STATUS_CODE = /\b(429|500|502|503|504)\b/;
+
 function isTransientKeeperError(err: unknown): boolean {
   const message = errorMessage(err).toLowerCase();
   return (
@@ -206,13 +211,9 @@ function isTransientKeeperError(err: unknown): boolean {
     message.includes("timeout") ||
     message.includes("timed out") ||
     message.includes("rate limit") ||
-    message.includes("429") ||
-    message.includes("500") ||
-    message.includes("502") ||
-    message.includes("503") ||
-    message.includes("504") ||
     message.includes("temporarily") ||
-    message.includes("not_found")
+    message.includes("not_found") ||
+    TRANSIENT_STATUS_CODE.test(message)
   );
 }
 
@@ -371,7 +372,9 @@ async function submitAccrualTransaction(
     throw new Error("Transaction could not be submitted yet (try again later)");
   }
 
-  const confirmed = await waitForTransaction(server, sent.hash);
+  const confirmed = await waitForTransaction(server, sent.hash, {
+    timeoutMs: config.rpcTimeoutMs,
+  });
   return { hash: sent.hash, ledger: confirmed.ledger };
 }
 

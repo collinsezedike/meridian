@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 // Stub the workspace builders/readers — these tests exercise the HTTP handler
@@ -347,6 +347,49 @@ describe("GET /api/v1/keepers/accrue", () => {
     expect(res.statusCode).toBe(500);
     expect(res.body).toMatchObject({
       failures: [{ vaultId: "meridian-usdc", error: "try again later" }],
+    });
+  });
+
+  describe("without CRON_SECRET configured", () => {
+    const savedVercelEnv = process.env.VERCEL_ENV;
+    const savedNodeEnv = process.env.NODE_ENV;
+
+    beforeEach(() => {
+      delete process.env.CRON_SECRET;
+    });
+
+    afterEach(() => {
+      process.env.CRON_SECRET = "cron-secret";
+      if (savedVercelEnv === undefined) delete process.env.VERCEL_ENV;
+      else process.env.VERCEL_ENV = savedVercelEnv;
+      if (savedNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = savedNodeEnv;
+    });
+
+    it("fails closed (503) when VERCEL_ENV is production, regardless of NODE_ENV", async () => {
+      // Vercel serverless functions don't reliably set NODE_ENV=production
+      // the way traditional Node apps do; VERCEL_ENV is the platform's own
+      // signal. NODE_ENV is deliberately left unset here to prove the gate
+      // no longer depends on it.
+      delete process.env.NODE_ENV;
+      process.env.VERCEL_ENV = "production";
+
+      const res = makeRes();
+      await keeperHandler(fakeReq({ method: "GET", headers: {} }), res);
+
+      expect(res.statusCode).toBe(503);
+      expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
+    });
+
+    it("permits unauthenticated calls outside production (local dev)", async () => {
+      delete process.env.VERCEL_ENV;
+      delete process.env.NODE_ENV;
+
+      const res = makeRes();
+      await keeperHandler(fakeReq({ method: "GET", headers: {} }), res);
+
+      expect(res.statusCode).toBe(200);
+      expect(runBlendAccrualKeeper).toHaveBeenCalledOnce();
     });
   });
 });

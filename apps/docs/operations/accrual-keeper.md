@@ -16,6 +16,15 @@ caching may add up to another 60 seconds on mainnet responses. If a keeper run
 fails, values can remain stale until the next successful run; failed runs return
 a non-2xx status so hosting alerts and cron logs can detect them.
 
+This guarantee only covers vaults the keeper actually discovers, `KNOWN_POOLS`
+entries with `protocol: "meridian"` and a `contractId` set for the running
+network. As of this writing `KNOWN_POOLS.mainnet` has no such entries (no
+Meridian vault is deployed on mainnet yet), so the cron currently runs on
+mainnet, finds zero adapters, and returns a successful empty result every 15
+minutes, not a failure, and not evidence of a live guarantee. Once a mainnet
+vault is deployed and added to `KNOWN_POOLS.mainnet`, it starts being covered
+automatically on the next run.
+
 ## Signing Key
 
 Set `MERIDIAN_KEEPER_SECRET_KEY` in the deployment secret store. It must be the

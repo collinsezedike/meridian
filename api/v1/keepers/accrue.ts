@@ -11,7 +11,7 @@ function authorizationHeader(req: VercelRequest): string | undefined {
 
 function isCronAuthorized(req: VercelRequest): boolean {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return process.env.NODE_ENV !== "production";
+  if (!secret) return process.env.VERCEL_ENV !== "production";
   return authorizationHeader(req) === `Bearer ${secret}`;
 }
 
@@ -21,7 +21,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  if (!process.env.CRON_SECRET && process.env.NODE_ENV === "production") {
+  if (!process.env.CRON_SECRET && process.env.VERCEL_ENV === "production") {
     return res.status(503).json({ error: "CRON_SECRET is not configured" });
   }
 

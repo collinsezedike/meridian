@@ -347,6 +347,35 @@ describe("discoverLiveAdapters", () => {
     ]);
   });
 
+  it("does not misclassify a permanent error as transient just because its message contains digits matching a status code", async () => {
+    const sleep = vi.fn();
+    // "1500" contains "500" as a substring; this must not be treated as a
+    // transient HTTP 500 and retried.
+    const simulate = vi.fn(async () => {
+      throw new Error("requested amount 1500 exceeds reserve cap");
+    });
+
+    const result = await discoverLiveAdapters({
+      network: NETWORK,
+      server: {} as never,
+      simulate: simulate as never,
+      maxAttempts: 3,
+      baseDelayMs: 5,
+      sleep,
+      pools: { "meridian-usdc": VAULT },
+    });
+
+    expect(simulate).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        transient: false,
+        error: "requested amount 1500 exceeds reserve cap",
+      },
+    ]);
+  });
+
   it("records get_protocol discovery failures after retrying the whole discovery step", async () => {
     const sleep = vi.fn();
     const simulate = vi.fn(async (_server, contractId, _passphrase, method) => {
@@ -811,7 +840,8 @@ describe("runBlendAccrualKeeper", () => {
     expect(server.sendTransaction).toHaveBeenCalledOnce();
     expect(stellarMocks.waitForTransaction).toHaveBeenCalledWith(
       server,
-      "SUBMITTED_HASH"
+      "SUBMITTED_HASH",
+      { timeoutMs: 100 }
     );
     expect(result.successes).toEqual([
       {
