@@ -65,9 +65,20 @@ Transient submission failures retry with exponential backoff. Configure:
 
 - `MERIDIAN_KEEPER_MAX_ATTEMPTS` default `3`
 - `MERIDIAN_KEEPER_RETRY_BASE_DELAY_MS` default `1000`
-- `MERIDIAN_KEEPER_RPC_TIMEOUT_MS` default `12000`
+- `MERIDIAN_KEEPER_RPC_TIMEOUT_MS` default `10000`
 
 Failures are logged with the vault id, adapter id, protocol, stage, attempt
 count, and error summary. Any discovery or submission failure is also included
 in the endpoint response. If at least one failure occurs, the endpoint returns
 HTTP 500 so the scheduled run is observable instead of silently passing.
+
+If a submitted `accrue()` transaction is still unconfirmed when a retry
+attempt times out, the keeper re-checks that same transaction hash instead of
+sending a new one, within a single run. This tracking does not persist across
+separate keeper invocations: if a run exhausts its retries while a submission
+is still unconfirmed, the next scheduled run has no memory of it and may send
+a fresh `accrue()` transaction for the same adapter. This is an accepted,
+bounded gap rather than a fund-safety issue: `accrue()` only refreshes a
+cached value from the adapter's live position and produces the same result no
+matter how many times it lands, so a duplicate costs at most one extra
+Soroban fee, not incorrect accounting.

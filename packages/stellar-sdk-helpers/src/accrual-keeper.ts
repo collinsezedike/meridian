@@ -570,6 +570,11 @@ export async function runBlendAccrualKeeper(
   // these concurrently would have multiple submissions racing for the same
   // sequence number and mostly failing, not a performance win.
   for (const adapter of blendAdapters) {
+    // Scoped to this run only: an unconfirmed hash from a prior invocation
+    // (e.g. the previous cron tick) is not recoverable here, so a run that
+    // exhausts its retries mid-confirmation can send a fresh accrue() next
+    // time. Accepted: accrue() only refreshes a cached value from live
+    // on-chain state, so a duplicate costs a wasted fee, not bad accounting.
     let priorHash: string | undefined;
     try {
       const result = await withKeeperRetry(
