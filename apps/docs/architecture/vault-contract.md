@@ -68,7 +68,19 @@ Returns the currently active adapter contract address.
 
 ### `set_adapter(new_adapter)` (admin only)
 
-Points the vault at a new adapter contract and resets the adapter-share counter (`ADPT_SH`) to zero. **This is the only way to change which protocol a vault routes to, or to push new adapter code live** — adapter contracts have no in-place upgrade path (no `update_current_contract_wasm`). The contract itself rejects the call with `AdapterSwapUnsafe` while the vault still has shares outstanding (`get_total_shares() > 0`), so a swap can't be made while depositors are still in the vault. The caller is still responsible for migrating funds out of the old adapter _before_ shares reach zero and calling this: any value still sitting in the old adapter becomes unreachable through the vault's normal `withdraw()` flow once the adapter-share counter resets. See `scripts/redeploy-blend-adapter.sh` for the supported procedure.
+Points the vault at a new adapter contract and resets the adapter-share counter (`ADPT_SH`) to zero. **This is the only way to change which protocol a vault routes to, or to push new adapter code live** — adapter contracts have no in-place upgrade path (no `update_current_contract_wasm`). The contract itself rejects the call with `AdapterSwapUnsafe` while the vault still has shares outstanding (`get_total_shares() > 0`). Use this only when the vault has no depositors yet, e.g. right after a fresh deploy. For a vault with real depositors, use `migrate_adapter` instead: unlike `set_adapter`, calling this on a live vault does not itself move any funds out of the old adapter first. If the old adapter still holds value when `ADPT_SH` resets to zero (e.g. rounding dust, or yield that accrued but was never swept), that value becomes unreachable through the vault's normal `withdraw()` flow. See `scripts/redeploy-blend-adapter.sh` for the supported procedure.
+
+### `migrate_adapter(new_adapter, max_slippage_bps) -> Result<(), ContractError>` (admin only)
+
+Moves the vault's entire position from the current adapter to `new_adapter` in one atomic transaction, without requiring depositors to withdraw first. Unlike `set_adapter`, this is safe to call with shares outstanding, it's the supported way to migrate a live vault (e.g. Blend to a higher-yielding DeFindex vault, or replacing a compromised adapter).
+
+Fails up front with `InvalidSlippageBps` if `max_slippage_bps > 10_000`, or `SameAdapter` if `new_adapter` is the vault's current adapter, or `NoAdapterPosition` if the current adapter has no position (`ADPT_SH <= 0`) — distinct from `NoSharesOutstanding`, which checks `TOTAL_SH` (vault mUSDC shares) instead, and the two can desync.
+
+Refreshes and reads the old adapter's `total_assets()` as the pre-migration value (an independent measurement taken before extraction, so it can catch loss on the withdrawal leg itself, not just the deposit leg), withdraws the vault's entire adapter-share position into the vault itself, deposits it into `new_adapter`, and requires the new adapter to report a positive share count (`DepositTooSmall` otherwise, this is what stops the vault's own bookkeeping from ever being pointed at zero adapter shares while `TOTAL_SH` is still positive) and a post-migration `total_assets()` no lower than `(10_000 - max_slippage_bps) / 10_000` of the pre-migration value (`MigrationValueDrift` otherwise). `10_000` itself is a valid, if extreme, choice of `max_slippage_bps`, an admin explicitly accepting no value-preservation protection, e.g. when recovering from an old adapter already known to be broken. Since Soroban transactions are atomic, a failed check leaves no partial state, nothing moves. On success, `ADAPTER` and `ADPT_SH` are updated; `TOTAL_SH` and every depositor's `Balance`/`Principal`/`Entry` are untouched, since they're denominated in vault mUSDC shares, not adapter shares.
+
+**This does not protect against a malicious or compromised admin key.** The admin chooses `new_adapter`, and a fake adapter could report whatever `total_assets()` it likes to pass the slippage check and then keep the funds. The invariant guards against accidental value loss (slippage, a buggy new adapter), not against the admin key itself, that's a key-custody problem (see the shared testnet admin/deployer/mUSDC-issuer key warning in the deploy scripts), not something this function can close on its own.
+
+**The invariant's real strength also depends on how honestly the new adapter's `total_assets()` reflects what it actually holds.** `BlendAdapter::total_assets()` self-reports based on the amount `deposit()` was called with, not an independent on-chain measurement, so migrating into a `BlendAdapter` target mainly gets protection from the old-adapter-side check (independently measured before and after extraction), not from anything verifying the new `BlendAdapter` actually supplied the funds to its pool rather than just returning success.
 
 ### `set_paused(paused: bool)` (admin only)
 
@@ -137,30 +149,34 @@ Deposits, but never withdrawals, can be paused via `set_paused(true)` — this i
 
 `ContractError` (defined in `vault/src/lib.rs`) gives fallible entry points typed, stable error codes instead of panic strings:
 
-| Variant               | Code | Meaning                                                                |
-| --------------------- | ---- | ---------------------------------------------------------------------- |
-| `AlreadyInitialized`  | 1    | `initialize` called on a contract that already has an admin.           |
-| `NotInitialized`      | 2    | A state-mutating call was made before `initialize`.                    |
-| `DepositsPaused`      | 3    | `deposit` called while `set_paused(true)` is in effect.                |
-| `ZeroAmount`          | 4    | `deposit`/`withdraw` called with a non-positive amount/shares.         |
-| `DepositTooSmall`     | 5    | The deposited amount rounds down to zero shares.                       |
-| `NoSharesOutstanding` | 6    | `withdraw` called while the vault has no shares outstanding.           |
-| `InsufficientShares`  | 7    | The caller doesn't hold enough mUSDC to burn.                          |
-| `WithdrawalTooSmall`  | 8    | The shares burned round down to zero USDC.                             |
-| `Overflow`            | 9    | An intermediate arithmetic operation would overflow `i128`.            |
-| `AdapterSwapUnsafe`   | 10   | `set_adapter` was called while the vault still has shares outstanding. |
+| Variant               | Code | Meaning                                                                                                                         |
+| --------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `AlreadyInitialized`  | 1    | `initialize` called on a contract that already has an admin.                                                                    |
+| `NotInitialized`      | 2    | A state-mutating call was made before `initialize`.                                                                             |
+| `DepositsPaused`      | 3    | `deposit` called while `set_paused(true)` is in effect.                                                                         |
+| `ZeroAmount`          | 4    | `deposit`/`withdraw` called with a non-positive amount/shares.                                                                  |
+| `DepositTooSmall`     | 5    | The deposited amount rounds down to zero shares, or `migrate_adapter` moved funds into a new adapter that credited zero shares. |
+| `NoSharesOutstanding` | 6    | `withdraw` called while the vault has no shares outstanding.                                                                    |
+| `InsufficientShares`  | 7    | The caller doesn't hold enough mUSDC to burn.                                                                                   |
+| `WithdrawalTooSmall`  | 8    | The shares burned round down to zero USDC.                                                                                      |
+| `Overflow`            | 9    | An intermediate arithmetic operation would overflow `i128`.                                                                     |
+| `AdapterSwapUnsafe`   | 10   | `set_adapter` was called while the vault still has shares outstanding.                                                          |
+| `SameAdapter`         | 11   | `migrate_adapter` was called with the vault's current adapter as the target.                                                    |
+| `MigrationValueDrift` | 12   | `migrate_adapter`'s post-migration value fell outside `max_slippage_bps` of the pre-migration value.                            |
+| `NoAdapterPosition`   | 13   | `migrate_adapter` was called while the current adapter has no position (`ADPT_SH <= 0`).                                        |
+| `InvalidSlippageBps`  | 14   | `migrate_adapter` was called with `max_slippage_bps > 10_000`.                                                                  |
 
 ## Contract storage
 
-| Key                  | Storage type | Value                                                             |
-| -------------------- | ------------ | ----------------------------------------------------------------- |
-| `ADMIN`              | Instance     | Admin `Address`                                                   |
-| `USDC`               | Instance     | USDC contract `Address`                                           |
-| `MUSDC`              | Instance     | mUSDC contract `Address`                                          |
-| `ADAPTER`            | Instance     | Active adapter contract `Address`                                 |
-| `TOTAL_SH`           | Instance     | Total mUSDC shares outstanding (`i128`)                           |
-| `ADPT_SH`            | Instance     | Total adapter shares outstanding, reset on `set_adapter` (`i128`) |
-| `PAUSED`             | Instance     | Deposit pause flag (`bool`)                                       |
-| `Balance(address)`   | Persistent   | Per-address mUSDC share balance (`i128`)                          |
-| `Entry(address)`     | Persistent   | Per-address deposit entry timestamp (`u64`)                       |
-| `Principal(address)` | Persistent   | Per-address net USDC deposited, not yet withdrawn (`i128`)        |
+| Key                  | Storage type | Value                                                                                                                                        |
+| -------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ADMIN`              | Instance     | Admin `Address`                                                                                                                              |
+| `USDC`               | Instance     | USDC contract `Address`                                                                                                                      |
+| `MUSDC`              | Instance     | mUSDC contract `Address`                                                                                                                     |
+| `ADAPTER`            | Instance     | Active adapter contract `Address`                                                                                                            |
+| `TOTAL_SH`           | Instance     | Total mUSDC shares outstanding (`i128`)                                                                                                      |
+| `ADPT_SH`            | Instance     | Total adapter shares outstanding. Reset to `0` on `set_adapter`; set to the new adapter's reported share count on `migrate_adapter` (`i128`) |
+| `PAUSED`             | Instance     | Deposit pause flag (`bool`)                                                                                                                  |
+| `Balance(address)`   | Persistent   | Per-address mUSDC share balance (`i128`)                                                                                                     |
+| `Entry(address)`     | Persistent   | Per-address deposit entry timestamp (`u64`)                                                                                                  |
+| `Principal(address)` | Persistent   | Per-address net USDC deposited, not yet withdrawn (`i128`)                                                                                   |

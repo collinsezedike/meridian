@@ -2,8 +2,10 @@
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, vec,
-    Address, Env, IntoVal, Map, Symbol, Val, Vec,
+    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
+    symbol_short,
+    token::TokenClient,
+    vec, Address, Env, IntoVal, Map, Symbol, Val, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -30,6 +32,17 @@ const REQUEST_WITHDRAW: u32 = 3;
 // reproduced the deposited amount plus a plausible small yield delta, while
 // dividing by `reserve.scalar` produced a ~100,000x inflated value.
 const RATE_SCALAR: i128 = 1_000_000_000_000;
+
+// Converts a bToken amount to its underlying USDC value at the given
+// `b_rate`, guarding the intermediate multiply against i128 overflow.
+// Shared by accrue() and withdraw() so the two never drift apart.
+fn b_tokens_to_usdc(b_tokens: i128, b_rate: i128) -> Result<i128, ContractError> {
+    b_tokens
+        .checked_mul(b_rate)
+        .ok_or(ContractError::Overflow)?
+        .checked_div(RATE_SCALAR)
+        .ok_or(ContractError::Overflow)
+}
 
 // ---------------------------------------------------------------------------
 // Blend pool interface types
@@ -150,8 +163,9 @@ impl MeridianBlendAdapter {
 
     /// Called by the vault after transferring `amount` USDC to this adapter.
     /// Supplies the USDC to the Blend lending pool as collateral and returns
-    /// `amount` as adapter shares (1:1; yield is reflected separately via
-    /// `accrue()` rather than in the share-minting ratio).
+    /// the real bTokens credited, measured from Blend's own ledger rather
+    /// than assumed 1:1, so the vault's adapter-share accounting (`ADPT_SH`)
+    /// tracks genuine, appreciating shares instead of raw principal (#486).
     pub fn deposit(env: Env, amount: i128) -> i128 {
         let vault: Address = env.storage().instance().get(&VAULT_KEY).unwrap();
         vault.require_auth();
@@ -178,7 +192,15 @@ impl MeridianBlendAdapter {
             }),
         ]);
 
-        BlendPoolClient::new(&env, &pool).submit(
+        let client = BlendPoolClient::new(&env, &pool);
+        let index = client.get_reserve(&usdc).config.index;
+        let b_tokens_before = client
+            .get_positions(&adapter)
+            .collateral
+            .get(index)
+            .unwrap_or(0);
+
+        client.submit(
             &adapter,
             &adapter,
             &adapter,
@@ -192,14 +214,24 @@ impl MeridianBlendAdapter {
             ],
         );
 
+        let b_tokens_after = client
+            .get_positions(&adapter)
+            .collateral
+            .get(index)
+            .unwrap_or(0);
+        let b_tokens_credited = b_tokens_after - b_tokens_before;
+
         let prev: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
         env.storage().instance().set(&TOTAL_KEY, &(prev + amount));
 
-        amount
+        b_tokens_credited
     }
 
-    /// Called by the vault to redeem `shares` from the Blend pool. Blend
-    /// delivers USDC directly to `recipient`. Returns the USDC amount received.
+    /// Called by the vault to redeem `shares` bTokens from the Blend pool.
+    /// Blend's own withdraw request is denominated in underlying USDC, not
+    /// bTokens, so `shares` is converted using the current `b_rate` before
+    /// submitting. Returns the USDC amount actually delivered to `recipient`,
+    /// measured directly rather than assumed to equal the request (#489).
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
         let vault: Address = env.storage().instance().get(&VAULT_KEY).unwrap();
         vault.require_auth();
@@ -208,7 +240,18 @@ impl MeridianBlendAdapter {
         let usdc: Address = env.storage().instance().get(&USDC_KEY).unwrap();
 
         let adapter = env.current_contract_address();
-        BlendPoolClient::new(&env, &pool).submit(
+        let client = BlendPoolClient::new(&env, &pool);
+
+        let reserve = client.get_reserve(&usdc);
+        let request_amount = match b_tokens_to_usdc(shares, reserve.data.b_rate) {
+            Ok(amount) => amount,
+            Err(err) => panic_with_error!(&env, err),
+        };
+
+        let usdc_client = TokenClient::new(&env, &usdc);
+        let before = usdc_client.balance(&recipient);
+
+        client.submit(
             &adapter,
             &adapter,
             &recipient,
@@ -217,16 +260,23 @@ impl MeridianBlendAdapter {
                 Request {
                     request_type: REQUEST_WITHDRAW,
                     address: usdc,
-                    amount: shares,
+                    amount: request_amount,
                 },
             ],
         );
 
+        let after = usdc_client.balance(&recipient);
+        let delivered = after - before;
+
         let prev: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
-        let remaining = if prev > shares { prev - shares } else { 0 };
+        let remaining = if prev > delivered {
+            prev - delivered
+        } else {
+            0
+        };
         env.storage().instance().set(&TOTAL_KEY, &remaining);
 
-        shares
+        delivered
     }
 
     /// Refreshes the cached USDC value of the adapter's Blend position to
@@ -249,11 +299,7 @@ impl MeridianBlendAdapter {
         let positions = client.get_positions(&adapter);
         let b_tokens = positions.collateral.get(reserve.config.index).unwrap_or(0);
 
-        let current_value = b_tokens
-            .checked_mul(reserve.data.b_rate)
-            .ok_or(ContractError::Overflow)?
-            .checked_div(RATE_SCALAR)
-            .ok_or(ContractError::Overflow)?;
+        let current_value = b_tokens_to_usdc(b_tokens, reserve.data.b_rate)?;
 
         env.storage().instance().set(&TOTAL_KEY, &current_value);
         Ok(())
@@ -586,11 +632,17 @@ mod tests {
 
     #[test]
     fn withdraw_after_accrue_pays_out_appreciated_value() {
+        // Regression test for #486: withdraw() must size its Blend request
+        // from real bTokens converted at the *current* b_rate, not from a
+        // principal-tracking counter that never appreciates. Redeeming the
+        // same bToken count credited at deposit, after the rate has moved,
+        // must pay out the appreciated USDC value.
         let (env, vault, usdc_id, adapter, pool) = setup();
         let amount = 100_0000000_i128;
 
         TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
-        adapter.deposit(&amount);
+        let b_tokens = adapter.deposit(&amount);
+        assert_eq!(b_tokens, amount); // par rate at deposit time
 
         let new_rate = SCALAR + SCALAR / 10;
         pool.set_rate(&new_rate);
@@ -601,7 +653,11 @@ mod tests {
         StellarAssetClient::new(&env, &usdc_id).mint(&pool.address, &(amount / 10));
 
         let recipient = Address::generate(&env);
-        let usdc_out = adapter.withdraw(&(amount + amount / 10), &recipient);
+        // The bToken balance itself doesn't change when the rate moves, only
+        // its USDC value does — a real caller (the vault) sizes this from
+        // ADPT_SH, which now tracks real bTokens, so it withdraws the same
+        // count credited at deposit.
+        let usdc_out = adapter.withdraw(&b_tokens, &recipient);
 
         assert_eq!(usdc_out, amount + amount / 10);
         assert_eq!(adapter.total_assets(), 0);

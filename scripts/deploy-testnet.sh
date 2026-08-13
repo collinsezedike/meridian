@@ -97,6 +97,16 @@ stellar contract invoke \
   --network "$NETWORK" --source "$DEPLOYER" --id "$MUSDC_ID" \
   -- set_admin --new-admin "$VAULT_ID"
 
+echo "Initializing router (admin=$ADMIN_ADDRESS)..."
+stellar contract invoke \
+  --network "$NETWORK" --source "$DEPLOYER" --id "$ROUTER_ID" \
+  -- initialize --admin "$ADMIN_ADDRESS"
+
+echo "Allowlisting this deployment's vault on the router..."
+stellar contract invoke \
+  --network "$NETWORK" --source "$DEPLOYER" --id "$ROUTER_ID" \
+  -- add_vault --vault "$VAULT_ID"
+
 echo ""
 echo "Done. Add these to your .env:"
 echo "  VAULT_CONTRACT_ID=$VAULT_ID"

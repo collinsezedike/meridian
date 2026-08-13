@@ -88,7 +88,27 @@ pub fn rebalance(
 | `min_out`    | Minimum USDC stroops the withdrawal must return. Reverts on slippage. |
 
 Returns the number of shares minted by `to_vault`, or `RouterError::SlippageExceeded`
-if the withdrawal from `from_vault` returned fewer stroops than `min_out`.
+if the withdrawal from `from_vault` returned fewer stroops than `min_out`, or
+`RouterError::VaultNotAllowed` if `from_vault` or `to_vault` isn't on the
+router's admin-managed allowlist (see below).
+
+### Admin and the vault allowlist
+
+The router has its own admin, set once via `initialize(admin)` and independent
+of any vault's admin. `add_vault`/`remove_vault` (admin-only) control which
+addresses `rebalance` will accept as `from_vault`/`to_vault`; `is_allowed_vault`
+is a public read. This exists so a depositor signing `rebalance` can't be
+routed into an attacker-controlled contract masquerading as a vault, since
+`rebalance` would otherwise call `withdraw`/`deposit` on whatever address it's
+given with no validation. `scripts/deploy-testnet.sh` initializes the router
+and allowlists the vault it deploys automatically; a router managing multiple
+vaults needs `add_vault` called for each one. `set_admin` rotates the admin key,
+so a lost or compromised one doesn't permanently freeze the allowlist.
+
+`rebalance` also rejects `from_vault == to_vault` with `RouterError::SameVault`,
+a same-vault call can't move funds anywhere an attacker controls (the depositor
+signs it themselves), but it's a pointless round trip that could shift the
+depositor's own position via adapter rounding for no reason.
 
 ### Auth model
 
