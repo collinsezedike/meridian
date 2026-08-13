@@ -100,6 +100,19 @@ pub enum ContractError {
     Overflow = 9,
     /// `set_adapter` was called while the vault still has shares outstanding.
     AdapterSwapUnsafe = 10,
+    /// `migrate_adapter` was called with the vault's current adapter as the
+    /// target.
+    SameAdapter = 11,
+    /// `migrate_adapter`'s post-migration value fell outside the caller's
+    /// `max_slippage_bps` tolerance of the pre-migration value.
+    MigrationValueDrift = 12,
+    /// `migrate_adapter` was called while the vault's current adapter has no
+    /// position to migrate. Distinct from `NoSharesOutstanding`: this checks
+    /// `ADPT_SH` (adapter-side shares), not `TOTAL_SH` (vault mUSDC shares),
+    /// and the two can desync.
+    NoAdapterPosition = 13,
+    /// `migrate_adapter` was called with `max_slippage_bps > 10_000`.
+    InvalidSlippageBps = 14,
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +415,109 @@ impl MeridianVault {
             .ok_or(ContractError::NotInitialized)
     }
 
+    /// Admin-only. Moves the vault's entire position from the current adapter
+    /// to `new_adapter` in one atomic transaction, without requiring
+    /// depositors to withdraw first. Unlike `set_adapter`, this is safe to
+    /// call with shares outstanding.
+    ///
+    /// Withdraws everything from the old adapter into the vault, deposits it
+    /// into `new_adapter`, and requires the new adapter's reported
+    /// `total_assets()` to be at least `(10_000 - max_slippage_bps) / 10_000`
+    /// of the pre-migration value, or the whole call fails and nothing moves
+    /// (Soroban transactions are atomic, so a failed invariant check leaves
+    /// no partial state). `TOTAL_SH` and every depositor's `Balance`,
+    /// `Principal`, and `Entry` are untouched: they're denominated in vault
+    /// mUSDC shares, not adapter shares, so they remain valid across an
+    /// adapter swap. Fails with `InvalidSlippageBps` if `max_slippage_bps`
+    /// is not in `0..=10_000`; `10_000` itself is a valid, if extreme,
+    /// choice, an admin explicitly accepting no protection against value
+    /// loss, e.g. when recovering from an old adapter already known to be
+    /// broken.
+    ///
+    /// This does not protect against a malicious or compromised admin key:
+    /// the admin chooses `new_adapter`, and a fake adapter could report
+    /// whatever `total_assets()` it likes to pass the slippage check and
+    /// then keep the funds. The invariant guards against accidental value
+    /// loss (slippage, a buggy new adapter), not against the admin key
+    /// itself, that is a key-custody problem, not something this function
+    /// can close.
+    ///
+    /// The invariant's real strength also depends on how honestly
+    /// `new_adapter.total_assets()` reflects what it actually holds.
+    /// `BlendAdapter::total_assets()` self-reports based on the amount
+    /// `deposit()` was called with, not an independent on-chain measurement,
+    /// so for a `BlendAdapter` target this check mainly catches loss on the
+    /// withdrawal leg from the old adapter (measured independently before
+    /// and after), not a `BlendAdapter` that silently fails to actually
+    /// supply the funds to its pool while still returning success.
+    pub fn migrate_adapter(
+        env: Env,
+        new_adapter: Address,
+        max_slippage_bps: u32,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+
+        if max_slippage_bps > 10_000 {
+            return Err(ContractError::InvalidSlippageBps);
+        }
+
+        let old_adapter_addr = Self::get_adapter(env.clone())?;
+        if new_adapter == old_adapter_addr {
+            return Err(ContractError::SameAdapter);
+        }
+
+        let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
+        if total_adapter_shares <= 0 {
+            return Err(ContractError::NoAdapterPosition);
+        }
+
+        let usdc = Self::usdc(&env)?;
+        let old_adapter = AdapterClient::new(&env, &old_adapter_addr);
+
+        // Read the old adapter's value independently, before extraction, so
+        // this baseline can catch loss on the withdrawal leg itself (e.g. a
+        // rate that moved, a rounding-lossy withdraw), not just loss on the
+        // new-adapter leg.
+        old_adapter.refresh();
+        let value_before = old_adapter.total_assets();
+
+        // Withdraw the vault's entire position into the vault itself, not a
+        // single depositor, mirroring the same withdraw() entrypoint every
+        // user withdrawal already goes through.
+        let withdrawn =
+            old_adapter.withdraw(&total_adapter_shares, &env.current_contract_address());
+        if withdrawn <= 0 {
+            return Err(ContractError::WithdrawalTooSmall);
+        }
+
+        // Land the funds at the new adapter before calling deposit(), the
+        // same pattern the vault's own deposit() uses.
+        TokenClient::new(&env, &usdc).transfer(
+            &env.current_contract_address(),
+            &new_adapter,
+            &withdrawn,
+        );
+        let new_adapter_client = AdapterClient::new(&env, &new_adapter);
+        let new_shares = new_adapter_client.deposit(&withdrawn);
+        if new_shares <= 0 {
+            return Err(ContractError::DepositTooSmall);
+        }
+        let value_after = new_adapter_client.total_assets();
+
+        let min_acceptable = value_before
+            .checked_mul(10_000i128 - max_slippage_bps as i128)
+            .ok_or(ContractError::Overflow)?
+            .checked_div(10_000i128)
+            .ok_or(ContractError::Overflow)?;
+        if value_after < min_acceptable {
+            return Err(ContractError::MigrationValueDrift);
+        }
+
+        env.storage().instance().set(&ADAPTER, &new_adapter);
+        env.storage().instance().set(&ADPT_SH, &new_shares);
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
@@ -446,6 +562,45 @@ mod tests {
     };
 
     // -----------------------------------------------------------------------
+    // Shared logic for the proportional, live-priced mock adapters below
+    // (MockAdapter, LossyMockAdapter, ZeroShareMockAdapter). Each mock has
+    // its own storage-key constants since each is a separately deployed
+    // contract with isolated instance storage, but the withdraw/total_assets
+    // bodies are identical across all of them, so that part lives here once.
+    // -----------------------------------------------------------------------
+
+    fn mock_proportional_withdraw(
+        env: &Env,
+        usdc: &Address,
+        sh_key: &Symbol,
+        shares: i128,
+        recipient: &Address,
+    ) -> i128 {
+        let total_sh: i128 = env.storage().instance().get(sh_key).unwrap_or(0);
+        let balance = TokenClient::new(env, usdc).balance(&env.current_contract_address());
+
+        let usdc_out = if total_sh > 0 {
+            shares * balance / total_sh
+        } else {
+            0
+        };
+
+        if usdc_out > 0 {
+            TokenClient::new(env, usdc).transfer(
+                &env.current_contract_address(),
+                recipient,
+                &usdc_out,
+            );
+        }
+        env.storage().instance().set(sh_key, &(total_sh - shares));
+        usdc_out
+    }
+
+    fn mock_total_assets(env: &Env, usdc: &Address) -> i128 {
+        TokenClient::new(env, usdc).balance(&env.current_contract_address())
+    }
+
+    // -----------------------------------------------------------------------
     // MockAdapter: proportional yield-bearing adapter used in vault tests.
     // Tracks shares 1:1 with deposited USDC. Proportional withdrawal means
     // any USDC minted directly to the adapter (simulating yield) is included
@@ -473,33 +628,117 @@ mod tests {
 
         pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
             let usdc: Address = env.storage().instance().get(&MA_USDC).unwrap();
-            let total_sh: i128 = env.storage().instance().get(&MA_SH).unwrap_or(0);
-            let balance = TokenClient::new(&env, &usdc).balance(&env.current_contract_address());
-
-            let usdc_out = if total_sh > 0 {
-                shares * balance / total_sh
-            } else {
-                0
-            };
-
-            if usdc_out > 0 {
-                TokenClient::new(&env, &usdc).transfer(
-                    &env.current_contract_address(),
-                    &recipient,
-                    &usdc_out,
-                );
-            }
-            env.storage().instance().set(&MA_SH, &(total_sh - shares));
-            usdc_out
+            mock_proportional_withdraw(&env, &usdc, &MA_SH, shares, &recipient)
         }
 
         pub fn total_assets(env: Env) -> i128 {
             let usdc: Address = env.storage().instance().get(&MA_USDC).unwrap();
-            TokenClient::new(&env, &usdc).balance(&env.current_contract_address())
+            mock_total_assets(&env, &usdc)
         }
 
         pub fn refresh(_env: Env) {
             // No-op: MockAdapter already prices total_assets() live.
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // LossyMockAdapter: a migrate_adapter() target that actually loses half
+    // of whatever it's deposited (sent to an address it never accounts for),
+    // simulating a buggy or malicious new adapter so migrate_adapter's
+    // slippage invariant has something real to reject. Wrapped in its own
+    // module for the same reason as cached_mock: contractimpl-generated
+    // helper items aren't namespaced by type.
+    // -----------------------------------------------------------------------
+    mod lossy_mock {
+        use super::*;
+
+        const LA_USDC: Symbol = symbol_short!("LA_USDC");
+        const LA_SH: Symbol = symbol_short!("LA_SH");
+
+        #[contract]
+        pub struct LossyMockAdapter;
+
+        #[contractimpl]
+        impl LossyMockAdapter {
+            pub fn initialize(env: Env, usdc: Address) {
+                env.storage().instance().set(&LA_USDC, &usdc);
+                env.storage().instance().set(&LA_SH, &0_i128);
+            }
+
+            pub fn deposit(env: Env, amount: i128) -> i128 {
+                let usdc: Address = env.storage().instance().get(&LA_USDC).unwrap();
+                let half = amount / 2;
+                let sink = Address::generate(&env);
+                TokenClient::new(&env, &usdc).transfer(
+                    &env.current_contract_address(),
+                    &sink,
+                    &half,
+                );
+                let prev: i128 = env.storage().instance().get(&LA_SH).unwrap_or(0);
+                env.storage().instance().set(&LA_SH, &(prev + amount));
+                amount
+            }
+
+            pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
+                let usdc: Address = env.storage().instance().get(&LA_USDC).unwrap();
+                mock_proportional_withdraw(&env, &usdc, &LA_SH, shares, &recipient)
+            }
+
+            pub fn total_assets(env: Env) -> i128 {
+                let usdc: Address = env.storage().instance().get(&LA_USDC).unwrap();
+                mock_total_assets(&env, &usdc)
+            }
+
+            pub fn refresh(_env: Env) {
+                // No-op: LossyMockAdapter already prices total_assets() live.
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ZeroShareMockAdapter: a migrate_adapter() target that keeps every
+    // stroop it's deposited (so total_assets() looks fine and a generous
+    // slippage tolerance passes) but always reports zero shares credited,
+    // simulating an adapter whose deposit() return value can't be trusted
+    // even when its total_assets() can. Exercises migrate_adapter's
+    // new_shares > 0 check, distinct from LossyMockAdapter's value-loss case.
+    // -----------------------------------------------------------------------
+    mod zero_share_mock {
+        use super::*;
+
+        const ZS_USDC: Symbol = symbol_short!("ZS_USDC");
+        const ZS_SH: Symbol = symbol_short!("ZS_SH");
+
+        #[contract]
+        pub struct ZeroShareMockAdapter;
+
+        #[contractimpl]
+        impl ZeroShareMockAdapter {
+            pub fn initialize(env: Env, usdc: Address) {
+                env.storage().instance().set(&ZS_USDC, &usdc);
+                env.storage().instance().set(&ZS_SH, &0_i128);
+            }
+
+            pub fn deposit(_env: Env, _amount: i128) -> i128 {
+                // Keeps the funds (they're already sitting at this
+                // contract's address, per the vault's transfer-then-deposit
+                // pattern) but never credits any shares for them.
+                0
+            }
+
+            pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
+                let usdc: Address = env.storage().instance().get(&ZS_USDC).unwrap();
+                mock_proportional_withdraw(&env, &usdc, &ZS_SH, shares, &recipient)
+            }
+
+            pub fn total_assets(env: Env) -> i128 {
+                let usdc: Address = env.storage().instance().get(&ZS_USDC).unwrap();
+                mock_total_assets(&env, &usdc)
+            }
+
+            pub fn refresh(_env: Env) {
+                // No-op: ZeroShareMockAdapter already prices total_assets() live.
+            }
         }
     }
 
@@ -945,6 +1184,101 @@ mod tests {
         let result = vault.try_set_adapter(&new_adapter_id);
         assert_eq!(result, Ok(Ok(())));
         assert_eq!(vault.get_adapter(), new_adapter_id);
+    }
+
+    #[test]
+    fn migrate_adapter_moves_position_and_preserves_bookkeeping() {
+        let (env, _admin, user, usdc, _musdc, _adapter, vault) = setup();
+        let amount = 100_0000000_i128;
+        vault.deposit(&user, &amount);
+
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc);
+
+        let total_shares_before = vault.get_total_shares();
+        let position_before = vault.get_position(&user);
+
+        let result = vault.try_migrate_adapter(&new_adapter_id, &0);
+        assert_eq!(result, Ok(Ok(())));
+
+        assert_eq!(vault.get_adapter(), new_adapter_id);
+        // Per-depositor bookkeeping is denominated in vault shares, not
+        // adapter shares, so an adapter swap must not touch it.
+        assert_eq!(vault.get_total_shares(), total_shares_before);
+        assert_eq!(vault.get_position(&user), position_before);
+        assert_eq!(vault.get_total_assets(), amount);
+    }
+
+    #[test]
+    fn migrate_adapter_fails_with_no_adapter_position() {
+        let (env, _admin, _user, usdc, _musdc, _adapter, vault) = setup();
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc);
+
+        let result = vault.try_migrate_adapter(&new_adapter_id, &0);
+        assert_eq!(result, Err(Ok(ContractError::NoAdapterPosition)));
+    }
+
+    #[test]
+    fn migrate_adapter_fails_with_invalid_slippage_bps() {
+        let (env, _admin, user, usdc, _musdc, _adapter, vault) = setup();
+        vault.deposit(&user, &100_0000000_i128);
+
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc);
+
+        let result = vault.try_migrate_adapter(&new_adapter_id, &10_001);
+        assert_eq!(result, Err(Ok(ContractError::InvalidSlippageBps)));
+    }
+
+    #[test]
+    fn migrate_adapter_fails_when_new_adapter_returns_zero_shares() {
+        use zero_share_mock::{ZeroShareMockAdapter, ZeroShareMockAdapterClient};
+
+        let (env, _admin, user, usdc, _musdc, adapter, vault) = setup();
+        let amount = 100_0000000_i128;
+        vault.deposit(&user, &amount);
+
+        let zero_share_adapter_id = env.register(ZeroShareMockAdapter, ());
+        ZeroShareMockAdapterClient::new(&env, &zero_share_adapter_id).initialize(&usdc);
+
+        let result = vault.try_migrate_adapter(&zero_share_adapter_id, &10_000);
+        assert_eq!(result, Err(Ok(ContractError::DepositTooSmall)));
+
+        // Nothing moved: the old adapter still holds the full position, and
+        // the vault isn't left with ADPT_SH desynced from TOTAL_SH.
+        assert_eq!(vault.get_adapter(), adapter);
+        assert_eq!(vault.get_total_assets(), amount);
+    }
+
+    #[test]
+    fn migrate_adapter_fails_to_same_adapter() {
+        let (_env, _admin, user, _usdc, _musdc, adapter, vault) = setup();
+        vault.deposit(&user, &100_0000000_i128);
+
+        let result = vault.try_migrate_adapter(&adapter, &0);
+        assert_eq!(result, Err(Ok(ContractError::SameAdapter)));
+    }
+
+    #[test]
+    fn migrate_adapter_rejects_value_drift_beyond_slippage() {
+        use lossy_mock::{LossyMockAdapter, LossyMockAdapterClient};
+
+        let (env, _admin, user, usdc, _musdc, adapter, vault) = setup();
+        let amount = 100_0000000_i128;
+        vault.deposit(&user, &amount);
+
+        let lossy_adapter_id = env.register(LossyMockAdapter, ());
+        LossyMockAdapterClient::new(&env, &lossy_adapter_id).initialize(&usdc);
+
+        // The lossy adapter loses half of whatever it's deposited, well
+        // outside a 1% (100 bps) slippage tolerance.
+        let result = vault.try_migrate_adapter(&lossy_adapter_id, &100);
+        assert_eq!(result, Err(Ok(ContractError::MigrationValueDrift)));
+
+        // Nothing moved: the old adapter still holds the full position.
+        assert_eq!(vault.get_adapter(), adapter);
+        assert_eq!(vault.get_total_assets(), amount);
     }
 
     #[test]
