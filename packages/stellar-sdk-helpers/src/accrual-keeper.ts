@@ -24,6 +24,15 @@ const DEFAULT_BASE_DELAY_MS = 1_000;
 // governs submission; it's silently capped at 10s for discovery only.
 const DEFAULT_RPC_TIMEOUT_MS = 10_000;
 
+// Deliberately separate from rpcTimeoutMs: confirmation waits for a Stellar
+// ledger to close and record the transaction, not a bounded API call.
+// Ledgers close roughly every 5s, and confirmation typically needs 2-4
+// closes (10-20s), so reusing the short RPC-call timeout here (as an
+// earlier version of this file did) made the confirmation wait time out
+// under ordinary network conditions, not just outages, which is exactly
+// what made the double-submission bug below reachable in normal operation.
+const CONFIRMATION_TIMEOUT_MS = 20_000;
+
 export interface BlendAccrualKeeperConfig {
   network: StellarNetwork;
   secretKey: string;
@@ -434,26 +443,27 @@ async function submitAccrualTransaction(
   server: KeeperRpcServer,
   priorHash?: string
 ): Promise<Omit<AccrualSuccess, "attempts" | "vaultId" | "adapterId">> {
-  // An earlier attempt already sent a transaction and only the
-  // confirmation-wait timed out. Check whether it actually landed before
-  // submitting a second, duplicate accrue() call.
+  // An earlier attempt already sent a transaction. Check whether it
+  // actually landed before ever submitting a second, duplicate accrue()
+  // call. Once a transaction is in flight for this adapter, this function
+  // never falls through to building a new one, only this branch, on every
+  // subsequent attempt, until the prior transaction's fate is actually
+  // known (confirmed success or confirmed failure). A second timeout here
+  // re-throws to keep tracking the *same* hash on the next retry, rather
+  // than abandoning it and creating a second real transaction, which would
+  // reintroduce the exact double-submission this function exists to
+  // prevent.
   if (priorHash) {
     try {
       const confirmed = await waitForTransaction(server, priorHash, {
-        timeoutMs: config.rpcTimeoutMs,
+        timeoutMs: CONFIRMATION_TIMEOUT_MS,
       });
       return { hash: priorHash, ledger: confirmed.ledger };
     } catch (err) {
-      // The prior transaction was confirmed as genuinely failed, a
-      // permanent outcome, not something a fresh resubmission fixes.
-      // Report it as such instead of silently submitting a new transaction
-      // that has no reason to succeed where the first one didn't.
       if (isDefinitiveOnChainFailure(err)) {
         throw new SubmissionFailedError(err);
       }
-      // Still not confirmed within this attempt's window either (a further
-      // timeout); proceed to a fresh submission below rather than waiting
-      // indefinitely.
+      throw new SubmissionInFlightError(priorHash, err);
     }
   }
 
@@ -503,7 +513,7 @@ async function submitAccrualTransaction(
 
   try {
     const confirmed = await waitForTransaction(server, sent.hash, {
-      timeoutMs: config.rpcTimeoutMs,
+      timeoutMs: CONFIRMATION_TIMEOUT_MS,
     });
     return { hash: sent.hash, ledger: confirmed.ledger };
   } catch (err) {

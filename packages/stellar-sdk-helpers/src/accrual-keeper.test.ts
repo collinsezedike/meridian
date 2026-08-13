@@ -933,10 +933,13 @@ describe("runBlendAccrualKeeper", () => {
     expect(stellarMocks.assembleTransaction).toHaveBeenCalledOnce();
     expect(stellarMocks.signPrepared).toHaveBeenCalledOnce();
     expect(server.sendTransaction).toHaveBeenCalledOnce();
+    // 20_000, not CONFIG.rpcTimeoutMs (100): confirmation waits for a
+    // ledger to close, not a bounded API call, so it uses its own fixed,
+    // more patient timeout, decoupled from the RPC-call timeout.
     expect(stellarMocks.waitForTransaction).toHaveBeenCalledWith(
       server,
       "SUBMITTED_HASH",
-      { timeoutMs: 100 }
+      { timeoutMs: 20000 }
     );
     expect(result.successes).toEqual([
       {
@@ -982,7 +985,7 @@ describe("runBlendAccrualKeeper", () => {
       2,
       server,
       "SUBMITTED_HASH",
-      { timeoutMs: 100 }
+      { timeoutMs: 20000 }
     );
     expect(result.successes).toEqual([
       {
@@ -991,6 +994,56 @@ describe("runBlendAccrualKeeper", () => {
         hash: "SUBMITTED_HASH",
         ledger: 321,
         attempts: 2,
+      },
+    ]);
+  });
+
+  it("keeps tracking the same in-flight transaction across repeated timeouts, never sends a second one", async () => {
+    // Regression test: if the recheck of a prior in-flight transaction
+    // *also* times out (still ambiguous, not confirmed either way), an
+    // earlier version of this code fell through and built a brand new
+    // transaction, exactly the duplicate-submission bug this whole
+    // mechanism exists to prevent. It must keep re-checking the same hash
+    // on every subsequent attempt instead.
+    const server = makeServer({
+      sendTransaction: vi.fn(async () => ({
+        hash: "SUBMITTED_HASH",
+        status: "PENDING",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction
+      .mockRejectedValueOnce(new Error("Soroban RPC timed out after 100ms"))
+      .mockRejectedValueOnce(new Error("Soroban RPC timed out after 100ms"))
+      .mockResolvedValueOnce({ ledger: 321 });
+
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      logger: logger(),
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+      sleep: vi.fn(),
+    });
+
+    // Exactly one real transaction sent, across all three attempts.
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(stellarMocks.waitForTransaction).toHaveBeenCalledTimes(3);
+    for (let call = 1; call <= 3; call++) {
+      expect(stellarMocks.waitForTransaction).toHaveBeenNthCalledWith(
+        call,
+        server,
+        "SUBMITTED_HASH",
+        { timeoutMs: 20000 }
+      );
+    }
+    expect(result.successes).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        adapterId: "CADAPTERBLEND",
+        hash: "SUBMITTED_HASH",
+        ledger: 321,
+        attempts: 3,
       },
     ]);
   });
