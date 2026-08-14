@@ -530,6 +530,92 @@ describe("runMigrationKeeper", () => {
     ]);
   });
 
+  it("checks a prior submission's real status before resubmitting, avoiding a duplicate migrate_adapter call", async () => {
+    // Same regression as the accrue keeper's equivalent test, but higher
+    // stakes here: a duplicate migrate_adapter call costs real slippage
+    // twice, not just a wasted fee (see migration-keeper.md).
+    const server = makeServer({
+      sendTransaction: vi.fn(async () => ({
+        hash: "SUBMITTED_HASH",
+        status: "PENDING",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction
+      .mockRejectedValueOnce(new Error("Soroban RPC timed out after 100ms"))
+      .mockResolvedValueOnce({ ledger: 321 });
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(stellarMocks.waitForTransaction).toHaveBeenCalledTimes(2);
+    expect(stellarMocks.waitForTransaction).toHaveBeenNthCalledWith(
+      2,
+      server,
+      "SUBMITTED_HASH",
+      { timeoutMs: 20000 }
+    );
+    expect(result.migrations).toMatchObject([
+      { hash: "SUBMITTED_HASH", ledger: 321, attempts: 2 },
+    ]);
+  });
+
+  it("never drops a successful candidate because a different candidate failed to evaluate", async () => {
+    // Regression test: findBestCandidate evaluates candidates concurrently.
+    // An earlier version threw on the first rejected candidate found by
+    // array order, discarding any other candidate that had already
+    // succeeded and cleared the improvement threshold.
+    const submitMigration = vi.fn(async () => ({
+      hash: "GOOD_HASH",
+      ledger: 42,
+    }));
+    const mixedConfig: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {
+        blend: "CBLENDADAPTER_V2",
+        defindex: "CDEFINDEXADAPTER",
+      },
+    };
+    const resolveCandidatePool = vi.fn(async (adapterId: string) => {
+      if (adapterId === "CBLENDADAPTER_V2") {
+        throw new Error("try again later");
+      }
+      return "CDEFINDEXPOOL";
+    });
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(mixedConfig, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool,
+      submitMigration,
+      sleep: vi.fn(),
+    });
+
+    expect(submitMigration).toHaveBeenCalledOnce();
+    expect(result.migrations).toMatchObject([
+      { toAdapterId: "CDEFINDEXADAPTER", hash: "GOOD_HASH" },
+    ]);
+    expect(result.failures).toEqual([]);
+  });
+
   it("retries a transient failure while evaluating a candidate's rate, then succeeds", async () => {
     const sleep = vi.fn();
     const submitMigration = vi.fn(async () => ({
@@ -585,7 +671,7 @@ describe("runMigrationKeeper", () => {
         vaultId: "meridian-usdc",
         adapterId: "CDEFINDEXADAPTER",
         protocol: "defindex",
-        stage: "discover",
+        stage: "evaluate",
         transient: false,
       },
     ]);

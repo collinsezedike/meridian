@@ -396,11 +396,39 @@ async function findBestCandidate(
   sleepFn: (ms: number) => Promise<void>,
   deadlineAt: number
 ): Promise<{ best: BestCandidate | null; skipReason?: string }> {
-  const currentRate = await rateSource({
-    protocol: vault.currentProtocol,
-    adapterId: vault.currentAdapterId,
-    poolId: vault.currentPoolId,
-  });
+  let currentRate: number | null;
+  try {
+    const result = await withKeeperRetry(
+      () =>
+        rateSource({
+          protocol: vault.currentProtocol,
+          adapterId: vault.currentAdapterId,
+          poolId: vault.currentPoolId,
+        }),
+      {
+        maxAttempts: config.maxAttempts,
+        baseDelayMs: config.baseDelayMs,
+        deadlineAt,
+      },
+      logger,
+      {
+        vaultId: vault.vaultId,
+        adapterId: vault.currentAdapterId,
+        protocol: vault.currentProtocol,
+        stage: "evaluate",
+      },
+      sleepFn,
+      isTransientKeeperError,
+      "migration-keeper"
+    );
+    currentRate = result.value;
+  } catch (err) {
+    throw new CandidateEvaluationError(
+      vault.currentProtocol,
+      vault.currentAdapterId,
+      err
+    );
+  }
   if (currentRate === null) {
     return { best: null, skipReason: "current rate unavailable" };
   }
@@ -440,17 +468,20 @@ async function findBestCandidate(
     })
   );
 
+  // A candidate that failed to evaluate must never discard a different
+  // candidate that succeeded: an unrelated RPC blip on one protocol
+  // shouldn't block a genuine, already-computed migration opportunity on
+  // another. Only surface the failure if nothing usable came out of any
+  // candidate at all.
+  let best: BestCandidate | null = null;
+  let firstFailure: { index: number; reason: unknown } | undefined;
   for (let i = 0; i < settled.length; i++) {
     const outcome = settled[i];
-    const target = candidates[i];
-    if (outcome?.status === "rejected" && target) {
-      throw new CandidateEvaluationError(target[0], target[1], outcome.reason);
+    if (!outcome) continue;
+    if (outcome.status === "rejected") {
+      firstFailure ??= { index: i, reason: outcome.reason };
+      continue;
     }
-  }
-
-  let best: BestCandidate | null = null;
-  for (const outcome of settled) {
-    if (outcome.status !== "fulfilled") continue;
     const { protocol, adapterId, rate } = outcome.value;
     if (rate === null) continue;
 
@@ -461,13 +492,23 @@ async function findBestCandidate(
     }
   }
 
-  if (!best) {
-    return {
-      best: null,
-      skipReason: "no candidate clears the improvement threshold",
-    };
+  if (best) {
+    return { best };
   }
-  return { best };
+  if (firstFailure) {
+    const target = candidates[firstFailure.index];
+    if (target) {
+      throw new CandidateEvaluationError(
+        target[0],
+        target[1],
+        firstFailure.reason
+      );
+    }
+  }
+  return {
+    best: null,
+    skipReason: "no candidate clears the improvement threshold",
+  };
 }
 
 function submitMigrationTransaction(
@@ -584,7 +625,7 @@ export async function runMigrationKeeper(
         vaultContractId: vault.vaultContractId,
         adapterId,
         protocol,
-        stage: "discover",
+        stage: "evaluate",
         attempts,
         transient,
         error: errorMessage(err),

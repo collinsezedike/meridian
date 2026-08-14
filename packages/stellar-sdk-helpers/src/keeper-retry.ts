@@ -69,7 +69,10 @@ export interface KeeperFailure {
   vaultContractId?: string;
   adapterId?: string;
   protocol?: string;
-  stage: "discover" | "submit";
+  // "evaluate" is migration-keeper-specific (deciding whether a discovered
+  // vault should migrate, distinct from finding it in the first place); the
+  // accrual keeper only ever reports "discover" or "submit".
+  stage: "discover" | "evaluate" | "submit";
   attempts: number;
   transient: boolean;
   error: string;
