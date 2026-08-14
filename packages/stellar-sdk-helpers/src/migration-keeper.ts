@@ -15,7 +15,7 @@
 // accrual-keeper.ts.
 
 import { Address, nativeToScVal } from "@stellar/stellar-sdk";
-import { APP_ADDRESSES, APP_NETWORK } from "@meridian/shared";
+import { APP_NETWORK } from "@meridian/shared";
 import { KNOWN_POOLS, type KnownPoolMeta } from "./known-pools";
 import { getRpcServer } from "./internal";
 import { simulateView } from "./tx";
@@ -261,11 +261,8 @@ export function loadMigrationKeeperConfig(
       ...(env.MERIDIAN_BLEND_ADAPTER_ID?.trim() && {
         blend: env.MERIDIAN_BLEND_ADAPTER_ID.trim(),
       }),
-      ...((env.MERIDIAN_DEFINDEX_ADAPTER_ID?.trim() ||
-        APP_ADDRESSES.defindex.adapter) && {
-        defindex:
-          env.MERIDIAN_DEFINDEX_ADAPTER_ID?.trim() ||
-          APP_ADDRESSES.defindex.adapter,
+      ...(env.MERIDIAN_DEFINDEX_ADAPTER_ID?.trim() && {
+        defindex: env.MERIDIAN_DEFINDEX_ADAPTER_ID.trim(),
       }),
     },
   };

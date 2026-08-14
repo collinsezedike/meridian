@@ -106,7 +106,6 @@ import {
 } from "./migration-keeper";
 import type { KeeperLogger } from "./keeper-retry";
 import type { KnownPoolMeta } from "./known-pools";
-import { APP_ADDRESSES } from "@meridian/shared";
 
 const NETWORK = {
   network: "testnet" as const,
@@ -202,7 +201,7 @@ describe("loadMigrationKeeperConfig", () => {
     expect(config.minImprovementBps).toBe(50);
   });
 
-  it("reads an explicit MERIDIAN_DEFINDEX_ADAPTER_ID override over the committed default", () => {
+  it("reads an explicit MERIDIAN_DEFINDEX_ADAPTER_ID override", () => {
     const config = loadMigrationKeeperConfig({
       MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
       MERIDIAN_DEFINDEX_ADAPTER_ID: "COVERRIDE",
@@ -210,13 +209,11 @@ describe("loadMigrationKeeperConfig", () => {
     expect(config.candidateAdapters.defindex).toBe("COVERRIDE");
   });
 
-  it("falls back to the committed testnet DeFindex adapter address when unset", () => {
+  it("leaves the defindex candidate unset with no env override", () => {
     const config = loadMigrationKeeperConfig({
       MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
     });
-    expect(config.candidateAdapters.defindex).toBe(
-      APP_ADDRESSES.defindex.adapter || undefined
-    );
+    expect(config.candidateAdapters.defindex).toBeUndefined();
   });
 
   it("leaves the blend candidate unset with no env override", () => {

@@ -18,6 +18,22 @@ against total vault value, never on any individual depositor's mUSDC. One
 admin/keeper-signed call benefits every depositor simultaneously, no per-user
 consent, delegation, or signature is needed.
 
+## Current status: not yet functional against the live testnet vault
+
+Two independent gaps, tracked separately, both must close before this keeper
+actually migrates anything in practice:
+
+- The live testnet vault (`CONTRACT_ADDRESSES.testnet.vault`) predates
+  `migrate_adapter` being added to `vault/src/lib.rs` and was never
+  redeployed since; it doesn't have the function at all. Confirmed directly
+  via `stellar contract invoke -- --help` against the live contract. See
+  #514.
+- Rate comparison isn't implemented (below). See #511.
+
+Everything else described in this document, the discovery, retry, deadline
+budget, and structured-failure-reporting mechanism, is built and tested; it
+has nothing real to act on yet.
+
 ## Rate comparison is not implemented yet
 
 Neither adapter contract exposes a ready-made, comparable rate:
@@ -82,16 +98,20 @@ deployments fail closed when it's missing, only true local dev is permissive.
 already-deployed adapter contract; there is no on-chain registry of adapters
 a vault could migrate to; only its single current one. Candidates are
 configured out-of-band via `MERIDIAN_BLEND_ADAPTER_ID` and
-`MERIDIAN_DEFINDEX_ADAPTER_ID`. `defindex` falls back to the address
-committed in `packages/shared/src/constants.ts`
-(`CONTRACT_ADDRESSES.testnet.defindex.adapter`) when unset, a
-`MeridianDefindexAdapter` deployed against the vault and the existing
-Paltalabs DeFindex testnet vault, exists so the keeper has a real candidate
-to evaluate once a rate source is implemented, but it is **not** the vault's
-active adapter today.
+`MERIDIAN_DEFINDEX_ADAPTER_ID`, both unset by default; an unconfigured
+protocol is silently excluded from consideration, not an error.
 
-Only protocols with a configured candidate address are considered; an
-unconfigured protocol is silently excluded, not an error.
+A `MeridianDefindexAdapter` is deployed on testnet
+(`CAJVTA7EC3ZL3G4WSU4QIRB7RU7SUFUUJDEB7JE6CQQNPE7QC5OBSAM6`), initialized
+against the live Meridian vault and the existing Paltalabs DeFindex testnet
+vault, so there's a real candidate to point `MERIDIAN_DEFINDEX_ADAPTER_ID`
+at once the other gaps above close. It is deliberately not wired into
+`packages/shared/src/constants.ts`: that file gates a required CI check
+(`.github/workflows/verify-contract-addresses.yml`) that verifies the vault
+address's on-chain bytecode against source, and #514 (the live vault predating
+`migrate_adapter`) already fails it independent of this address, so adding it
+there would tie an inert, standalone adapter's config to an unrelated,
+already-broken check. Set the env var directly instead.
 
 ## Retry And Failure Handling
 
