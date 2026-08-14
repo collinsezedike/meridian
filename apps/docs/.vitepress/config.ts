@@ -48,6 +48,10 @@ export default defineConfig({
             text: "Environment Variables",
             link: "/operations/environment-variables",
           },
+          {
+            text: "Blend Accrual Keeper",
+            link: "/operations/accrual-keeper",
+          },
         ],
       },
     ],

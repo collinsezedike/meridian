@@ -25,16 +25,27 @@ const LIMIT = 100;
 const WINDOW = "60 s";
 const WINDOW_MS = 60_000;
 
-// Distributed sliding-window limiter via Upstash Redis when env vars are
-// present. Falls back to in-memory per-process counting for local dev — the
-// fallback is not shared across workers and should not be used in production.
-const ratelimit =
-  process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
-    ? new Ratelimit({
-        redis: Redis.fromEnv(),
-        limiter: Ratelimit.slidingWindow(LIMIT, WINDOW),
-      })
-    : null;
+const UPSTASH_CONFIGURED =
+  Boolean(process.env.UPSTASH_REDIS_REST_URL) &&
+  Boolean(process.env.UPSTASH_REDIS_REST_TOKEN);
+
+// The in-memory fallback is per-process and is not shared across workers, so
+// on a production deploy it is effectively no limit at all. Fail loudly at
+// module load instead of silently serving traffic without distributed rate
+// limiting. Local dev (VERCEL_ENV unset) and preview deploys
+// (VERCEL_ENV="preview") keep the fallback.
+if (process.env.VERCEL_ENV === "production" && !UPSTASH_CONFIGURED) {
+  throw new Error(
+    "Refusing to start: UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required when VERCEL_ENV=production (the in-memory rate-limit fallback is not shared across workers)"
+  );
+}
+
+const ratelimit = UPSTASH_CONFIGURED
+  ? new Ratelimit({
+      redis: Redis.fromEnv(),
+      limiter: Ratelimit.slidingWindow(LIMIT, WINDOW),
+    })
+  : null;
 
 const counts = new Map<string, { n: number; resetAt: number }>();
 
