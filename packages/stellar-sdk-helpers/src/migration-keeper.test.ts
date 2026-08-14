@@ -201,26 +201,40 @@ describe("loadMigrationKeeperConfig", () => {
     expect(config.minImprovementBps).toBe(50);
   });
 
-  it("reads an explicit MERIDIAN_DEFINDEX_ADAPTER_ID override", () => {
+  it("reads an explicit MERIDIAN_ADAPTER_<PROTOCOL>_ID override", () => {
     const config = loadMigrationKeeperConfig({
       MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
-      MERIDIAN_DEFINDEX_ADAPTER_ID: "COVERRIDE",
+      MERIDIAN_ADAPTER_DEFINDEX_ID: "COVERRIDE",
     });
     expect(config.candidateAdapters.defindex).toBe("COVERRIDE");
   });
 
-  it("leaves the defindex candidate unset with no env override", () => {
+  it("leaves candidateAdapters empty with no env vars set", () => {
     const config = loadMigrationKeeperConfig({
       MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
     });
-    expect(config.candidateAdapters.defindex).toBeUndefined();
+    expect(config.candidateAdapters).toEqual({});
   });
 
-  it("leaves the blend candidate unset with no env override", () => {
+  it("picks up a protocol never referenced in source, purely from its env var name", () => {
+    // The whole point of the adapter pattern is that the vault (and
+    // migrate_adapter) never need to know which protocol an adapter wraps;
+    // this proves the keeper's own config layer honors that too, a new
+    // protocol needs no code change here, only an env var.
     const config = loadMigrationKeeperConfig({
       MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
+      MERIDIAN_ADAPTER_SOROSWAP_ID: "CSOROSWAPADAPTER",
     });
-    expect(config.candidateAdapters.blend).toBeUndefined();
+    expect(config.candidateAdapters).toEqual({ soroswap: "CSOROSWAPADAPTER" });
+  });
+
+  it("ignores env vars that don't match the MERIDIAN_ADAPTER_<PROTOCOL>_ID pattern", () => {
+    const config = loadMigrationKeeperConfig({
+      MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
+      MERIDIAN_KEEPER_SECRET_KEY: "S".repeat(56),
+      MERIDIAN_ADAPTER_ID: "CNOTMATCHED",
+    });
+    expect(config.candidateAdapters).toEqual({});
   });
 });
 
@@ -577,27 +591,38 @@ describe("runMigrationKeeper", () => {
     ]);
   });
 
-  it("skips a vault whose current protocol isn't a recognized migration candidate", async () => {
+  it("passes an arbitrary current protocol straight through to the rate source, no hardcoded allowlist", async () => {
+    // There's no fixed set of "recognized" protocols: the vault's currentProtocol
+    // is whatever the adapter's own get_protocol() reports, and it flows
+    // through to rateSource unmodified. A protocol the rate source doesn't
+    // know about is handled the same way any other unknown rate is: skipped
+    // via "current rate unavailable", not a special protocol-name check.
     const submitMigration = vi.fn();
-    const rateSource = vi.fn(async () => 500);
-    const unknownProtocolVault = {
+    const rateSource = vi.fn(
+      async ({ protocol }: { protocol: string }) =>
+        ({ blend: 500, defindex: 700 })[protocol] ?? null
+    );
+    const soroswapVault = {
       ...DISCOVERED_VAULT,
-      currentProtocol: "meridian",
+      currentAdapterId: "CSOROSWAPADAPTER",
+      currentProtocol: "soroswap",
     };
 
     const result = await runMigrationKeeper(CONFIG, {
       discoverVaults: async () => ({
-        vaults: [unknownProtocolVault],
+        vaults: [soroswapVault],
         failures: [],
       }),
       rateSource,
       submitMigration,
     });
 
-    expect(rateSource).not.toHaveBeenCalled();
+    expect(rateSource).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: "soroswap" })
+    );
     expect(submitMigration).not.toHaveBeenCalled();
     expect(result.skipped).toMatchObject([
-      { vaultId: "meridian-usdc", reason: expect.stringContaining("meridian") },
+      { vaultId: "meridian-usdc", reason: "current rate unavailable" },
     ]);
   });
 });

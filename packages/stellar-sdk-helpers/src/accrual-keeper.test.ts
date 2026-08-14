@@ -1273,6 +1273,10 @@ describe("runBlendAccrualKeeper", () => {
   });
 
   it("stops retrying once the next attempt would run past the deadline, instead of sleeping into it", async () => {
+    // Fake timers freeze Date.now(), so the 1ms margin below is a
+    // deterministic boundary, not a race against real execution time (a
+    // real-clock version of this test was flaky under load).
+    vi.useFakeTimers();
     const sleep = vi.fn();
     const submitAccrual = vi
       .fn()

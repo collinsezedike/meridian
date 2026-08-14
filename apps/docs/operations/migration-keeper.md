@@ -96,15 +96,22 @@ deployments fail closed when it's missing, only true local dev is permissive.
 
 `migrate_adapter(new_adapter, max_slippage_bps)` takes the address of an
 already-deployed adapter contract; there is no on-chain registry of adapters
-a vault could migrate to; only its single current one. Candidates are
-configured out-of-band via `MERIDIAN_BLEND_ADAPTER_ID` and
-`MERIDIAN_DEFINDEX_ADAPTER_ID`, both unset by default; an unconfigured
-protocol is silently excluded from consideration, not an error.
+a vault could migrate to, only its single current one. Candidates are
+configured out-of-band via `MERIDIAN_ADAPTER_<PROTOCOL>_ID`, one env var per
+protocol (e.g. `MERIDIAN_ADAPTER_BLEND_ID`, `MERIDIAN_ADAPTER_DEFINDEX_ID`),
+all unset by default; an unconfigured protocol is silently excluded from
+consideration, not an error. `CandidateProtocol` deliberately doesn't exist
+as a fixed type anywhere in this file: `migrate_adapter` itself has no
+notion of which protocol an adapter wraps, and hardcoding a closed set of
+protocol names into the keeper's config would reintroduce, at the one layer
+whose job is protocol-agnostic routing, exactly the coupling adapters exist
+to avoid. A new protocol becomes a candidate by setting its env var, never
+by editing this codebase.
 
 A `MeridianDefindexAdapter` is deployed on testnet
 (`CAJVTA7EC3ZL3G4WSU4QIRB7RU7SUFUUJDEB7JE6CQQNPE7QC5OBSAM6`), initialized
 against the live Meridian vault and the existing Paltalabs DeFindex testnet
-vault, so there's a real candidate to point `MERIDIAN_DEFINDEX_ADAPTER_ID`
+vault, so there's a real candidate to point `MERIDIAN_ADAPTER_DEFINDEX_ID`
 at once the other gaps above close. It is deliberately not wired into
 `packages/shared/src/constants.ts`: that file gates a required CI check
 (`.github/workflows/verify-contract-addresses.yml`) that verifies the vault

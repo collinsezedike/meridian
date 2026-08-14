@@ -69,14 +69,15 @@ const MAX_ALLOWED_SLIPPAGE_BPS = 9_999;
 // more than it earns.
 const DEFAULT_MIN_IMPROVEMENT_BPS = 50;
 
-export type CandidateProtocol = "blend" | "defindex";
-
-function isCandidateProtocol(value: string): value is CandidateProtocol {
-  return value === "blend" || value === "defindex";
-}
-
+// Deliberately a plain string, not a fixed union: migrate_adapter itself
+// takes a bare adapter address and has no notion of which protocol it
+// wraps, that's the entire point of the adapter pattern. Hardcoding a
+// closed set of protocol names here would reintroduce, at the one layer
+// whose job is protocol-agnostic routing, exactly the coupling adapters
+// exist to avoid. A new protocol becomes usable by configuring an env var,
+// see loadMigrationKeeperConfig, never by editing this file.
 export interface RateQuery {
-  protocol: CandidateProtocol;
+  protocol: string;
   adapterId: string;
   poolId: string;
 }
@@ -103,7 +104,7 @@ export interface MigrationKeeperConfig {
   rpcTimeoutMs: number;
   minImprovementBps: number;
   maxSlippageBps: number;
-  candidateAdapters: Partial<Record<CandidateProtocol, string>>;
+  candidateAdapters: Record<string, string>;
 }
 
 export interface DiscoveredVault {
@@ -119,7 +120,7 @@ export interface MigrationSuccess {
   fromAdapterId: string;
   fromProtocol: string;
   toAdapterId: string;
-  toProtocol: CandidateProtocol;
+  toProtocol: string;
   improvementBps: number;
   hash: string;
   ledger: number;
@@ -183,6 +184,27 @@ export interface MigrationKeeperDeps {
   deadlineAt?: number;
 }
 
+// Scans for MERIDIAN_ADAPTER_<PROTOCOL>_ID rather than one hardcoded env
+// var per protocol: a new protocol becomes a migration candidate by setting
+// an env var with this name, never by editing this file, matching how
+// RateSourceFn is already pluggable without code changes.
+const CANDIDATE_ADAPTER_ENV_PATTERN = /^MERIDIAN_ADAPTER_(.+)_ID$/;
+
+function parseCandidateAdapters(
+  env: Record<string, string | undefined>
+): Record<string, string> {
+  const candidates: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    const match = CANDIDATE_ADAPTER_ENV_PATTERN.exec(key);
+    const protocol = match?.[1];
+    const trimmed = value?.trim();
+    if (protocol && trimmed) {
+      candidates[protocol.toLowerCase()] = trimmed;
+    }
+  }
+  return candidates;
+}
+
 export function loadMigrationKeeperConfig(
   env: Record<string, string | undefined>
 ): MigrationKeeperConfig {
@@ -232,14 +254,7 @@ export function loadMigrationKeeperConfig(
       "MERIDIAN_MIGRATION_MIN_IMPROVEMENT_BPS"
     ),
     maxSlippageBps,
-    candidateAdapters: {
-      ...(env.MERIDIAN_BLEND_ADAPTER_ID?.trim() && {
-        blend: env.MERIDIAN_BLEND_ADAPTER_ID.trim(),
-      }),
-      ...(env.MERIDIAN_DEFINDEX_ADAPTER_ID?.trim() && {
-        defindex: env.MERIDIAN_DEFINDEX_ADAPTER_ID.trim(),
-      }),
-    },
+    candidateAdapters: parseCandidateAdapters(env),
   };
 }
 
@@ -343,7 +358,7 @@ export async function discoverMigrationVaults(
 }
 
 interface BestCandidate {
-  protocol: CandidateProtocol;
+  protocol: string;
   adapterId: string;
   improvementBps: number;
 }
@@ -359,7 +374,7 @@ class CandidateEvaluationError extends Error {
   readonly transient: boolean;
 
   constructor(
-    readonly protocol: CandidateProtocol,
+    readonly protocol: string,
     readonly adapterId: string,
     cause: unknown
   ) {
@@ -380,12 +395,6 @@ async function findBestCandidate(
   sleepFn: (ms: number) => Promise<void>,
   deadlineAt: number
 ): Promise<{ best: BestCandidate | null; skipReason?: string }> {
-  if (!isCandidateProtocol(vault.currentProtocol)) {
-    return {
-      best: null,
-      skipReason: `current protocol "${vault.currentProtocol}" is not a recognized migration candidate`,
-    };
-  }
   const currentRate = await rateSource({
     protocol: vault.currentProtocol,
     adapterId: vault.currentAdapterId,
@@ -398,8 +407,7 @@ async function findBestCandidate(
   let best: BestCandidate | null = null;
   for (const [protocol, adapterId] of Object.entries(
     config.candidateAdapters
-  ) as [CandidateProtocol, string | undefined][]) {
-    if (!adapterId) continue;
+  )) {
     if (adapterId === vault.currentAdapterId) continue;
     if (protocol === vault.currentProtocol) continue;
 
