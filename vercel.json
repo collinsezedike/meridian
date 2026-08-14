@@ -1,9 +1,13 @@
 {
   "buildCommand": "bash scripts/build-vercel.sh",
   "outputDirectory": "dist",
-  "crons": [{ "path": "/api/v1/keepers/accrue", "schedule": "*/15 * * * *" }],
+  "crons": [
+    { "path": "/api/v1/keepers/accrue", "schedule": "*/15 * * * *" },
+    { "path": "/api/v1/keepers/rebalance", "schedule": "0 * * * *" }
+  ],
   "functions": {
-    "api/v1/keepers/accrue.ts": { "maxDuration": 60 }
+    "api/v1/keepers/accrue.ts": { "maxDuration": 60 },
+    "api/v1/keepers/rebalance.ts": { "maxDuration": 60 }
   },
   "rewrites": [
     { "source": "/app/:path*", "destination": "/app/index.html" },

@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
-  loadBlendAccrualKeeperConfig,
-  runBlendAccrualKeeper,
+  loadMigrationKeeperConfig,
+  runMigrationKeeper,
 } from "@meridian/stellar-sdk-helpers";
 import { checkRateLimit, isCronAuthorized } from "../../_lib/middleware.js";
 
@@ -12,11 +12,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // No applyCors: this endpoint is cron-invoked, never browser-facing. But
-  // it does sign and submit real transactions off the keeper's funded
-  // account, unlike simple reads, so it still gets a rate-limit backstop:
-  // defense-in-depth if CRON_SECRET ever leaks or a non-production instance
-  // is reachable, even though the legitimate cron caller is nowhere near
-  // this limit at one call per 15 minutes.
+  // it does sign and submit real migrate_adapter transactions off the
+  // vault's admin key, unlike simple reads, so it still gets a rate-limit
+  // backstop: defense-in-depth if CRON_SECRET ever leaks or a
+  // non-production instance is reachable, even though the legitimate cron
+  // caller is nowhere near this limit at one call per interval.
   if (!(await checkRateLimit(req, res))) return;
 
   if (!process.env.CRON_SECRET && process.env.VERCEL_ENV !== undefined) {
@@ -28,12 +28,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const config = loadBlendAccrualKeeperConfig(process.env);
-    const result = await runBlendAccrualKeeper(config);
+    const config = loadMigrationKeeperConfig(process.env);
+    const result = await runMigrationKeeper(config);
     const status = result.failures.length > 0 ? 500 : 200;
     return res.status(status).json(result);
   } catch (err) {
-    console.error("[accrual-keeper] run failed:", err);
+    console.error("[migration-keeper] run failed:", err);
     const message = err instanceof Error ? err.message : "Keeper failed";
     return res.status(500).json({ error: message });
   }

@@ -77,6 +77,13 @@ vi.mock("./internal", async (importOriginal) => {
 });
 
 vi.mock("./tx", () => ({
+  describeSendError: (res: { errorResult?: { result(): { switch(): { name: string } } } }) => {
+    try {
+      return res.errorResult?.result().switch().name ?? "unknown error";
+    } catch {
+      return "unknown error";
+    }
+  },
   simErrorMessage: (error: unknown) => String(error),
   simulateView: stellarMocks.simulateView,
   waitForTransaction: stellarMocks.waitForTransaction,

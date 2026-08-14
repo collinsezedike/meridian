@@ -38,6 +38,29 @@ vi.mock("@meridian/stellar-sdk-helpers", () => ({
     skipped: [],
     failures: [],
   })),
+  loadMigrationKeeperConfig: vi.fn(() => ({
+    network: {
+      network: "testnet",
+      rpcUrl: "https://rpc.example",
+      passphrase: "Test SDF Network ; September 2015",
+    },
+    secretKey: "SECRET",
+    maxAttempts: 3,
+    baseDelayMs: 1,
+    rpcTimeoutMs: 100,
+    minImprovementBps: 50,
+    maxSlippageBps: 100,
+    candidateAdapters: {},
+  })),
+  runMigrationKeeper: vi.fn(async () => ({
+    network: "testnet",
+    startedAt: "2026-08-06T00:00:00.000Z",
+    finishedAt: "2026-08-06T00:00:01.000Z",
+    discoveredVaults: 1,
+    migrations: [],
+    skipped: [{ vaultId: "meridian-usdc", reason: "current rate unavailable" }],
+    failures: [],
+  })),
   fetchAllVaults: vi.fn(async () => [
     { id: "blend-usdc-fixed", protocol: "blend" },
   ]),
@@ -61,9 +84,11 @@ import submitHandler from "../v1/tx/submit";
 import vaultsHandler from "../v1/vaults/index";
 import positionsHandler from "../v1/positions/[publicKey]";
 import keeperHandler from "../v1/keepers/accrue";
+import rebalanceHandler from "../v1/keepers/rebalance";
 import {
   buildDepositTx,
   runBlendAccrualKeeper,
+  runMigrationKeeper,
   resolvePositions,
 } from "@meridian/stellar-sdk-helpers";
 
@@ -405,6 +430,68 @@ describe("GET /api/v1/keepers/accrue", () => {
 
       expect(res.statusCode).toBe(503);
       expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("GET /api/v1/keepers/rebalance", () => {
+  it("rejects requests without the cron bearer token", async () => {
+    const res = makeRes();
+    await rebalanceHandler(fakeReq({ method: "GET", headers: {} }), res);
+
+    expect(res.statusCode).toBe(401);
+    expect(runMigrationKeeper).not.toHaveBeenCalled();
+  });
+
+  it("runs the migration keeper for authorized cron calls", async () => {
+    const res = makeRes();
+    await rebalanceHandler(
+      fakeReq({
+        method: "GET",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({
+      skipped: [{ vaultId: "meridian-usdc", reason: "current rate unavailable" }],
+    });
+    expect(runMigrationKeeper).toHaveBeenCalledOnce();
+  });
+
+  it("returns 500 when a migration fails so the cron run is observable", async () => {
+    vi.mocked(runMigrationKeeper).mockResolvedValueOnce({
+      network: "testnet",
+      startedAt: "2026-08-06T00:00:00.000Z",
+      finishedAt: "2026-08-06T00:00:01.000Z",
+      discoveredVaults: 1,
+      migrations: [],
+      skipped: [],
+      failures: [
+        {
+          vaultId: "meridian-usdc",
+          adapterId: "CDEFINDEXADAPTER",
+          stage: "submit",
+          attempts: 3,
+          transient: true,
+          error: "try again later",
+        },
+      ],
+    });
+
+    const res = makeRes();
+    await rebalanceHandler(
+      fakeReq({
+        method: "GET",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toMatchObject({
+      failures: [{ vaultId: "meridian-usdc", error: "try again later" }],
     });
   });
 });

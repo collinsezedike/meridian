@@ -33,6 +33,13 @@ export const CONTRACT_ADDRESSES = {
       factory: "CDSCWE4GLNBYYTES2OCYDFQA2LLY4RBIAX6ZI32VSUXD7GO6HRPO4A32",
       // Paltalabs single-asset USDC vault on DeFindex testnet.
       vault: "CBMVK2JK6NTOT2O4HNQAIQFJY232BHKGLIMXDVQVHIIZKDACXDFZDWHN",
+      // MeridianDefindexAdapter deployed and initialized against the vault
+      // above and the live Meridian testnet vault, not yet the vault's
+      // active adapter (that's still the Blend adapter). Exists so the
+      // migration keeper has a real, live candidate to evaluate; a
+      // migration only happens if the keeper's rate source finds a genuine
+      // improvement and clears the configured threshold.
+      adapter: "CAJVTA7EC3ZL3G4WSU4QIRB7RU7SUFUUJDEB7JE6CQQNPE7QC5OBSAM6",
     },
     // Stellar Asset Contract for Blend's testnet USDC (issuer: GATALTGTWIOT6...).
     // Distinct from Circle's testnet USDC; Blend's TestnetV2 pool was deployed
@@ -54,6 +61,7 @@ export const CONTRACT_ADDRESSES = {
     defindex: {
       factory: "",
       vault: "",
+      adapter: "",
     },
     // Stellar Asset Contract for Circle's mainnet USDC (issuer: GA5ZSEJYB37J...).
     usdc: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",

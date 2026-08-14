@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { DEFAULT_ALLOWED_ORIGIN } from "@meridian/shared";
 import { Ratelimit } from "@upstash/ratelimit";
@@ -106,4 +107,38 @@ export async function checkRateLimit(
   }
   entry.n++;
   return true;
+}
+
+function authorizationHeader(req: VercelRequest): string | undefined {
+  const raw = req.headers.authorization;
+  return Array.isArray(raw) ? raw[0] : raw;
+}
+
+// Constant-time comparison: these endpoints authorize real signed
+// transactions, so the bearer token check shouldn't leak timing information
+// a network attacker could use to guess CRON_SECRET character-by-character.
+// Both inputs are hashed to a fixed 32-byte digest first, so there's no
+// length-based short-circuit before timingSafeEqual, a naive length check up
+// front would itself leak the secret's length via timing before the
+// constant-time comparison ever ran.
+function safeCompare(a: string, b: string): boolean {
+  const digestA = createHash("sha256").update(a).digest();
+  const digestB = createHash("sha256").update(b).digest();
+  return timingSafeEqual(digestA, digestB);
+}
+
+/**
+ * Authorizes a Vercel Cron-invoked endpoint via the shared CRON_SECRET
+ * bearer token. Permissive only for true local dev (no VERCEL_ENV at all);
+ * preview deployments have their own public URL and, unlike simple
+ * rate-limit relaxation elsewhere, these endpoints trigger real signed
+ * transactions off a funded keeper account, so an unauthenticated preview
+ * caller could drain its balance (or, for the migration keeper, move a real
+ * vault position) by spamming the endpoint. Preview and production both
+ * require CRON_SECRET.
+ */
+export function isCronAuthorized(req: VercelRequest): boolean {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return process.env.VERCEL_ENV === undefined;
+  return safeCompare(authorizationHeader(req) ?? "", `Bearer ${secret}`);
 }

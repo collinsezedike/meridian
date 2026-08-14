@@ -1,16 +1,27 @@
-import {
-  Account,
-  Contract,
-  Keypair,
-  Transaction,
-  TransactionBuilder,
-  rpc,
-} from "@stellar/stellar-sdk";
-import { APP_NETWORK, withRaceTimeout } from "@meridian/shared";
+import { APP_NETWORK } from "@meridian/shared";
 import { KNOWN_POOLS, type KnownPoolMeta } from "./known-pools";
-import { BASE_FEE, getRpcServer } from "./internal";
-import { simulateView, simErrorMessage, waitForTransaction } from "./tx";
+import { getRpcServer } from "./internal";
+import { simulateView } from "./tx";
 import type { StellarNetwork } from "./types";
+import {
+  consoleLogger,
+  errorMessage,
+  retryOutcome,
+  sleep,
+  withKeeperRetry,
+  type KeeperFailure,
+  type KeeperLogger,
+} from "./keeper-retry";
+import {
+  expectString,
+  rawErrorText,
+  submitKeeperOperation,
+  SubmissionFailedError,
+  SubmissionInFlightError,
+  type KeeperRpcServer,
+} from "./keeper-tx";
+
+export type { KeeperFailure, KeeperLogger } from "./keeper-retry";
 
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_BASE_DELAY_MS = 1_000;
@@ -66,17 +77,6 @@ export interface AccrualSuccess {
   attempts: number;
 }
 
-export interface KeeperFailure {
-  vaultId?: string;
-  vaultContractId?: string;
-  adapterId?: string;
-  protocol?: string;
-  stage: "discover" | "submit";
-  attempts: number;
-  transient: boolean;
-  error: string;
-}
-
 export interface SkippedAdapter {
   vaultId: string;
   vaultContractId: string;
@@ -94,27 +94,6 @@ export interface BlendAccrualKeeperResult {
   successes: AccrualSuccess[];
   skipped: SkippedAdapter[];
   failures: KeeperFailure[];
-}
-
-export interface KeeperLogger {
-  info(message: string, context?: Record<string, unknown>): void;
-  warn(message: string, context?: Record<string, unknown>): void;
-  error(message: string, context?: Record<string, unknown>): void;
-}
-
-interface RetryConfig {
-  maxAttempts: number;
-  baseDelayMs: number;
-  deadlineAt?: number;
-}
-
-interface KeeperRpcServer {
-  getAccount(publicKey: string): Promise<Account>;
-  simulateTransaction(
-    tx: Transaction
-  ): Promise<rpc.Api.SimulateTransactionResponse>;
-  sendTransaction(tx: Transaction): Promise<rpc.Api.SendTransactionResponse>;
-  getTransaction(hash: string): Promise<rpc.Api.GetTransactionResponse>;
 }
 
 type SimulateFn = typeof simulateView;
@@ -143,71 +122,6 @@ export interface BlendAccrualKeeperDeps {
   logger?: KeeperLogger;
   sleep?: (ms: number) => Promise<void>;
   deadlineAt?: number;
-}
-
-const consoleLogger: KeeperLogger = {
-  info(message, context) {
-    console.info(message, context ?? {});
-  },
-  warn(message, context) {
-    console.warn(message, context ?? {});
-  },
-  error(message, context) {
-    console.error(message, context ?? {});
-  },
-};
-
-const sleep = (ms: number) =>
-  new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-// Thrown when a transaction was successfully sent (we have its hash) but
-// confirmation couldn't be observed before rpcTimeoutMs elapsed. Carries the
-// hash so a retry can check whether it actually landed before ever
-// submitting a second, duplicate accrue() call, distinct from a failure
-// before sendTransaction, where nothing was submitted and a fresh attempt
-// is always safe.
-class SubmissionInFlightError extends Error {
-  constructor(
-    readonly sentHash: string,
-    cause: unknown
-  ) {
-    super(errorMessage(cause));
-    this.name = "SubmissionInFlightError";
-  }
-}
-
-// waitForTransaction (tx.ts) throws two meaningfully different errors:
-// "Transaction X failed on-chain" (the network confirmed it, a permanent,
-// known outcome) vs. "Timed out waiting for transaction X to confirm"
-// (the client gave up, the real outcome is still unknown). Only the second
-// is worth treating as transient/retryable-by-rechecking; the first means
-// resubmitting would just fail the same way again (or waste a fee finding
-// out), and should be reported as a definitive submit failure instead.
-function isDefinitiveOnChainFailure(err: unknown): boolean {
-  return rawErrorText(err).includes("failed on-chain");
-}
-
-// Thrown when a prior attempt's transaction was confirmed as genuinely
-// failed on-chain (not merely unconfirmed/timed out). Always non-transient:
-// retrying would resubmit a fresh transaction that has no reason to succeed
-// where the first one didn't.
-class SubmissionFailedError extends Error {
-  constructor(cause: unknown) {
-    super(errorMessage(cause));
-    this.name = "SubmissionFailedError";
-  }
-}
-
-class KeeperRetryError extends Error {
-  readonly attempts: number;
-  readonly transient: boolean;
-
-  constructor(err: unknown, attempts: number, transient: boolean) {
-    super(errorMessage(err));
-    this.name = "KeeperRetryError";
-    this.attempts = attempts;
-    this.transient = transient;
-  }
 }
 
 function parsePositiveInt(
@@ -253,49 +167,6 @@ export function loadBlendAccrualKeeperConfig(
   };
 }
 
-function errorMessage(err: unknown): string {
-  if (err instanceof Error)
-    return err.message.split("\n")[0]?.trim() || err.message;
-  return String(err);
-}
-
-// Unlike errorMessage() above (first line only, for concise logging/display),
-// this keeps the full message for transient-error classification: a status
-// code or keyword on a later line (e.g. a wrapped fetch error whose first
-// line is generic) would otherwise be invisible to isTransientKeeperError.
-function rawErrorText(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
-}
-
-// simulateView returns unknown (a decoded ScVal), which can be null or a
-// non-string value depending on how the contract's return type decodes.
-// get_adapter()/get_protocol() are both documented to return a Symbol/
-// Address that decodes to a string; anything else means the on-chain
-// return type didn't match, and using it as a contract ID would otherwise
-// surface as a confusing low-level `Contract` constructor error instead of
-// this clear one.
-function expectString(
-  value: unknown,
-  method: string,
-  contractId: string
-): string {
-  if (typeof value !== "string") {
-    throw new Error(
-      `${method}() on ${contractId} did not return a string (got ${typeof value})`
-    );
-  }
-  return value;
-}
-
-function describeSendError(res: rpc.Api.SendTransactionResponse): string {
-  try {
-    return res.errorResult?.result().switch().name ?? "unknown error";
-  } catch {
-    return "unknown error";
-  }
-}
-
 // HTTP status codes are matched with word boundaries so a permanent error
 // whose message happens to contain those digits elsewhere (e.g. an amount or
 // ledger number) isn't misclassified as transient.
@@ -316,48 +187,6 @@ function isTransientKeeperError(err: unknown): boolean {
     message.includes("temporarily") ||
     TRANSIENT_STATUS_CODE.test(message)
   );
-}
-
-async function withKeeperRetry<T>(
-  fn: (attempt: number) => Promise<T>,
-  config: RetryConfig,
-  logger: KeeperLogger,
-  context: Record<string, unknown>,
-  sleepFn: (ms: number) => Promise<void>
-): Promise<{ value: T; attempts: number }> {
-  let lastErr: unknown;
-  let attempts = 0;
-  let transient = false;
-  for (let attempt = 1; attempt <= config.maxAttempts; attempt++) {
-    attempts = attempt;
-    try {
-      return { value: await fn(attempt), attempts: attempt };
-    } catch (err) {
-      lastErr = err;
-      transient = isTransientKeeperError(err);
-      if (!transient || attempt >= config.maxAttempts) break;
-      const delayMs = config.baseDelayMs * 2 ** (attempt - 1);
-      if (
-        config.deadlineAt !== undefined &&
-        Date.now() + delayMs >= config.deadlineAt
-      ) {
-        logger.warn(
-          "[accrual-keeper] stopping retries; run deadline approaching",
-          { ...context, attempt, delayMs }
-        );
-        break;
-      }
-      logger.warn("[accrual-keeper] transient failure; retrying", {
-        ...context,
-        attempt,
-        nextAttempt: attempt + 1,
-        delayMs,
-        error: errorMessage(err),
-      });
-      await sleepFn(delayMs);
-    }
-  }
-  throw new KeeperRetryError(lastErr, attempts, transient);
 }
 
 export async function discoverLiveAdapters(
@@ -425,7 +254,9 @@ export async function discoverLiveAdapters(
           vaultContractId,
           stage: "discover",
         },
-        sleepFn
+        sleepFn,
+        isTransientKeeperError,
+        "accrual-keeper"
       );
     })
   );
@@ -443,11 +274,7 @@ export async function discoverLiveAdapters(
       continue;
     }
     const err = outcome.reason;
-    const attempts = err instanceof KeeperRetryError ? err.attempts : 1;
-    const transient =
-      err instanceof KeeperRetryError
-        ? err.transient
-        : isTransientKeeperError(err);
+    const { attempts, transient } = retryOutcome(err, isTransientKeeperError);
     failures.push({
       vaultId: meta.id,
       vaultContractId,
@@ -461,96 +288,25 @@ export async function discoverLiveAdapters(
   return { adapters, failures };
 }
 
-async function submitAccrualTransaction(
+function submitAccrualTransaction(
   adapter: DiscoveredAdapter,
   config: BlendAccrualKeeperConfig,
   server: KeeperRpcServer,
   priorHash?: string
 ): Promise<Omit<AccrualSuccess, "attempts" | "vaultId" | "adapterId">> {
-  // An earlier attempt already sent a transaction. Check whether it
-  // actually landed before ever submitting a second, duplicate accrue()
-  // call. Once a transaction is in flight for this adapter, this function
-  // never falls through to building a new one, only this branch, on every
-  // subsequent attempt, until the prior transaction's fate is actually
-  // known (confirmed success or confirmed failure). A second timeout here
-  // re-throws to keep tracking the *same* hash on the next retry, rather
-  // than abandoning it and creating a second real transaction, which would
-  // reintroduce the exact double-submission this function exists to
-  // prevent.
-  if (priorHash) {
-    try {
-      const confirmed = await waitForTransaction(server, priorHash, {
-        timeoutMs: CONFIRMATION_TIMEOUT_MS,
-      });
-      return { hash: priorHash, ledger: confirmed.ledger };
-    } catch (err) {
-      if (isDefinitiveOnChainFailure(err)) {
-        throw new SubmissionFailedError(err);
-      }
-      throw new SubmissionInFlightError(priorHash, err);
-    }
-  }
-
-  const keypair = Keypair.fromSecret(config.secretKey);
-  const source = await withRaceTimeout(
-    () => server.getAccount(keypair.publicKey()),
-    config.rpcTimeoutMs,
-    "Soroban RPC"
+  return submitKeeperOperation(
+    adapter.adapterId,
+    "accrue",
+    [],
+    {
+      network: config.network,
+      secretKey: config.secretKey,
+      rpcTimeoutMs: config.rpcTimeoutMs,
+      confirmationTimeoutMs: CONFIRMATION_TIMEOUT_MS,
+    },
+    server,
+    priorHash
   );
-  const contract = new Contract(adapter.adapterId);
-  const tx = new TransactionBuilder(source, {
-    fee: BASE_FEE,
-    networkPassphrase: config.network.passphrase,
-  })
-    .addOperation(contract.call("accrue"))
-    .setTimeout(300)
-    .build();
-
-  const sim = await withRaceTimeout(
-    () => server.simulateTransaction(tx),
-    config.rpcTimeoutMs,
-    "Soroban RPC"
-  );
-  if (rpc.Api.isSimulationError(sim)) {
-    throw new Error(`Simulation failed: ${simErrorMessage(sim.error)}`);
-  }
-  if (!rpc.Api.isSimulationSuccess(sim)) {
-    throw new Error("Simulation did not return a successful result");
-  }
-
-  const prepared = rpc.assembleTransaction(tx, sim).build();
-  prepared.sign(keypair);
-
-  const sent = await withRaceTimeout(
-    () => server.sendTransaction(prepared),
-    config.rpcTimeoutMs,
-    "Soroban RPC"
-  );
-  if (sent.status === "ERROR") {
-    throw new Error(
-      `Transaction rejected at submission: ${describeSendError(sent)}`
-    );
-  }
-  if (sent.status === "TRY_AGAIN_LATER") {
-    throw new Error("Transaction could not be submitted yet (try again later)");
-  }
-
-  try {
-    const confirmed = await waitForTransaction(server, sent.hash, {
-      timeoutMs: CONFIRMATION_TIMEOUT_MS,
-    });
-    return { hash: sent.hash, ledger: confirmed.ledger };
-  } catch (err) {
-    // The network already confirmed this transaction failed, a permanent
-    // outcome. Report it directly rather than treating it as retryable.
-    if (isDefinitiveOnChainFailure(err)) {
-      throw new SubmissionFailedError(err);
-    }
-    // Otherwise confirmation just wasn't observed in time; carry the hash
-    // so a retry checks its real status first instead of blindly
-    // submitting a duplicate accrue() call.
-    throw new SubmissionInFlightError(sent.hash, err);
-  }
 }
 
 export async function runBlendAccrualKeeper(
@@ -646,7 +402,9 @@ export async function runBlendAccrualKeeper(
           adapterId: adapter.adapterId,
           protocol: adapter.protocol,
         },
-        sleepFn
+        sleepFn,
+        isTransientKeeperError,
+        "accrual-keeper"
       );
       successes.push({
         vaultId: adapter.vaultId,
@@ -663,11 +421,7 @@ export async function runBlendAccrualKeeper(
         attempts: result.attempts,
       });
     } catch (err) {
-      const attempts = err instanceof KeeperRetryError ? err.attempts : 1;
-      const transient =
-        err instanceof KeeperRetryError
-          ? err.transient
-          : isTransientKeeperError(err);
+      const { attempts, transient } = retryOutcome(err, isTransientKeeperError);
       const failure: KeeperFailure = {
         vaultId: adapter.vaultId,
         vaultContractId: adapter.vaultContractId,

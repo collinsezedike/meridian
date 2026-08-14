@@ -52,6 +52,10 @@ export default defineConfig({
             text: "Blend Accrual Keeper",
             link: "/operations/accrual-keeper",
           },
+          {
+            text: "Migration Keeper",
+            link: "/operations/migration-keeper",
+          },
         ],
       },
     ],
