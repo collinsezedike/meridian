@@ -4,7 +4,7 @@ Meridian ships two deploy scripts, both in `scripts/`. Which one you need depend
 
 | Script                              | Use when                                                                                                                                                  |
 | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scripts/deploy-testnet.sh`         | Standing up a brand new environment: vault, router, a `BlendAdapter`, and an mUSDC share token, all initialized and wired together.                       |
+| `scripts/deploy-testnet.sh`         | Standing up a brand new environment: vault, a `BlendAdapter`, and an mUSDC share token, all initialized and wired together.                               |
 | `scripts/redeploy-blend-adapter.sh` | Pushing new adapter code (e.g. a fix to `accrue()`, `get_pool()`, `get_protocol()`) onto an **already-live** vault, without redeploying the vault itself. |
 
 Neither script requires manual `stellar contract invoke` steps — read them before running if you want to understand exactly what they do; they're short and heavily commented.
@@ -18,7 +18,7 @@ Neither script requires manual `stellar contract invoke` steps — read them bef
 
 Both scripts require a `DEPLOYER` secret key, funded via [Friendbot](https://friendbot.stellar.org/). `DEPLOYER` only pays transaction fees and signs the setup calls — it does **not** need to be kept around afterward, and can be thrown away once the script finishes.
 
-`deploy-testnet.sh` additionally accepts an optional `ADMIN` **public key**. This becomes both the deployed vault's permanent admin (the only address that can ever call `set_admin`, `set_paused`, `set_adapter`, or `migrate_adapter` on it) and the router's admin (the only address that can call `add_vault`/`remove_vault` to manage which vaults `rebalance()` will accept). `ADMIN` is deliberately independent of `DEPLOYER`: whoever calls `initialize()` can pass in any address as the admin, since it's just a parameter, not tied to who signed the deploy transaction. If you don't set `ADMIN`, the script defaults it to `DEPLOYER`'s own address and prints a warning — fine for a quick throwaway test, but you should always set `ADMIN` explicitly to a separate, durable key for anything you intend to keep testing against, and it **must** be set explicitly ahead of any mainnet deployment.
+`deploy-testnet.sh` additionally accepts an optional `ADMIN` **public key**. This becomes the deployed vault's permanent admin, the only address that can ever call `set_admin`, `set_paused`, `set_adapter`, or `migrate_adapter` on it. `ADMIN` is deliberately independent of `DEPLOYER`: whoever calls `initialize()` can pass in any address as the admin, since it's just a parameter, not tied to who signed the deploy transaction. If you don't set `ADMIN`, the script defaults it to `DEPLOYER`'s own address and prints a warning — fine for a quick throwaway test, but you should always set `ADMIN` explicitly to a separate, durable key for anything you intend to keep testing against, and it **must** be set explicitly ahead of any mainnet deployment.
 
 Save the `ADMIN` secret key somewhere durable (a password manager, not a plaintext file) the moment you deploy with it — there is no recovery path if it's lost. `set_admin`/`set_paused`/`set_adapter` become permanently inaccessible, and since adapters have no in-place upgrade path, that also means the vault can never be pointed at fixed adapter code again.
 
@@ -36,18 +36,16 @@ ADMIN_ADDR=$(stellar keys address my-admin)
 DEPLOYER=my-deployer ADMIN=$ADMIN_ADDR bash scripts/deploy-testnet.sh
 ```
 
-This builds all four contract crates (`vault`, `router`, `blend-adapter`, `defindex-adapter`), uploads and deploys the vault, router, and a `BlendAdapter`, deploys a fresh mUSDC Stellar Asset Contract, and wires everything together:
+This builds all three contract crates (`vault`, `blend-adapter`, `defindex-adapter`), uploads and deploys the vault and a `BlendAdapter`, deploys a fresh mUSDC Stellar Asset Contract, and wires everything together:
 
 1. Initializes the `BlendAdapter` with the vault address, Blend's testnet pool, and USDC.
 2. Initializes the vault with `admin`, `usdc`, `musdc`, and `adapter` (the just-deployed `BlendAdapter`).
 3. Sets the vault as mUSDC's admin, so it can mint/burn shares autonomously.
-4. Initializes the router with `admin`, then adds the just-deployed vault to the router's allowlist so `rebalance()` will accept it.
 
-It prints the four contract IDs you need at the end:
+It prints the three contract IDs you need at the end:
 
 ```text
 VAULT_CONTRACT_ID=...
-ROUTER_CONTRACT_ID=...
 BLEND_ADAPTER_CONTRACT_ID=...
 MUSDC_CONTRACT_ID=...
 ```
@@ -67,7 +65,7 @@ CONTRACT_ADDRESSES.testnet.vault = "..."; // VAULT_CONTRACT_ID
 CONTRACT_ADDRESSES.testnet.musdc = "..."; // MUSDC_CONTRACT_ID
 ```
 
-The router and adapter contract addresses are **not** hardcoded anywhere in the app — the frontend discovers the active adapter live via `vault.get_adapter()`, and that adapter's `get_pool()`/`get_protocol()`, rather than tracking it in config. This is deliberate: it means the app self-updates if the adapter is ever swapped via `set_adapter`, with nothing that could drift out of sync.
+The adapter contract address is **not** hardcoded anywhere in the app — the frontend discovers the active adapter live via `vault.get_adapter()`, and that adapter's `get_pool()`/`get_protocol()`, rather than tracking it in config. This is deliberate: it means the app self-updates if the adapter is ever swapped via `set_adapter` or `migrate_adapter`, with nothing that could drift out of sync.
 
 ## Verifying the deployment
 

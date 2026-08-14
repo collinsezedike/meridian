@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Deploy a full, freshly-wired Meridian coordinator vault stack to Stellar
-# testnet: vault, router, and a BlendAdapter, initialized and linked together.
-# Use this to stand up a brand new environment. To push new adapter code to
+# testnet: vault and a BlendAdapter, initialized and linked together. Use
+# this to stand up a brand new environment. To push new adapter code to
 # an ALREADY-LIVE vault without redeploying the vault itself, use
 # scripts/redeploy-blend-adapter.sh instead.
 #
@@ -37,7 +37,6 @@ stellar contract build
 # `stellar contract build` targets wasm32v1-none, not wasm32-unknown-unknown.
 WASM_DIR="target/wasm32v1-none/release"
 WASM_VAULT="$WASM_DIR/meridian_vault.wasm"
-WASM_ROUTER="$WASM_DIR/meridian_router.wasm"
 WASM_BLEND_ADAPTER="$WASM_DIR/meridian_blend_adapter.wasm"
 
 DEPLOYER_ADDRESS=$(stellar keys address "$DEPLOYER")
@@ -57,18 +56,12 @@ deploy() {
 
 echo "Uploading vault WASM..."
 VAULT_HASH=$(upload "$WASM_VAULT")
-echo "Uploading router WASM..."
-ROUTER_HASH=$(upload "$WASM_ROUTER")
 echo "Uploading blend-adapter WASM..."
 BLEND_ADAPTER_HASH=$(upload "$WASM_BLEND_ADAPTER")
 
 echo "Deploying vault..."
 VAULT_ID=$(deploy "$VAULT_HASH")
 echo "vault contract ID: $VAULT_ID"
-
-echo "Deploying router..."
-ROUTER_ID=$(deploy "$ROUTER_HASH")
-echo "router contract ID: $ROUTER_ID"
 
 echo "Deploying blend-adapter..."
 BLEND_ADAPTER_ID=$(deploy "$BLEND_ADAPTER_HASH")
@@ -97,19 +90,8 @@ stellar contract invoke \
   --network "$NETWORK" --source "$DEPLOYER" --id "$MUSDC_ID" \
   -- set_admin --new-admin "$VAULT_ID"
 
-echo "Initializing router (admin=$ADMIN_ADDRESS)..."
-stellar contract invoke \
-  --network "$NETWORK" --source "$DEPLOYER" --id "$ROUTER_ID" \
-  -- initialize --admin "$ADMIN_ADDRESS"
-
-echo "Allowlisting this deployment's vault on the router..."
-stellar contract invoke \
-  --network "$NETWORK" --source "$DEPLOYER" --id "$ROUTER_ID" \
-  -- add_vault --vault "$VAULT_ID"
-
 echo ""
 echo "Done. Add these to your .env:"
 echo "  VAULT_CONTRACT_ID=$VAULT_ID"
-echo "  ROUTER_CONTRACT_ID=$ROUTER_ID"
 echo "  BLEND_ADAPTER_CONTRACT_ID=$BLEND_ADAPTER_ID"
 echo "  MUSDC_CONTRACT_ID=$MUSDC_ID"

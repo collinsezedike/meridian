@@ -836,14 +836,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "meridian-router"
-version = "0.1.0"
-dependencies = [
- "meridian-vault",
- "soroban-sdk",
-]
-
-[[package]]
 name = "meridian-vault"
 version = "0.1.0"
 dependencies = [
