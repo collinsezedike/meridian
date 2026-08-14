@@ -165,7 +165,18 @@ export interface MigrationKeeperDeps {
     vault: DiscoveredVault,
     toAdapterId: string,
     attempt: number
-  ) => Promise<Omit<MigrationSuccess, "attempts" | "vaultId" | "fromAdapterId" | "fromProtocol" | "toAdapterId" | "toProtocol" | "improvementBps">>;
+  ) => Promise<
+    Omit<
+      MigrationSuccess,
+      | "attempts"
+      | "vaultId"
+      | "fromAdapterId"
+      | "fromProtocol"
+      | "toAdapterId"
+      | "toProtocol"
+      | "improvementBps"
+    >
+  >;
   logger?: KeeperLogger;
   sleep?: (ms: number) => Promise<void>;
   deadlineAt?: number;
@@ -359,7 +370,10 @@ export async function discoverMigrationVaults(
       continue;
     }
     const err = outcome.reason;
-    const { attempts, transient } = retryOutcome(err, isTransientMigrationError);
+    const { attempts, transient } = retryOutcome(
+      err,
+      isTransientMigrationError
+    );
     failures.push({
       vaultId: meta.id,
       vaultContractId,
@@ -414,7 +428,10 @@ async function findBestCandidate(
   }
 
   if (!best) {
-    return { best: null, skipReason: "no candidate clears the improvement threshold" };
+    return {
+      best: null,
+      skipReason: "no candidate clears the improvement threshold",
+    };
   }
   return { best };
 }
@@ -590,7 +607,10 @@ export async function runMigrationKeeper(
         attempts: result.attempts,
       });
     } catch (err) {
-      const { attempts, transient } = retryOutcome(err, isTransientMigrationError);
+      const { attempts, transient } = retryOutcome(
+        err,
+        isTransientMigrationError
+      );
       const failure: KeeperFailure = {
         vaultId: vault.vaultId,
         vaultContractId: vault.vaultContractId,

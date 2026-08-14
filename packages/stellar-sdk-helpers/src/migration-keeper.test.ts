@@ -83,7 +83,9 @@ vi.mock("./internal", async (importOriginal) => {
 });
 
 vi.mock("./tx", () => ({
-  describeSendError: (res: { errorResult?: { result(): { switch(): { name: string } } } }) => {
+  describeSendError: (res: {
+    errorResult?: { result(): { switch(): { name: string } } };
+  }) => {
     try {
       return res.errorResult?.result().switch().name ?? "unknown error";
     } catch {
@@ -261,7 +263,9 @@ describe("discoverMigrationVaults", () => {
   });
 
   it("does not retry a permanent discovery error", async () => {
-    stellarMocks.simulateView.mockRejectedValue(new Error("contract not found"));
+    stellarMocks.simulateView.mockRejectedValue(
+      new Error("contract not found")
+    );
 
     const result = await discoverMigrationVaults({
       network: NETWORK,
@@ -280,7 +284,10 @@ describe("runMigrationKeeper", () => {
     const submitMigration = vi.fn();
 
     const result = await runMigrationKeeper(CONFIG, {
-      discoverVaults: async () => ({ vaults: [DISCOVERED_VAULT], failures: [] }),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
       submitMigration,
     });
 
@@ -292,13 +299,19 @@ describe("runMigrationKeeper", () => {
   });
 
   it("migrates when a candidate clears the minimum improvement threshold", async () => {
-    const submitMigration = vi.fn(async () => ({ hash: "MIGRATE_HASH", ledger: 999 }));
+    const submitMigration = vi.fn(async () => ({
+      hash: "MIGRATE_HASH",
+      ledger: 999,
+    }));
     const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
       protocol === "blend" ? 500 : 600
     );
 
     const result = await runMigrationKeeper(CONFIG, {
-      discoverVaults: async () => ({ vaults: [DISCOVERED_VAULT], failures: [] }),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
       rateSource,
       resolveCandidatePool: async () => "CDEFINDEXPOOL",
       submitMigration,
@@ -332,7 +345,10 @@ describe("runMigrationKeeper", () => {
     );
 
     const result = await runMigrationKeeper(CONFIG, {
-      discoverVaults: async () => ({ vaults: [DISCOVERED_VAULT], failures: [] }),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
       rateSource,
       resolveCandidatePool: async () => "CDEFINDEXPOOL",
       submitMigration,
@@ -358,7 +374,10 @@ describe("runMigrationKeeper", () => {
 
     const result = await runMigrationKeeper(CONFIG, {
       logger: logger(),
-      discoverVaults: async () => ({ vaults: [DISCOVERED_VAULT], failures: [] }),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
       rateSource,
       resolveCandidatePool: async () => "CDEFINDEXPOOL",
       submitMigration,
@@ -392,7 +411,10 @@ describe("runMigrationKeeper", () => {
 
     const result = await runMigrationKeeper(CONFIG, {
       logger: logger(),
-      discoverVaults: async () => ({ vaults: [DISCOVERED_VAULT], failures: [] }),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
       rateSource,
       resolveCandidatePool: async () => "CDEFINDEXPOOL",
       submitMigration,
@@ -414,7 +436,10 @@ describe("runMigrationKeeper", () => {
     const rateSource = vi.fn(async () => 500);
 
     const result = await runMigrationKeeper(sameAdapterConfig, {
-      discoverVaults: async () => ({ vaults: [DISCOVERED_VAULT], failures: [] }),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
       rateSource,
       submitMigration,
     });
@@ -433,7 +458,10 @@ describe("runMigrationKeeper", () => {
     const rateSource = vi.fn(async () => 600);
 
     const result = await runMigrationKeeper(CONFIG, {
-      discoverVaults: async () => ({ vaults: [DISCOVERED_VAULT], failures: [] }),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
       rateSource,
       submitMigration,
       deadlineAt: Date.now() - 1,
@@ -465,7 +493,10 @@ describe("runMigrationKeeper", () => {
 
     const result = await runMigrationKeeper(CONFIG, {
       logger: logger(),
-      discoverVaults: async () => ({ vaults: [DISCOVERED_VAULT], failures: [] }),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
       rateSource,
       resolveCandidatePool: async () => "CDEFINDEXPOOL",
       sleep: vi.fn(),

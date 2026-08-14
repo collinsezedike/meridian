@@ -77,7 +77,9 @@ vi.mock("./internal", async (importOriginal) => {
 });
 
 vi.mock("./tx", () => ({
-  describeSendError: (res: { errorResult?: { result(): { switch(): { name: string } } } }) => {
+  describeSendError: (res: {
+    errorResult?: { result(): { switch(): { name: string } } };
+  }) => {
     try {
       return res.errorResult?.result().switch().name ?? "unknown error";
     } catch {

@@ -107,11 +107,14 @@ export async function withKeeperRetry<T>(
         config.deadlineAt !== undefined &&
         Date.now() + delayMs >= config.deadlineAt
       ) {
-        logger.warn(`[${logPrefix}] stopping retries; run deadline approaching`, {
-          ...context,
-          attempt,
-          delayMs,
-        });
+        logger.warn(
+          `[${logPrefix}] stopping retries; run deadline approaching`,
+          {
+            ...context,
+            attempt,
+            delayMs,
+          }
+        );
         break;
       }
       logger.warn(`[${logPrefix}] transient failure; retrying`, {

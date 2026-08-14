@@ -455,7 +455,9 @@ describe("GET /api/v1/keepers/rebalance", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toMatchObject({
-      skipped: [{ vaultId: "meridian-usdc", reason: "current rate unavailable" }],
+      skipped: [
+        { vaultId: "meridian-usdc", reason: "current rate unavailable" },
+      ],
     });
     expect(runMigrationKeeper).toHaveBeenCalledOnce();
   });

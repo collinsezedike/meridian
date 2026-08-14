@@ -285,7 +285,9 @@ export function simErrorMessage(raw: string): string {
 
 // Best-effort decode of the result code the RPC returns on a rejected submit
 // (e.g. txInsufficientBalance), without letting an unexpected XDR shape throw.
-export function describeSendError(res: rpc.Api.SendTransactionResponse): string {
+export function describeSendError(
+  res: rpc.Api.SendTransactionResponse
+): string {
   try {
     return res.errorResult?.result().switch().name ?? "unknown error";
   } catch {
