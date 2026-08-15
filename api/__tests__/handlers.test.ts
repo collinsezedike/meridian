@@ -331,8 +331,8 @@ describe("GET /api/v1/keepers/accrue", () => {
   });
 
   it("still rate-limits requests that fail auth, not just successful ones", async () => {
-    // Regression test: rate-limiting must run before auth, not after — an
-    // unauthenticated/wrong-token spam that returns 401 before the limiter
+    // Regression test: rate-limiting must run before auth, not after.
+    // Unauthenticated/wrong-token spam that returns 401 before the limiter
     // ever runs would be completely unbounded, since 401 responses would
     // never count toward the limit.
     resetRateLimitForTesting();

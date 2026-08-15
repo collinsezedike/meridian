@@ -532,7 +532,13 @@ async function findBestCandidate(
   if (best) {
     return { best };
   }
-  if (firstFailure) {
+  // A failed candidate must never block a valid decision reached from a
+  // different candidate, this applies just as much when that decision is
+  // "no migration needed" as when it's a winning migration above: if at
+  // least one candidate produced a genuine comparison, report that outcome
+  // rather than a hard failure, even though a different candidate also
+  // failed to evaluate this run (already logged above, per-candidate).
+  if (firstFailure && !anyRateKnown) {
     throw new CandidateEvaluationError(
       firstFailure.protocol,
       firstFailure.adapterId,

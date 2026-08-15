@@ -403,6 +403,50 @@ describe("runMigrationKeeper", () => {
     ]);
   });
 
+  it("reports a valid below-threshold comparison as a skip, even when a different candidate failed to evaluate", async () => {
+    // Regression test: a candidate that failed to evaluate must never turn
+    // a genuinely-reached "no migration needed" decision (from a different,
+    // successfully-compared candidate) into a hard failure.
+    const submitMigration = vi.fn();
+    const twoCandidateConfig: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {
+        blend: "CBLENDADAPTER_V2",
+        defindex: "CDEFINDEXADAPTER",
+      },
+    };
+    const resolveCandidatePool = vi.fn(async (adapterId: string) => {
+      if (adapterId === "CDEFINDEXADAPTER") {
+        throw new Error("contract not found");
+      }
+      return "CBLENDPOOL_V2";
+    });
+    // blend candidate: 20 bps improvement, below CONFIG.minImprovementBps (50).
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 520 : 500
+    );
+
+    const result = await runMigrationKeeper(twoCandidateConfig, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool,
+      submitMigration,
+      sleep: vi.fn(),
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        reason: "no candidate clears the improvement threshold",
+      },
+    ]);
+  });
+
   it("reports a definitive on-chain revert (e.g. slippage exceeded) as a non-transient failure without retrying", async () => {
     const sleep = vi.fn();
     const submitMigration = vi.fn(async () => {
