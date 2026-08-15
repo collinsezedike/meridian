@@ -187,7 +187,7 @@ prior transaction is still landing when the next run fires, a second,
 independent `migrate_adapter` call can still go out before the first
 confirms. Unlike `accrue()`, this isn't free: each call is its own
 slippage-bounded transaction, so a genuine double-migration costs real
-slippage twice, not just a wasted fee. This is an accepted, bounded gap
+slippage twice. This is an accepted, bounded gap
 covered by the same cross-invocation persistence work needed for the accrue
 keeper, not something this keeper solves on its own (tracked in #515, which
 also needs to account for the accrue keeper racing against this one: both
