@@ -293,26 +293,27 @@ export async function discoverMigrationVaults(
             "get_adapter",
             vaultContractId
           );
-          const currentProtocol = expectString(
-            await simulate(
+          // Independent of each other, both depend only on
+          // currentAdapterId: run concurrently rather than doubling this
+          // vault's discovery latency for no reason.
+          const [currentProtocol, currentPoolId] = await Promise.all([
+            simulate(
               server as never,
               currentAdapterId,
               network.passphrase,
               "get_protocol"
+            ).then((value) =>
+              expectString(value, "get_protocol", currentAdapterId)
             ),
-            "get_protocol",
-            currentAdapterId
-          );
-          const currentPoolId = expectString(
-            await simulate(
+            simulate(
               server as never,
               currentAdapterId,
               network.passphrase,
               "get_pool"
+            ).then((value) =>
+              expectString(value, "get_pool", currentAdapterId)
             ),
-            "get_pool",
-            currentAdapterId
-          );
+          ]);
           return {
             vaultId: meta.id,
             vaultContractId,
@@ -404,15 +405,21 @@ async function findBestCandidate(
     return { best: null, skipReason: "current rate unavailable" };
   }
 
-  let best: BestCandidate | null = null;
-  for (const [protocol, adapterId] of Object.entries(
-    config.candidateAdapters
-  )) {
-    if (adapterId === vault.currentAdapterId) continue;
-    if (protocol === vault.currentProtocol) continue;
+  // Only excludes the vault's literal current adapter, not same-protocol
+  // candidates: a redeployed BlendAdapter (scripts/redeploy-blend-adapter.sh)
+  // is a legitimate migration target with the same protocol name as the
+  // vault's current one, and migrate_adapter itself has no protocol-based
+  // restriction, only "not the same adapter address" (ContractError::SameAdapter).
+  const candidates = Object.entries(config.candidateAdapters).filter(
+    ([, adapterId]) => adapterId !== vault.currentAdapterId
+  );
 
-    let candidateRate: number | null;
-    try {
+  // Evaluated concurrently, like discovery above: each candidate's pool
+  // resolution and rate lookup is independent of every other candidate, so
+  // running them one at a time would let the deadline budget get eaten by
+  // earlier candidates before later ones are even attempted.
+  const settled = await Promise.allSettled(
+    candidates.map(async ([protocol, adapterId]) => {
       const result = await withKeeperRetry(
         async () => {
           const poolId = await resolveCandidatePool(adapterId);
@@ -429,13 +436,25 @@ async function findBestCandidate(
         isTransientKeeperError,
         "migration-keeper"
       );
-      candidateRate = result.value;
-    } catch (err) {
-      throw new CandidateEvaluationError(protocol, adapterId, err);
-    }
-    if (candidateRate === null) continue;
+      return { protocol, adapterId, rate: result.value };
+    })
+  );
 
-    const improvementBps = candidateRate - currentRate;
+  for (let i = 0; i < settled.length; i++) {
+    const outcome = settled[i];
+    const target = candidates[i];
+    if (outcome?.status === "rejected" && target) {
+      throw new CandidateEvaluationError(target[0], target[1], outcome.reason);
+    }
+  }
+
+  let best: BestCandidate | null = null;
+  for (const outcome of settled) {
+    if (outcome.status !== "fulfilled") continue;
+    const { protocol, adapterId, rate } = outcome.value;
+    if (rate === null) continue;
+
+    const improvementBps = rate - currentRate;
     if (improvementBps < config.minImprovementBps) continue;
     if (!best || improvementBps > best.improvementBps) {
       best = { protocol, adapterId, improvementBps };
@@ -551,17 +570,23 @@ export async function runMigrationKeeper(
         deadlineAt
       );
     } catch (err) {
-      const isCandidateError = err instanceof CandidateEvaluationError;
+      const { adapterId, protocol, attempts, transient } =
+        err instanceof CandidateEvaluationError
+          ? err
+          : {
+              adapterId: vault.currentAdapterId,
+              protocol: vault.currentProtocol,
+              attempts: 1,
+              transient: isTransientKeeperError(err),
+            };
       failures.push({
         vaultId: vault.vaultId,
         vaultContractId: vault.vaultContractId,
-        adapterId: isCandidateError ? err.adapterId : vault.currentAdapterId,
-        protocol: isCandidateError ? err.protocol : vault.currentProtocol,
+        adapterId,
+        protocol,
         stage: "discover",
-        attempts: isCandidateError ? err.attempts : 1,
-        transient: isCandidateError
-          ? err.transient
-          : isTransientKeeperError(err),
+        attempts,
+        transient,
         error: errorMessage(err),
       });
       continue;
@@ -595,7 +620,11 @@ export async function runMigrationKeeper(
                 }
                 throw err;
               }),
-        { ...config, deadlineAt },
+        {
+          maxAttempts: config.maxAttempts,
+          baseDelayMs: config.baseDelayMs,
+          deadlineAt,
+        },
         logger,
         {
           vaultId: vault.vaultId,

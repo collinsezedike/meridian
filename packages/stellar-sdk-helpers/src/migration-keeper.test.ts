@@ -625,4 +625,79 @@ describe("runMigrationKeeper", () => {
       { vaultId: "meridian-usdc", reason: "current rate unavailable" },
     ]);
   });
+
+  it("considers a candidate with the same protocol name as a different adapter address (e.g. a redeployed BlendAdapter)", async () => {
+    // Only the adapter address, not the protocol name, excludes a candidate:
+    // migrate_adapter itself only forbids migrating to the exact same
+    // adapter address (SameAdapter), not a different adapter of the same
+    // protocol, matching a real redeploy-blend-adapter.sh workflow.
+    const submitMigration = vi.fn(async () => ({
+      hash: "REDEPLOY_HASH",
+      ledger: 555,
+    }));
+    const redeployConfig: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: { blend: "CBLENDADAPTER_V2" },
+    };
+    const rateSource = vi.fn(async ({ adapterId }: { adapterId: string }) =>
+      adapterId === "CBLENDADAPTER_V2" ? 900 : 500
+    );
+
+    const result = await runMigrationKeeper(redeployConfig, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CBLENDPOOL_V2",
+      submitMigration,
+    });
+
+    expect(submitMigration).toHaveBeenCalledOnce();
+    expect(result.migrations).toMatchObject([
+      { toAdapterId: "CBLENDADAPTER_V2", toProtocol: "blend" },
+    ]);
+  });
+
+  it("evaluates candidates concurrently rather than blocking on each other", async () => {
+    const releaseBlend = { resolve: () => {} };
+    const blendGate = new Promise<void>((resolve) => {
+      releaseBlend.resolve = resolve;
+    });
+    const resolveCandidatePool = vi.fn(async (adapterId: string) => {
+      if (adapterId === "CBLENDADAPTER_V2") {
+        await blendGate;
+      }
+      return `POOL_FOR_${adapterId}`;
+    });
+    const rateSource = vi.fn(async () => 900);
+    const multiCandidateConfig: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {
+        blend: "CBLENDADAPTER_V2",
+        defindex: "CDEFINDEXADAPTER",
+      },
+    };
+
+    const run = runMigrationKeeper(multiCandidateConfig, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool,
+      submitMigration: vi.fn(async () => ({ hash: "H", ledger: 1 })),
+    });
+
+    // The defindex candidate's pool resolves immediately; if candidates were
+    // evaluated sequentially in declaration order, blend (gated open) would
+    // block defindex from ever being attempted before the run settles.
+    await vi.waitFor(() =>
+      expect(resolveCandidatePool).toHaveBeenCalledWith("CDEFINDEXADAPTER")
+    );
+    releaseBlend.resolve();
+    await run;
+
+    expect(resolveCandidatePool).toHaveBeenCalledWith("CBLENDADAPTER_V2");
+  });
 });

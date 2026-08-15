@@ -76,6 +76,15 @@ directly. Keep it separately stored, separately rotatable, and scoped to
 only the systems that need it, unlike the accrue keeper's key, this is not a
 key you'd hand to a low-trust automation path.
 
+The vault contract itself does not restrict which address `migrate_adapter`
+can be pointed at beyond `require_admin`, `max_slippage_bps <= 10000`, and
+`new_adapter != old_adapter`; there is no on-chain allowlist of permitted
+adapter addresses. This differs from the deleted `MeridianRouter`'s
+`add_vault`/`remove_vault` allowlist model. The admin gate is the entire
+safety boundary: this keeper's config (`MERIDIAN_ADAPTER_<PROTOCOL>_ID`)
+is what actually constrains which adapters get considered, not the
+contract.
+
 `CRON_SECRET` gates this endpoint the same way it gates `/api/v1/keepers/accrue`
 (see `apps/docs/operations/accrual-keeper.md`): both production and preview
 deployments fail closed when it's missing, only true local dev is permissive.
@@ -128,8 +137,19 @@ exponential backoff, an unconfirmed `migrate_adapter` transaction is
 re-checked by hash on retry rather than resubmitted, a definitive on-chain
 failure (e.g. slippage exceeded) is reported immediately without retrying,
 and the run stops starting new work once it's within `vercel.json`'s
-`maxDuration` budget rather than risk being killed mid-retry. Unlike
-`accrue()`, `migrate_adapter` is not idempotent-in-effect: a duplicate call
-would attempt to move an already-migrated position again and fail on
-`SameAdapter`. The in-flight-transaction tracking here prevents that
-duplicate call, a fund-safety property this keeper depends on.
+`maxDuration` budget rather than risk being killed mid-retry.
+
+The in-flight-transaction tracking (`priorHash`) only covers a single
+invocation, exactly like the accrue keeper's own version of this gap (see
+`apps/docs/operations/accrual-keeper.md`). If the process is killed (or a
+run exhausts its retries) while a `migrate_adapter` transaction is sent but
+still unconfirmed, the next scheduled run has no memory of it: discovery
+reads whatever adapter is live on-chain at that point and evaluates fresh,
+so it will not deliberately resend the exact same migration, but if the
+prior transaction is still landing when the next run fires, a second,
+independent `migrate_adapter` call can still go out before the first
+confirms. Unlike `accrue()`, this isn't free: each call is its own
+slippage-bounded transaction, so a genuine double-migration costs real
+slippage twice, not just a wasted fee. This is an accepted, bounded gap
+covered by the same cross-invocation persistence work needed for the accrue
+keeper, not something this keeper solves on its own.

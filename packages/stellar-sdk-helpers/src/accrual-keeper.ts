@@ -360,7 +360,11 @@ export async function runBlendAccrualKeeper(
                 }
                 throw err;
               }),
-        { ...config, deadlineAt },
+        {
+          maxAttempts: config.maxAttempts,
+          baseDelayMs: config.baseDelayMs,
+          deadlineAt,
+        },
         logger,
         {
           vaultId: adapter.vaultId,
