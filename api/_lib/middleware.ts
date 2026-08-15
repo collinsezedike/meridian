@@ -151,6 +151,6 @@ export function isCronSecretConfigured(): boolean {
  */
 export function isCronAuthorized(req: VercelRequest): boolean {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return process.env.VERCEL_ENV === undefined;
+  if (!secret) return isCronSecretConfigured();
   return safeCompare(authorizationHeader(req) ?? "", `Bearer ${secret}`);
 }
