@@ -1,0 +1,25 @@
+name: Keepers Schedule
+
+on:
+  schedule:
+    # Accrual keeper: every 15 minutes
+    - cron: '*/15 * * * *'
+    # Rebalance keeper: every hour
+    - cron: '0 * * * *'
+  workflow_dispatch: # allow manual triggering for debugging
+
+jobs:
+  trigger-keepers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Accrual Keeper
+        if: github.event.schedule == '*/15 * * * *' || github.event_name == 'workflow_dispatch'
+        run: |
+          curl -f -X POST "${{ secrets.API_BASE_URL }}/api/v1/keepers/accrue" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+
+      - name: Trigger Rebalance Keeper
+        if: github.event.schedule == '0 * * * *' || github.event_name == 'workflow_dispatch'
+        run: |
+          curl -f -X POST "${{ secrets.API_BASE_URL }}/api/v1/keepers/rebalance" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
