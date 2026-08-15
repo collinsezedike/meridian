@@ -496,6 +496,7 @@ async function findBestCandidate(
   let best: BestCandidate | null = null;
   let firstFailure:
     { protocol: string; adapterId: string; reason: unknown } | undefined;
+  let anyRateKnown = false;
   for (let i = 0; i < settled.length; i++) {
     const outcome = settled[i];
     const target = candidates[i];
@@ -519,6 +520,7 @@ async function findBestCandidate(
     }
     const { rate } = outcome.value;
     if (rate === null) continue;
+    anyRateKnown = true;
 
     const improvementBps = rate - currentRate;
     if (improvementBps < config.minImprovementBps) continue;
@@ -537,9 +539,17 @@ async function findBestCandidate(
       firstFailure.reason
     );
   }
+  // Distinguishes "compared rates and none cleared the bar" from "no
+  // candidate rate was actually known" (e.g. a rate source implemented for
+  // one protocol but not another, per #511's phased rollout): the latter
+  // never ran a comparison at all, so reporting it as a failed threshold
+  // check would mislead anyone reading skipped[] into thinking rates were
+  // compared when they weren't.
   return {
     best: null,
-    skipReason: "no candidate clears the improvement threshold",
+    skipReason: anyRateKnown
+      ? "no candidate clears the improvement threshold"
+      : "no candidate rate was available to compare",
   };
 }
 

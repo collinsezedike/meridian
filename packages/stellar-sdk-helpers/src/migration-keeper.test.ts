@@ -374,6 +374,35 @@ describe("runMigrationKeeper", () => {
     ]);
   });
 
+  it("reports a distinct skip reason when no candidate rate was available, not a failed threshold check", async () => {
+    // A rate source implemented for one protocol but not another (e.g.
+    // #511's phased rollout) never actually compares anything; reporting it
+    // as "no candidate clears the improvement threshold" would mislead
+    // anyone reading skipped[] into thinking a comparison happened.
+    const submitMigration = vi.fn();
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : null
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        reason: "no candidate rate was available to compare",
+      },
+    ]);
+  });
+
   it("reports a definitive on-chain revert (e.g. slippage exceeded) as a non-transient failure without retrying", async () => {
     const sleep = vi.fn();
     const submitMigration = vi.fn(async () => {
@@ -456,10 +485,12 @@ describe("runMigrationKeeper", () => {
     });
 
     expect(submitMigration).not.toHaveBeenCalled();
+    // No candidates survive the same-adapter filter, so no rate comparison
+    // ever runs, distinct from "compared and none cleared the threshold".
     expect(result.skipped).toEqual([
       {
         vaultId: "meridian-usdc",
-        reason: "no candidate clears the improvement threshold",
+        reason: "no candidate rate was available to compare",
       },
     ]);
   });

@@ -89,6 +89,7 @@ import vaultsHandler from "../v1/vaults/index";
 import positionsHandler from "../v1/positions/[publicKey]";
 import keeperHandler from "../v1/keepers/accrue";
 import rebalanceHandler from "../v1/keepers/rebalance";
+import { resetRateLimitForTesting } from "../_lib/middleware.js";
 import {
   buildDepositTx,
   runBlendAccrualKeeper,
@@ -327,6 +328,29 @@ describe("GET /api/v1/keepers/accrue", () => {
 
     expect(res.statusCode).toBe(401);
     expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
+  });
+
+  it("still rate-limits requests that fail auth, not just successful ones", async () => {
+    // Regression test: rate-limiting must run before auth, not after — an
+    // unauthenticated/wrong-token spam that returns 401 before the limiter
+    // ever runs would be completely unbounded, since 401 responses would
+    // never count toward the limit.
+    resetRateLimitForTesting();
+    const ip = "203.0.113.50";
+    let lastRes = makeRes();
+    for (let i = 0; i < 101; i++) {
+      lastRes = makeRes();
+      await keeperHandler(
+        fakeReq({
+          method: "GET",
+          headers: { "x-forwarded-for": ip },
+        }),
+        lastRes
+      );
+    }
+
+    expect(lastRes.statusCode).toBe(429);
+    resetRateLimitForTesting();
   });
 
   it("runs the accrual keeper for authorized cron calls", async () => {
