@@ -3,6 +3,8 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
   applyCors,
   checkRateLimit,
+  isCronAuthorized,
+  isCronSecretConfigured,
   resetRateLimitForTesting,
 } from "../_lib/middleware.js";
 
@@ -179,5 +181,49 @@ describe("checkRateLimit", () => {
         resAllowed
       )
     ).toBe(true);
+  });
+});
+
+describe("isCronSecretConfigured / isCronAuthorized", () => {
+  const savedCronSecret = process.env.CRON_SECRET;
+  const savedVercelEnv = process.env.VERCEL_ENV;
+
+  afterEach(() => {
+    if (savedCronSecret === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = savedCronSecret;
+    if (savedVercelEnv === undefined) delete process.env.VERCEL_ENV;
+    else process.env.VERCEL_ENV = savedVercelEnv;
+  });
+
+  it("is configured when CRON_SECRET is set, regardless of environment", () => {
+    process.env.CRON_SECRET = "s3cr3t";
+    process.env.VERCEL_ENV = "production";
+    expect(isCronSecretConfigured()).toBe(true);
+  });
+
+  it("is configured in true local dev even without CRON_SECRET", () => {
+    delete process.env.CRON_SECRET;
+    delete process.env.VERCEL_ENV;
+    expect(isCronSecretConfigured()).toBe(true);
+  });
+
+  it("is not configured when CRON_SECRET is missing outside local dev", () => {
+    delete process.env.CRON_SECRET;
+    process.env.VERCEL_ENV = "preview";
+    expect(isCronSecretConfigured()).toBe(false);
+  });
+
+  it("authorizes a request with the correct bearer token", () => {
+    process.env.CRON_SECRET = "s3cr3t";
+    expect(
+      isCronAuthorized(fakeReq("GET", { authorization: "Bearer s3cr3t" }))
+    ).toBe(true);
+  });
+
+  it("rejects a request with the wrong bearer token", () => {
+    process.env.CRON_SECRET = "s3cr3t";
+    expect(
+      isCronAuthorized(fakeReq("GET", { authorization: "Bearer wrong" }))
+    ).toBe(false);
   });
 });

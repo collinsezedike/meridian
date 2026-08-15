@@ -127,6 +127,18 @@ function safeCompare(a: string, b: string): boolean {
   return timingSafeEqual(digestA, digestB);
 }
 
+// The one place "is CRON_SECRET effectively required right now" is
+// defined. Both a handler's own pre-check (returning a distinct 503 for
+// "not configured" before ever looking at the request) and
+// isCronAuthorized's internal permissive-local-dev fallback need this same
+// condition; deriving it independently in more than one place risks the
+// two silently diverging.
+export function isCronSecretConfigured(): boolean {
+  return (
+    Boolean(process.env.CRON_SECRET) || process.env.VERCEL_ENV === undefined
+  );
+}
+
 /**
  * Authorizes a Vercel Cron-invoked endpoint via the shared CRON_SECRET
  * bearer token. Permissive only for true local dev (no VERCEL_ENV at all);
