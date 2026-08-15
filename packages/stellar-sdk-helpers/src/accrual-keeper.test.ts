@@ -918,6 +918,28 @@ describe("runBlendAccrualKeeper", () => {
     );
   });
 
+  it("redacts an RPC URL leaking into a submission failure's message before it reaches the API response", async () => {
+    // KeeperFailure.error flows straight into /api/v1/keepers/accrue's JSON
+    // response; an underlying SDK error message could otherwise leak
+    // infrastructure details (RPC URLs, contract addresses) to whoever can
+    // read that response.
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+      submitAccrual: vi.fn(async () => {
+        throw new Error(
+          "connect ECONNREFUSED https://rpc.internal.example:8443/soroban"
+        );
+      }),
+    });
+
+    expect(result.failures).toMatchObject([
+      { error: "Keeper operation failed" },
+    ]);
+  });
+
   it("submits accruals through the default Stellar transaction path", async () => {
     const server = makeServer({
       sendTransaction: vi.fn(async () => ({

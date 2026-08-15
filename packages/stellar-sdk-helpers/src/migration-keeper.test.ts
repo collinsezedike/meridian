@@ -530,11 +530,12 @@ describe("runMigrationKeeper", () => {
 
     expect(submitMigration).not.toHaveBeenCalled();
     // No candidates survive the same-adapter filter, so no rate comparison
-    // ever runs, distinct from "compared and none cleared the threshold".
+    // ever runs, and rateSource is never even called for the current rate.
+    expect(rateSource).not.toHaveBeenCalled();
     expect(result.skipped).toEqual([
       {
         vaultId: "meridian-usdc",
-        reason: "no candidate rate was available to compare",
+        reason: "every configured candidate is the vault's current adapter",
       },
     ]);
   });

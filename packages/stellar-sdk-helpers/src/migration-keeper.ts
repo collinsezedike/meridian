@@ -25,6 +25,7 @@ import {
   errorMessage,
   parseNonNegativeInt,
   parsePositiveInt,
+  redactedErrorMessage,
   retryOutcome,
   sleep,
   withKeeperRetry,
@@ -363,7 +364,7 @@ export async function discoverMigrationVaults(
       stage: "discover",
       attempts,
       transient,
-      error: errorMessage(err),
+      error: redactedErrorMessage(err),
     });
   }
 
@@ -416,6 +417,26 @@ async function findBestCandidate(
     return { best: null, skipReason: "no candidate adapters configured" };
   }
 
+  // Only excludes the vault's literal current adapter, not same-protocol
+  // candidates: a redeployed BlendAdapter (scripts/redeploy-blend-adapter.sh)
+  // is a legitimate migration target with the same protocol name as the
+  // vault's current one, and migrate_adapter itself has no protocol-based
+  // restriction, only "not the same adapter address" (ContractError::SameAdapter).
+  // Filtered before the current-rate lookup below, not after: every
+  // configured candidate matching the current adapter means there's nothing
+  // to compare regardless of what the current rate turns out to be, so
+  // don't pay for that retried lookup only to discover there was never
+  // anything to evaluate it against.
+  const candidates = Object.entries(config.candidateAdapters).filter(
+    ([, adapterId]) => adapterId !== vault.currentAdapterId
+  );
+  if (candidates.length === 0) {
+    return {
+      best: null,
+      skipReason: "every configured candidate is the vault's current adapter",
+    };
+  }
+
   let currentRate: number | null;
   try {
     const result = await withKeeperRetry(
@@ -452,15 +473,6 @@ async function findBestCandidate(
   if (currentRate === null) {
     return { best: null, skipReason: "current rate unavailable" };
   }
-
-  // Only excludes the vault's literal current adapter, not same-protocol
-  // candidates: a redeployed BlendAdapter (scripts/redeploy-blend-adapter.sh)
-  // is a legitimate migration target with the same protocol name as the
-  // vault's current one, and migrate_adapter itself has no protocol-based
-  // restriction, only "not the same adapter address" (ContractError::SameAdapter).
-  const candidates = Object.entries(config.candidateAdapters).filter(
-    ([, adapterId]) => adapterId !== vault.currentAdapterId
-  );
 
   // Evaluated concurrently, like discovery above: each candidate's pool
   // resolution and rate lookup is independent of every other candidate, so
@@ -730,7 +742,7 @@ export async function runMigrationKeeper(
         stage: "evaluate",
         attempts,
         transient,
-        error: errorMessage(err),
+        error: redactedErrorMessage(err),
       });
       continue;
     }
@@ -843,7 +855,7 @@ export async function runMigrationKeeper(
         stage: "submit",
         attempts,
         transient,
-        error: errorMessage(err),
+        error: redactedErrorMessage(err),
       };
       failures.push(failure);
       logger.error("[migration-keeper] migrate_adapter failed", { ...failure });

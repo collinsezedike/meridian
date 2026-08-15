@@ -5,8 +5,8 @@ import { simulateView } from "./tx";
 import type { StellarNetwork } from "./types";
 import {
   consoleLogger,
-  errorMessage,
   parsePositiveInt,
+  redactedErrorMessage,
   retryOutcome,
   sleep,
   withKeeperRetry,
@@ -246,7 +246,7 @@ export async function discoverLiveAdapters(
       stage: "discover",
       attempts,
       transient,
-      error: errorMessage(err),
+      error: redactedErrorMessage(err),
     });
   }
 
@@ -399,7 +399,7 @@ export async function runBlendAccrualKeeper(
         stage: "submit",
         attempts,
         transient,
-        error: errorMessage(err),
+        error: redactedErrorMessage(err),
       };
       failures.push(failure);
       logger.error("[accrual-keeper] accrue failed", { ...failure });

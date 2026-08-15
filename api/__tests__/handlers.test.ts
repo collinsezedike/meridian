@@ -488,6 +488,27 @@ describe("GET /api/v1/keepers/rebalance", () => {
     expect(runMigrationKeeper).not.toHaveBeenCalled();
   });
 
+  it("still rate-limits requests that fail auth, not just successful ones", async () => {
+    // Same regression as the accrue keeper's equivalent test, higher
+    // stakes here: this endpoint holds full vault admin authority.
+    resetRateLimitForTesting();
+    const ip = "203.0.113.51";
+    let lastRes = makeRes();
+    for (let i = 0; i < 101; i++) {
+      lastRes = makeRes();
+      await rebalanceHandler(
+        fakeReq({
+          method: "GET",
+          headers: { "x-forwarded-for": ip },
+        }),
+        lastRes
+      );
+    }
+
+    expect(lastRes.statusCode).toBe(429);
+    resetRateLimitForTesting();
+  });
+
   it("runs the migration keeper for authorized cron calls", async () => {
     const res = makeRes();
     await rebalanceHandler(

@@ -2,6 +2,8 @@
 // Kept generic: transient-error classification is protocol/keeper-specific
 // and is passed in by the caller rather than hardcoded here.
 
+import { sanitizeTxError } from "@meridian/shared";
+
 export interface KeeperLogger {
   info(message: string, context?: Record<string, unknown>): void;
   warn(message: string, context?: Record<string, unknown>): void;
@@ -27,6 +29,17 @@ export function errorMessage(err: unknown): string {
   if (err instanceof Error)
     return err.message.split("\n")[0]?.trim() || err.message;
   return String(err);
+}
+
+// For KeeperFailure.error specifically, not general logging: this value
+// flows straight into /api/v1/keepers/{accrue,rebalance}'s JSON response,
+// unlike errorMessage() above (used for internal log context, which stays
+// verbose since it never leaves the server). Reuses the same RPC-URL/
+// contract-address redaction the rest of the API already applies at its
+// response boundaries (packages/api-core/src/tx.ts), so keeper failures
+// aren't the one response shape in the codebase that skips it.
+export function redactedErrorMessage(err: unknown): string {
+  return sanitizeTxError(err, "Keeper operation failed");
 }
 
 function parseIntEnv(
