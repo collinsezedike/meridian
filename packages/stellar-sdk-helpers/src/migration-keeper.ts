@@ -543,6 +543,33 @@ async function findBestCandidate(
   };
 }
 
+// Thrown by the stale-adapter guard below: this run's discovery data is out
+// of date, something else already changed the vault's adapter. This is the
+// benign, expected outcome the guard exists to catch (the cross-invocation
+// race documented in migration-keeper.md, tracked in #515), not a genuine
+// operational problem, so it's reported as a skip, not a KeeperFailure.
+//
+// Detected downstream by message text, not `instanceof`: withKeeperRetry
+// wraps whatever it catches in a KeeperRetryError (keeper-retry.ts), which
+// preserves the message but not the original error's type, so by the time
+// this reaches runMigrationKeeper's catch block, `err` is a
+// KeeperRetryError, never a StaleAdapterError. Same approach
+// isDefinitiveOnChainFailure already uses for the equivalent problem.
+const STALE_ADAPTER_MESSAGE = "Vault's adapter changed since discovery";
+
+class StaleAdapterError extends Error {
+  constructor(expected: string, actual: string) {
+    super(
+      `${STALE_ADAPTER_MESSAGE} (expected ${expected}, now ${actual}); skipping to avoid a stale migration`
+    );
+    this.name = "StaleAdapterError";
+  }
+}
+
+function isStaleAdapterError(err: unknown): boolean {
+  return errorMessage(err).includes(STALE_ADAPTER_MESSAGE);
+}
+
 async function submitMigrationTransaction(
   vaultContractId: string,
   expectedCurrentAdapterId: string,
@@ -572,9 +599,7 @@ async function submitMigrationTransaction(
       vaultContractId
     );
     if (liveAdapterId !== expectedCurrentAdapterId) {
-      throw new Error(
-        `Vault's adapter changed since discovery (expected ${expectedCurrentAdapterId}, now ${liveAdapterId}); skipping to avoid a stale migration`
-      );
+      throw new StaleAdapterError(expectedCurrentAdapterId, liveAdapterId);
     }
   }
 
@@ -702,17 +727,22 @@ export async function runMigrationKeeper(
       continue;
     }
 
+    const { best } = evaluation;
+
     // Re-checked here, not just at the top of the loop: evaluation itself
     // can retry and consume most of the budget, and this is an
     // irreversible, slippage-costing transaction, not a cheap read. Firing
     // it just as the platform is about to kill the invocation is worse
-    // than skipping it for this run.
+    // than skipping it for this run. Reports best's adapter/protocol, not
+    // the vault's current one, unlike the top-of-loop check above: best is
+    // already known here, and it's the migration that's actually being
+    // skipped.
     if (Date.now() >= deadlineAt) {
       failures.push({
         vaultId: vault.vaultId,
         vaultContractId: vault.vaultContractId,
-        adapterId: vault.currentAdapterId,
-        protocol: vault.currentProtocol,
+        adapterId: best.adapterId,
+        protocol: best.protocol,
         stage: "submit",
         attempts: 0,
         transient: true,
@@ -721,8 +751,6 @@ export async function runMigrationKeeper(
       });
       continue;
     }
-
-    const { best } = evaluation;
     let priorHash: string | undefined;
     try {
       const result = await withKeeperRetry(
@@ -780,6 +808,16 @@ export async function runMigrationKeeper(
         attempts: result.attempts,
       });
     } catch (err) {
+      if (isStaleAdapterError(err)) {
+        skipped.push({ vaultId: vault.vaultId, reason: errorMessage(err) });
+        logger.info(
+          "[migration-keeper] migration skipped; adapter changed since discovery",
+          {
+            vaultId: vault.vaultId,
+          }
+        );
+        continue;
+      }
       const { attempts, transient } = retryOutcome(err, isTransientKeeperError);
       const failure: KeeperFailure = {
         vaultId: vault.vaultId,

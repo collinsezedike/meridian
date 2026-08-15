@@ -816,9 +816,16 @@ describe("runMigrationKeeper", () => {
       sleep: vi.fn(),
     });
 
+    // This is the benign, expected race the guard exists to catch, not an
+    // operational failure: it belongs in skipped, not failures, so it
+    // doesn't page anyone every time it fires.
     expect(result.migrations).toEqual([]);
-    expect(result.failures).toMatchObject([
-      { vaultId: "meridian-usdc", stage: "submit", transient: false },
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        reason: expect.stringContaining("adapter changed since discovery"),
+      },
     ]);
   });
 
@@ -871,8 +878,16 @@ describe("runMigrationKeeper", () => {
     });
 
     expect(submitMigration).not.toHaveBeenCalled();
+    // Reports the migration that was actually being skipped (best, the
+    // defindex candidate), not the vault's current (blend) adapter.
     expect(result.failures).toMatchObject([
-      { vaultId: "meridian-usdc", stage: "submit", transient: true },
+      {
+        vaultId: "meridian-usdc",
+        adapterId: "CDEFINDEXADAPTER",
+        protocol: "defindex",
+        stage: "submit",
+        transient: true,
+      },
     ]);
   });
 });
