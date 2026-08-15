@@ -130,6 +130,7 @@ function makeRes(): FakeRes & VercelResponse {
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.CRON_SECRET = "cron-secret";
+  process.env.MERIDIAN_MIGRATION_KEEPER_SECRET_KEY = "S".repeat(56);
 });
 
 describe("POST /api/v1/tx/deposit", () => {
@@ -435,6 +436,22 @@ describe("GET /api/v1/keepers/accrue", () => {
 });
 
 describe("GET /api/v1/keepers/rebalance", () => {
+  it("reports disabled instead of a noisy 500 when the migration secret key isn't configured", async () => {
+    delete process.env.MERIDIAN_MIGRATION_KEEPER_SECRET_KEY;
+    const res = makeRes();
+    await rebalanceHandler(
+      fakeReq({
+        method: "GET",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ status: "disabled" });
+    expect(runMigrationKeeper).not.toHaveBeenCalled();
+  });
+
   it("rejects requests without the cron bearer token", async () => {
     const res = makeRes();
     await rebalanceHandler(fakeReq({ method: "GET", headers: {} }), res);

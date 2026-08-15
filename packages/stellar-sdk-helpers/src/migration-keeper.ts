@@ -396,6 +396,14 @@ async function findBestCandidate(
   sleepFn: (ms: number) => Promise<void>,
   deadlineAt: number
 ): Promise<{ best: BestCandidate | null; skipReason?: string }> {
+  // Nothing to compare against: don't pay for a retried rate lookup (up to
+  // maxAttempts, with backoff) just to discover there was never a candidate
+  // to evaluate. This is the documented default state today (no
+  // MERIDIAN_ADAPTER_<PROTOCOL>_ID configured), not a rare edge case.
+  if (Object.keys(config.candidateAdapters).length === 0) {
+    return { best: null, skipReason: "no candidate adapters configured" };
+  }
+
   let currentRate: number | null;
   try {
     const result = await withKeeperRetry(
@@ -477,8 +485,21 @@ async function findBestCandidate(
   let firstFailure: { index: number; reason: unknown } | undefined;
   for (let i = 0; i < settled.length; i++) {
     const outcome = settled[i];
-    if (!outcome) continue;
+    const target = candidates[i];
+    if (!outcome || !target) continue;
     if (outcome.status === "rejected") {
+      // Only the first rejection becomes the vault's reported
+      // CandidateEvaluationError (KeeperFailure is per-vault, not
+      // per-candidate), but every rejection is logged here so a permanent
+      // misconfiguration on one candidate isn't invisible just because a
+      // different candidate's transient blip happened to be enumerated
+      // first.
+      logger.warn("[migration-keeper] candidate evaluation failed", {
+        vaultId: vault.vaultId,
+        adapterId: target[1],
+        protocol: target[0],
+        error: errorMessage(outcome.reason),
+      });
       firstFailure ??= { index: i, reason: outcome.reason };
       continue;
     }
@@ -511,14 +532,41 @@ async function findBestCandidate(
   };
 }
 
-function submitMigrationTransaction(
+async function submitMigrationTransaction(
   vaultContractId: string,
+  expectedCurrentAdapterId: string,
   newAdapterId: string,
   maxSlippageBps: number,
   config: MigrationKeeperConfig,
   server: KeeperRpcServer,
   priorHash?: string
 ): Promise<{ hash: string; ledger: number }> {
+  // Only checked before building a brand-new transaction, never when
+  // rechecking an already-sent one (priorHash set): a cheap, best-effort
+  // guard against the cross-invocation race documented in
+  // migration-keeper.md, this run's discovery data could be stale if
+  // another invocation already migrated this vault since. Narrows, doesn't
+  // close, the window: a genuine TOCTOU gap remains between this check and
+  // the transaction actually landing, real cross-invocation dedup is
+  // tracked separately in #515.
+  if (!priorHash) {
+    const liveAdapterId = expectString(
+      await simulateView(
+        server as never,
+        vaultContractId,
+        config.network.passphrase,
+        "get_adapter"
+      ),
+      "get_adapter",
+      vaultContractId
+    );
+    if (liveAdapterId !== expectedCurrentAdapterId) {
+      throw new Error(
+        `Vault's adapter changed since discovery (expected ${expectedCurrentAdapterId}, now ${liveAdapterId}); skipping to avoid a stale migration`
+      );
+    }
+  }
+
   return submitKeeperOperation(
     vaultContractId,
     "migrate_adapter",
@@ -591,6 +639,8 @@ export async function runMigrationKeeper(
       failures.push({
         vaultId: vault.vaultId,
         vaultContractId: vault.vaultContractId,
+        adapterId: vault.currentAdapterId,
+        protocol: vault.currentProtocol,
         stage: "submit",
         attempts: 0,
         transient: true,
@@ -650,6 +700,7 @@ export async function runMigrationKeeper(
             ? deps.submitMigration(vault, best.adapterId, attempt)
             : submitMigrationTransaction(
                 vault.vaultContractId,
+                vault.currentAdapterId,
                 best.adapterId,
                 config.maxSlippageBps,
                 config,

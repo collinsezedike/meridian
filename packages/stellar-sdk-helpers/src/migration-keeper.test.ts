@@ -498,6 +498,11 @@ describe("runMigrationKeeper", () => {
     });
     stellarMocks.getRpcServer.mockReturnValue(server);
     stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+    // The pre-submit "vault hasn't moved since discovery" guard reads
+    // get_adapter() fresh; keep it matching DISCOVERED_VAULT's adapter.
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
     const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
       protocol === "blend" ? 500 : 700
     );
@@ -544,6 +549,9 @@ describe("runMigrationKeeper", () => {
     stellarMocks.waitForTransaction
       .mockRejectedValueOnce(new Error("Soroban RPC timed out after 100ms"))
       .mockResolvedValueOnce({ ledger: 321 });
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
     const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
       protocol === "blend" ? 500 : 700
     );
@@ -785,5 +793,56 @@ describe("runMigrationKeeper", () => {
     await run;
 
     expect(resolveCandidatePool).toHaveBeenCalledWith("CBLENDADAPTER_V2");
+  });
+
+  it("skips submission when the vault's adapter changed since discovery, instead of migrating on stale data", async () => {
+    // A different invocation (or an admin) already migrated this vault
+    // since this run's discovery read; submitting anyway would build a
+    // migrate_adapter call using stale assumptions about the vault's
+    // current adapter.
+    stellarMocks.simulateView.mockResolvedValue("CSOMEOTHERADAPTER");
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
+    expect(result.migrations).toEqual([]);
+    expect(result.failures).toMatchObject([
+      { vaultId: "meridian-usdc", stage: "submit", transient: false },
+    ]);
+  });
+
+  it("skips evaluation entirely when no candidate adapters are configured", async () => {
+    const rateSource = vi.fn();
+    const noCandidatesConfig: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {},
+    };
+
+    const result = await runMigrationKeeper(noCandidatesConfig, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+    });
+
+    expect(rateSource).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        reason: "no candidate adapters configured",
+      },
+    ]);
   });
 });

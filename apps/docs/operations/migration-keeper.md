@@ -62,6 +62,12 @@ migration decision is not time-sensitive the way interest accrual staleness
 is, and unnecessary runs cost nothing while the rate source is unconfigured,
 but there is no reason to poll faster than the decision needs.
 
+The cron is scheduled unconditionally, independent of whether the feature
+is actually ready (#511, #514). If `MERIDIAN_MIGRATION_KEEPER_SECRET_KEY`
+isn't set, the endpoint returns `200 { status: "disabled" }` rather than
+throwing, so an intentionally-unfinished feature doesn't produce an hourly
+false alarm.
+
 ## Signing Key And Trust Model
 
 Set `MERIDIAN_MIGRATION_KEEPER_SECRET_KEY` in the deployment secret store.
@@ -101,6 +107,17 @@ deployments fail closed when it's missing, only true local dev is permissive.
   much before a migration is triggered, avoiding fee-losing churn between
   two protocols whose rates are within noise of each other.
 
+These two aren't coupled: the improvement threshold decides whether a
+migration is _worth triggering_, the slippage bound decides how much value
+loss a _triggered_ migration is allowed to tolerate before reverting. A
+migration that clears a 50 bps improvement but loses close to the full 100
+bps slippage allowance in execution is still reported as a successful,
+threshold-clearing migration, and can leave the vault net worse off in the
+worst case within that allowance. In practice real slippage should sit well
+below the ceiling (it exists to catch a stale rate read or a misbehaving
+adapter, not to describe expected cost), but nothing enforces that
+assumption today.
+
 ## Candidate Adapters
 
 `migrate_adapter(new_adapter, max_slippage_bps)` takes the address of an
@@ -129,6 +146,22 @@ address's on-chain bytecode against source, and #514 (the live vault predating
 there would tie an inert, standalone adapter's config to an unrelated,
 already-broken check. Set the env var directly instead.
 
+Only the exact adapter address, not protocol identity, excludes a candidate
+from consideration (see "Only excludes the vault's literal current adapter"
+in `migration-keeper.ts`). After redeploying an adapter
+(`scripts/redeploy-blend-adapter.sh`), update the corresponding
+`MERIDIAN_ADAPTER_<PROTOCOL>_ID` to the new address: a stale entry still
+pointing at an old, already-abandoned adapter is silently treated as a
+legitimate candidate again, since it's no longer the vault's _current_
+adapter either.
+
+`config.candidateAdapters` is also a single global map applied identically
+to every discovered vault, not scoped per vault. The deployed
+`MeridianDefindexAdapter` above is only initialized against one specific
+vault; if a second Meridian vault is ever added to `KNOWN_POOLS`, this
+would need to become per-vault-scoped first (tracked on #511 alongside the
+rate source work, since both matter most once a second vault is likely).
+
 ## Retry And Failure Handling
 
 Discovery and submission follow the same shape as the accrue keeper (see
@@ -152,4 +185,19 @@ confirms. Unlike `accrue()`, this isn't free: each call is its own
 slippage-bounded transaction, so a genuine double-migration costs real
 slippage twice, not just a wasted fee. This is an accepted, bounded gap
 covered by the same cross-invocation persistence work needed for the accrue
-keeper, not something this keeper solves on its own.
+keeper, not something this keeper solves on its own (tracked in #515, which
+also needs to account for the accrue keeper racing against this one: both
+act on the same vault's adapter independently, with no coordination between
+them, see #515 for the full scope once `migrate_adapter` is actually live
+on the vault).
+
+Before building a brand-new transaction (not when rechecking an
+already-sent one), the keeper re-reads the vault's live `get_adapter()` and
+compares it against what discovery saw for this run. A mismatch means
+something else already changed the vault's adapter since this run started,
+and the migration is skipped rather than submitted against stale
+assumptions. This narrows the cross-invocation race window; it does not
+close it, a mismatch can still occur between this check and the
+transaction actually landing on-chain (an unavoidable TOCTOU gap without a
+contract-level compare-and-swap), but it catches the common case of "a
+prior run's migration already landed" for free.

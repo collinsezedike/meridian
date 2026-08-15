@@ -27,6 +27,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
+  // The migration keeper is deliberately not fully wired up yet (#511, #514):
+  // ops may reasonably leave this unset until both land. Without this check,
+  // every hourly cron tick would throw inside loadMigrationKeeperConfig and
+  // report a 500, a permanent, noisy false alarm for an intentionally
+  // disabled feature, not an actual failure.
+  if (!process.env.MERIDIAN_MIGRATION_KEEPER_SECRET_KEY?.trim()) {
+    return res.status(200).json({
+      status: "disabled",
+      message: "MERIDIAN_MIGRATION_KEEPER_SECRET_KEY is not configured",
+    });
+  }
+
   try {
     const config = loadMigrationKeeperConfig(process.env);
     const result = await runMigrationKeeper(config);

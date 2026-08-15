@@ -29,17 +29,27 @@ export function errorMessage(err: unknown): string {
   return String(err);
 }
 
+function parseIntEnv(
+  value: string | undefined,
+  fallback: number,
+  name: string,
+  minimum: number,
+  minimumLabel: string
+): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < minimum) {
+    throw new Error(`${name} must be a ${minimumLabel} integer`);
+  }
+  return parsed;
+}
+
 export function parsePositiveInt(
   value: string | undefined,
   fallback: number,
   name: string
 ): number {
-  if (value === undefined || value.trim() === "") return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-  return parsed;
+  return parseIntEnv(value, fallback, name, 1, "positive");
 }
 
 export function parseNonNegativeInt(
@@ -47,12 +57,7 @@ export function parseNonNegativeInt(
   fallback: number,
   name: string
 ): number {
-  if (value === undefined || value.trim() === "") return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new Error(`${name} must be a non-negative integer`);
-  }
-  return parsed;
+  return parseIntEnv(value, fallback, name, 0, "non-negative");
 }
 
 export interface RetryConfig {
