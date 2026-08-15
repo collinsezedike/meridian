@@ -124,5 +124,5 @@ and the run stops starting new work once it's within `vercel.json`'s
 `maxDuration` budget rather than risk being killed mid-retry. Unlike
 `accrue()`, `migrate_adapter` is not idempotent-in-effect: a duplicate call
 would attempt to move an already-migrated position again and fail on
-`SameAdapter`, so the in-flight-transaction tracking here is a genuine
-fund-safety property, not just a wasted-fee avoidance.
+`SameAdapter`. The in-flight-transaction tracking here prevents that
+duplicate call, a fund-safety property this keeper depends on.

@@ -29,6 +29,32 @@ export function errorMessage(err: unknown): string {
   return String(err);
 }
 
+export function parsePositiveInt(
+  value: string | undefined,
+  fallback: number,
+  name: string
+): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
+export function parseNonNegativeInt(
+  value: string | undefined,
+  fallback: number,
+  name: string
+): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
 export interface RetryConfig {
   maxAttempts: number;
   baseDelayMs: number;

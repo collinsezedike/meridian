@@ -23,17 +23,19 @@ import type { StellarNetwork } from "./types";
 import {
   consoleLogger,
   errorMessage,
+  parseNonNegativeInt,
+  parsePositiveInt,
   retryOutcome,
   sleep,
   withKeeperRetry,
   type KeeperFailure,
   type KeeperLogger,
+  type RetryConfig,
 } from "./keeper-retry";
 import {
   expectString,
-  rawErrorText,
+  isTransientKeeperError,
   submitKeeperOperation,
-  SubmissionFailedError,
   SubmissionInFlightError,
   type KeeperRpcServer,
 } from "./keeper-tx";
@@ -68,6 +70,10 @@ const MAX_ALLOWED_SLIPPAGE_BPS = 9_999;
 const DEFAULT_MIN_IMPROVEMENT_BPS = 50;
 
 export type CandidateProtocol = "blend" | "defindex";
+
+function isCandidateProtocol(value: string): value is CandidateProtocol {
+  return value === "blend" || value === "defindex";
+}
 
 export interface RateQuery {
   protocol: CandidateProtocol;
@@ -135,11 +141,6 @@ export interface MigrationKeeperResult {
   failures: KeeperFailure[];
 }
 
-interface RetryTuning {
-  maxAttempts: number;
-  baseDelayMs: number;
-}
-
 type SimulateFn = typeof simulateView;
 
 export interface DiscoverVaultsOptions {
@@ -180,32 +181,6 @@ export interface MigrationKeeperDeps {
   logger?: KeeperLogger;
   sleep?: (ms: number) => Promise<void>;
   deadlineAt?: number;
-}
-
-function parsePositiveInt(
-  value: string | undefined,
-  fallback: number,
-  name: string
-): number {
-  if (value === undefined || value.trim() === "") return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-  return parsed;
-}
-
-function parseNonNegativeInt(
-  value: string | undefined,
-  fallback: number,
-  name: string
-): number {
-  if (value === undefined || value.trim() === "") return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new Error(`${name} must be a non-negative integer`);
-  }
-  return parsed;
 }
 
 export function loadMigrationKeeperConfig(
@@ -268,20 +243,6 @@ export function loadMigrationKeeperConfig(
   };
 }
 
-function isTransientMigrationError(err: unknown): boolean {
-  if (err instanceof SubmissionFailedError) return false;
-  if (err instanceof SubmissionInFlightError) return true;
-  const message = rawErrorText(err).toLowerCase();
-  return (
-    message.includes("try again") ||
-    message.includes("timeout") ||
-    message.includes("timed out") ||
-    message.includes("rate limit") ||
-    message.includes("temporarily") ||
-    /\b(429|500|502|503|504)\b/.test(message)
-  );
-}
-
 export async function discoverMigrationVaults(
   options: DiscoverVaultsOptions = {}
 ): Promise<{ vaults: DiscoveredVault[]; failures: KeeperFailure[] }> {
@@ -293,7 +254,7 @@ export async function discoverMigrationVaults(
   const simulate = options.simulate ?? simulateView;
   const logger = options.logger ?? consoleLogger;
   const sleepFn = options.sleep ?? sleep;
-  const retryConfig: RetryTuning & { deadlineAt?: number } = {
+  const retryConfig: RetryConfig = {
     maxAttempts: options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
     baseDelayMs: options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS,
     ...(options.deadlineAt !== undefined && { deadlineAt: options.deadlineAt }),
@@ -349,7 +310,7 @@ export async function discoverMigrationVaults(
         logger,
         { vaultId: meta.id, vaultContractId, stage: "discover" },
         sleepFn,
-        isTransientMigrationError,
+        isTransientKeeperError,
         "migration-keeper"
       );
     })
@@ -367,10 +328,7 @@ export async function discoverMigrationVaults(
       continue;
     }
     const err = outcome.reason;
-    const { attempts, transient } = retryOutcome(
-      err,
-      isTransientMigrationError
-    );
+    const { attempts, transient } = retryOutcome(err, isTransientKeeperError);
     failures.push({
       vaultId: meta.id,
       vaultContractId,
@@ -390,14 +348,46 @@ interface BestCandidate {
   improvementBps: number;
 }
 
+// Thrown when evaluating a specific candidate (pool resolution or rate
+// lookup) fails, after retries are exhausted. Carries which candidate was
+// being evaluated so the caller can report a failure against the actual
+// adapter that failed, not the vault's current one, and preserves the
+// underlying attempts/transient classification so retryOutcome() still
+// reports it correctly one level up.
+class CandidateEvaluationError extends Error {
+  readonly attempts: number;
+  readonly transient: boolean;
+
+  constructor(
+    readonly protocol: CandidateProtocol,
+    readonly adapterId: string,
+    cause: unknown
+  ) {
+    const { attempts, transient } = retryOutcome(cause, isTransientKeeperError);
+    super(errorMessage(cause));
+    this.name = "CandidateEvaluationError";
+    this.attempts = attempts;
+    this.transient = transient;
+  }
+}
+
 async function findBestCandidate(
   vault: DiscoveredVault,
   config: MigrationKeeperConfig,
   rateSource: RateSourceFn,
-  resolveCandidatePool: (adapterId: string) => Promise<string>
+  resolveCandidatePool: (adapterId: string) => Promise<string>,
+  logger: KeeperLogger,
+  sleepFn: (ms: number) => Promise<void>,
+  deadlineAt: number
 ): Promise<{ best: BestCandidate | null; skipReason?: string }> {
+  if (!isCandidateProtocol(vault.currentProtocol)) {
+    return {
+      best: null,
+      skipReason: `current protocol "${vault.currentProtocol}" is not a recognized migration candidate`,
+    };
+  }
   const currentRate = await rateSource({
-    protocol: vault.currentProtocol as CandidateProtocol,
+    protocol: vault.currentProtocol,
     adapterId: vault.currentAdapterId,
     poolId: vault.currentPoolId,
   });
@@ -413,8 +403,28 @@ async function findBestCandidate(
     if (adapterId === vault.currentAdapterId) continue;
     if (protocol === vault.currentProtocol) continue;
 
-    const poolId = await resolveCandidatePool(adapterId);
-    const candidateRate = await rateSource({ protocol, adapterId, poolId });
+    let candidateRate: number | null;
+    try {
+      const result = await withKeeperRetry(
+        async () => {
+          const poolId = await resolveCandidatePool(adapterId);
+          return rateSource({ protocol, adapterId, poolId });
+        },
+        {
+          maxAttempts: config.maxAttempts,
+          baseDelayMs: config.baseDelayMs,
+          deadlineAt,
+        },
+        logger,
+        { vaultId: vault.vaultId, adapterId, protocol, stage: "evaluate" },
+        sleepFn,
+        isTransientKeeperError,
+        "migration-keeper"
+      );
+      candidateRate = result.value;
+    } catch (err) {
+      throw new CandidateEvaluationError(protocol, adapterId, err);
+    }
     if (candidateRate === null) continue;
 
     const improvementBps = candidateRate - currentRate;
@@ -527,17 +537,23 @@ export async function runMigrationKeeper(
         vault,
         config,
         rateSource,
-        resolveCandidatePool
+        resolveCandidatePool,
+        logger,
+        sleepFn,
+        deadlineAt
       );
     } catch (err) {
+      const isCandidateError = err instanceof CandidateEvaluationError;
       failures.push({
         vaultId: vault.vaultId,
         vaultContractId: vault.vaultContractId,
-        adapterId: vault.currentAdapterId,
-        protocol: vault.currentProtocol,
+        adapterId: isCandidateError ? err.adapterId : vault.currentAdapterId,
+        protocol: isCandidateError ? err.protocol : vault.currentProtocol,
         stage: "discover",
-        attempts: 1,
-        transient: isTransientMigrationError(err),
+        attempts: isCandidateError ? err.attempts : 1,
+        transient: isCandidateError
+          ? err.transient
+          : isTransientKeeperError(err),
         error: errorMessage(err),
       });
       continue;
@@ -580,7 +596,7 @@ export async function runMigrationKeeper(
           toProtocol: best.protocol,
         },
         sleepFn,
-        isTransientMigrationError,
+        isTransientKeeperError,
         "migration-keeper"
       );
       migrations.push({
@@ -604,10 +620,7 @@ export async function runMigrationKeeper(
         attempts: result.attempts,
       });
     } catch (err) {
-      const { attempts, transient } = retryOutcome(
-        err,
-        isTransientMigrationError
-      );
+      const { attempts, transient } = retryOutcome(err, isTransientKeeperError);
       const failure: KeeperFailure = {
         vaultId: vault.vaultId,
         vaultContractId: vault.vaultContractId,

@@ -6,6 +6,7 @@ import type { StellarNetwork } from "./types";
 import {
   consoleLogger,
   errorMessage,
+  parsePositiveInt,
   retryOutcome,
   sleep,
   withKeeperRetry,
@@ -14,9 +15,8 @@ import {
 } from "./keeper-retry";
 import {
   expectString,
-  rawErrorText,
+  isTransientKeeperError,
   submitKeeperOperation,
-  SubmissionFailedError,
   SubmissionInFlightError,
   type KeeperRpcServer,
 } from "./keeper-tx";
@@ -124,19 +124,6 @@ export interface BlendAccrualKeeperDeps {
   deadlineAt?: number;
 }
 
-function parsePositiveInt(
-  value: string | undefined,
-  fallback: number,
-  name: string
-): number {
-  if (value === undefined || value.trim() === "") return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-  return parsed;
-}
-
 export function loadBlendAccrualKeeperConfig(
   env: Record<string, string | undefined>
 ): BlendAccrualKeeperConfig {
@@ -165,28 +152,6 @@ export function loadBlendAccrualKeeperConfig(
       "MERIDIAN_KEEPER_RPC_TIMEOUT_MS"
     ),
   };
-}
-
-// HTTP status codes are matched with word boundaries so a permanent error
-// whose message happens to contain those digits elsewhere (e.g. an amount or
-// ledger number) isn't misclassified as transient.
-const TRANSIENT_STATUS_CODE = /\b(429|500|502|503|504)\b/;
-
-function isTransientKeeperError(err: unknown): boolean {
-  // Explicit, not incidental: a confirmed on-chain failure must never be
-  // treated as transient, regardless of what its message text happens to
-  // contain.
-  if (err instanceof SubmissionFailedError) return false;
-  if (err instanceof SubmissionInFlightError) return true;
-  const message = rawErrorText(err).toLowerCase();
-  return (
-    message.includes("try again") ||
-    message.includes("timeout") ||
-    message.includes("timed out") ||
-    message.includes("rate limit") ||
-    message.includes("temporarily") ||
-    TRANSIENT_STATUS_CODE.test(message)
-  );
 }
 
 export async function discoverLiveAdapters(

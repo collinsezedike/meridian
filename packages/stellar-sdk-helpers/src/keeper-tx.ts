@@ -74,6 +74,29 @@ export class SubmissionFailedError extends Error {
   }
 }
 
+// HTTP status codes are matched with word boundaries so a permanent error
+// whose message happens to contain those digits elsewhere (e.g. an amount or
+// ledger number) isn't misclassified as transient.
+const TRANSIENT_STATUS_CODE = /\b(429|500|502|503|504)\b/;
+
+// Shared transient-error classification for keeper submission/discovery
+// retries. A confirmed on-chain failure is explicitly never transient,
+// regardless of what its message text happens to contain; an in-flight
+// submission always is, since its real outcome just isn't known yet.
+export function isTransientKeeperError(err: unknown): boolean {
+  if (err instanceof SubmissionFailedError) return false;
+  if (err instanceof SubmissionInFlightError) return true;
+  const message = rawErrorText(err).toLowerCase();
+  return (
+    message.includes("try again") ||
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("rate limit") ||
+    message.includes("temporarily") ||
+    TRANSIENT_STATUS_CODE.test(message)
+  );
+}
+
 // simulateView returns unknown (a decoded ScVal), which can be null or a
 // non-string value depending on how the contract's return type decodes.
 // Address/Symbol-returning view methods are documented to decode to a

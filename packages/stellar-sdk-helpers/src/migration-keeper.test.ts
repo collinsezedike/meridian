@@ -515,4 +515,89 @@ describe("runMigrationKeeper", () => {
       },
     ]);
   });
+
+  it("retries a transient failure while evaluating a candidate's rate, then succeeds", async () => {
+    const sleep = vi.fn();
+    const submitMigration = vi.fn(async () => ({
+      hash: "MIGRATE_HASH",
+      ledger: 999,
+    }));
+    const resolveCandidatePool = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("try again later"))
+      .mockResolvedValueOnce("CDEFINDEXPOOL");
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 600
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool,
+      submitMigration,
+      sleep,
+    });
+
+    expect(resolveCandidatePool).toHaveBeenCalledTimes(2);
+    expect(result.migrations).toMatchObject([
+      { toAdapterId: "CDEFINDEXADAPTER", hash: "MIGRATE_HASH" },
+    ]);
+  });
+
+  it("attributes a candidate-evaluation failure to the failing candidate, not the vault's current adapter", async () => {
+    const resolveCandidatePool = vi
+      .fn()
+      .mockRejectedValue(new Error("contract not found"));
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 600
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool,
+      sleep: vi.fn(),
+    });
+
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        adapterId: "CDEFINDEXADAPTER",
+        protocol: "defindex",
+        stage: "discover",
+        transient: false,
+      },
+    ]);
+  });
+
+  it("skips a vault whose current protocol isn't a recognized migration candidate", async () => {
+    const submitMigration = vi.fn();
+    const rateSource = vi.fn(async () => 500);
+    const unknownProtocolVault = {
+      ...DISCOVERED_VAULT,
+      currentProtocol: "meridian",
+    };
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [unknownProtocolVault],
+        failures: [],
+      }),
+      rateSource,
+      submitMigration,
+    });
+
+    expect(rateSource).not.toHaveBeenCalled();
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.skipped).toMatchObject([
+      { vaultId: "meridian-usdc", reason: expect.stringContaining("meridian") },
+    ]);
+  });
 });

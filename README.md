@@ -19,7 +19,7 @@ Meridian is a **testnet technical preview**, not a finished product. Be clear-ey
 - **Deposit / withdraw through the live `MeridianVault` coordinator contract**: the vault forwards your USDC to its active adapter contract (`BlendAdapter` today), which supplies it straight into a real Blend pool — you receive mUSDC shares representing the position, no Meridian-controlled custody of the underlying funds
 - Live TVL and per-address position reads directly from the vault (`get_total_assets`, `get_position`)
 - Best-rate routing: the API recommends the highest-APY vault it can actually deposit into, skipping display-only protocols and pools flagged risky
-- Protocol-agnostic adapter architecture: `MeridianVault` (ERC-4626-style share accounting hardened against the first-depositor inflation attack, pause + admin-rotation rails), `BlendAdapter` (live), and a `DefindexAdapter` contract (built, not yet wired to a live vault) — swapping which protocol a vault routes to is an admin-only `set_adapter` call, no vault redeploy required. A `router` contract implements a working, tested `rebalance` entry point that atomically moves a user's position between two vault instances in one transaction — it's not yet exposed through the API or UI. All four contracts have unit test coverage.
+- Protocol-agnostic adapter architecture: `MeridianVault` (ERC-4626-style share accounting hardened against the first-depositor inflation attack, pause + admin-rotation rails), `BlendAdapter` (live), and a `DefindexAdapter` contract (built, not yet wired to a live vault) — swapping which protocol a vault routes to is an admin-only `set_adapter` call, no vault redeploy required. The vault's `migrate_adapter` entry point atomically moves the vault's entire position to a new adapter in one slippage-bounded transaction, no manual withdraw-then-deposit cycle, and no per-user signature needed since it operates on the vault's aggregate position, not individual depositor balances. All three contracts have unit test coverage.
 - Per-position yield earned: cost-basis tracking via `get_principal`, surfaced in the dashboard alongside the current position value
 
 **In progress — the core promise is not finished**
@@ -49,7 +49,7 @@ meridian/
 ├── packages/
 │   ├── stellar-sdk-helpers/  # Blend & DeFindex client wrappers
 │   ├── shared/               # Zod schemas, constants, pure utils
-│   └── contracts/            # Soroban smart contracts (Rust): vault, router, blend-adapter, defindex-adapter
+│   └── contracts/            # Soroban smart contracts (Rust): vault, blend-adapter, defindex-adapter
 └── scripts/          # deploy-testnet.sh (fresh stack), redeploy-blend-adapter.sh (swap adapter on a live vault)
 ```
 
@@ -172,9 +172,9 @@ Non-custodial USDC deposits into the `MeridianVault` coordinator contract on Ste
 
 Per-position yield tracking with a cost-basis model is shipped: users already see cumulative earned alongside their current balance. Remaining: a yield history chart broken down by protocol, entry time, and cumulative earned over time. Position-level analytics that work whether funds are in Blend, DeFindex, or split across both.
 
-### Q4 2026: Atomic rebalancing, exposed
+### Q4 2026: Automatic yield routing, built but not yet live
 
-The `router` contract's `rebalance` entry point is built and tested: it already moves a user's position between two vaults in one atomic transaction, no manual withdraw-then-deposit cycle. What's missing is exposing it: an API endpoint and UI trigger so a user can actually invoke it, plus auto-rebalancing triggers with user-defined APY thresholds. See [#469](../../issues/469) for the fully-automated (delegated) version of this.
+A scheduled keeper that compares live rates across a vault's candidate adapters and calls the vault's `migrate_adapter` when a candidate clears a configured improvement threshold is built (see [#469](../../issues/469)): discovery, retry, deadline-budget handling, and slippage/threshold-bounded submission all work and are tested. Two gaps remain before it's actually live: rate comparison itself isn't implemented for either protocol yet ([#511](../../issues/511)), and the live testnet vault predates `migrate_adapter` and needs a fresh deployment before the function is even callable ([#514](../../issues/514)).
 
 ### Q1 2027: Mainnet and scale
 
