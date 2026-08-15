@@ -38,6 +38,10 @@ vi.mock("@meridian/stellar-sdk-helpers", () => ({
     skipped: [],
     failures: [],
   })),
+  isMigrationKeeperConfigured: vi.fn(
+    (env: Record<string, string | undefined>) =>
+      Boolean(env.MERIDIAN_MIGRATION_KEEPER_SECRET_KEY?.trim())
+  ),
   loadMigrationKeeperConfig: vi.fn(() => ({
     network: {
       network: "testnet",

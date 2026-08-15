@@ -99,9 +99,13 @@ deployments fail closed when it's missing, only true local dev is permissive.
 
 - `MERIDIAN_MIGRATION_MAX_SLIPPAGE_BPS` default `100` (1%). Passed directly
   to `migrate_adapter`'s `max_slippage_bps` argument. The config loader
-  rejects `10000` (unlimited slippage): an unbounded tolerance would accept a
-  migration that loses an arbitrary fraction of the vault's position to a
-  stale rate read or a misbehaving adapter.
+  rejects only the literal `10000` (unlimited slippage): an unbounded
+  tolerance would accept a migration that loses an arbitrary fraction of
+  the vault's position to a stale rate read or a misbehaving adapter.
+  `9999` (99.99%) is accepted and is functionally equivalent to unlimited;
+  the check stops one integer short of the guarantee its own reasoning
+  states. Not tightened here since picking a real ceiling below "unlimited"
+  is a policy call, not a bug fix, flagging so it isn't mistaken for closed.
 - `MERIDIAN_MIGRATION_MIN_IMPROVEMENT_BPS` default `50` (0.5%). A candidate
   protocol's rate must exceed the vault's current rate by at least this
   much before a migration is triggered, avoiding fee-losing churn between

@@ -845,4 +845,34 @@ describe("runMigrationKeeper", () => {
       },
     ]);
   });
+
+  it("skips submission when the deadline is reached during evaluation, not just before it started", async () => {
+    // The deadline check at the top of the loop only catches a budget
+    // that's already gone before this vault starts; evaluation itself can
+    // eat the rest of it. Submitting anyway would fire an irreversible,
+    // slippage-costing transaction right as the platform is about to kill
+    // the invocation.
+    const submitMigration = vi.fn();
+    const deadlineAt = Date.now() + 15;
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return protocol === "blend" ? 500 : 700;
+    });
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+      deadlineAt,
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.failures).toMatchObject([
+      { vaultId: "meridian-usdc", stage: "submit", transient: true },
+    ]);
+  });
 });

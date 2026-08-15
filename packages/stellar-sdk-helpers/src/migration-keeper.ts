@@ -205,6 +205,18 @@ function parseCandidateAdapters(
   return candidates;
 }
 
+// The one place "is the migration keeper configured" is defined. Callers
+// that need to distinguish "intentionally not set up yet" from "actually
+// broken" (e.g. the rebalance endpoint's disabled-response check) should
+// call this instead of re-deriving the same condition against a raw env
+// var name, which would silently drift from loadMigrationKeeperConfig's
+// own validation if either one changed without the other.
+export function isMigrationKeeperConfigured(
+  env: Record<string, string | undefined>
+): boolean {
+  return Boolean(env.MERIDIAN_MIGRATION_KEEPER_SECRET_KEY?.trim());
+}
+
 export function loadMigrationKeeperConfig(
   env: Record<string, string | undefined>
 ): MigrationKeeperConfig {
@@ -482,11 +494,13 @@ async function findBestCandidate(
   // another. Only surface the failure if nothing usable came out of any
   // candidate at all.
   let best: BestCandidate | null = null;
-  let firstFailure: { index: number; reason: unknown } | undefined;
+  let firstFailure:
+    { protocol: string; adapterId: string; reason: unknown } | undefined;
   for (let i = 0; i < settled.length; i++) {
     const outcome = settled[i];
     const target = candidates[i];
     if (!outcome || !target) continue;
+    const [protocol, adapterId] = target;
     if (outcome.status === "rejected") {
       // Only the first rejection becomes the vault's reported
       // CandidateEvaluationError (KeeperFailure is per-vault, not
@@ -496,14 +510,14 @@ async function findBestCandidate(
       // first.
       logger.warn("[migration-keeper] candidate evaluation failed", {
         vaultId: vault.vaultId,
-        adapterId: target[1],
-        protocol: target[0],
+        adapterId,
+        protocol,
         error: errorMessage(outcome.reason),
       });
-      firstFailure ??= { index: i, reason: outcome.reason };
+      firstFailure ??= { protocol, adapterId, reason: outcome.reason };
       continue;
     }
-    const { protocol, adapterId, rate } = outcome.value;
+    const { rate } = outcome.value;
     if (rate === null) continue;
 
     const improvementBps = rate - currentRate;
@@ -517,14 +531,11 @@ async function findBestCandidate(
     return { best };
   }
   if (firstFailure) {
-    const target = candidates[firstFailure.index];
-    if (target) {
-      throw new CandidateEvaluationError(
-        target[0],
-        target[1],
-        firstFailure.reason
-      );
-    }
+    throw new CandidateEvaluationError(
+      firstFailure.protocol,
+      firstFailure.adapterId,
+      firstFailure.reason
+    );
   }
   return {
     best: null,
@@ -687,6 +698,26 @@ export async function runMigrationKeeper(
       skipped.push({
         vaultId: vault.vaultId,
         reason: evaluation.skipReason ?? "no migration needed",
+      });
+      continue;
+    }
+
+    // Re-checked here, not just at the top of the loop: evaluation itself
+    // can retry and consume most of the budget, and this is an
+    // irreversible, slippage-costing transaction, not a cheap read. Firing
+    // it just as the platform is about to kill the invocation is worse
+    // than skipping it for this run.
+    if (Date.now() >= deadlineAt) {
+      failures.push({
+        vaultId: vault.vaultId,
+        vaultContractId: vault.vaultContractId,
+        adapterId: vault.currentAdapterId,
+        protocol: vault.currentProtocol,
+        stage: "submit",
+        attempts: 0,
+        transient: true,
+        error:
+          "Skipped: run deadline reached after evaluation, before submission could start",
       });
       continue;
     }
