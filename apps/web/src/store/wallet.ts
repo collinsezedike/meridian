@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { WalletState } from "../types";
-import { isFreighterAuthorized } from "../lib/wallet";
+import { wallet } from "../lib/wallet";
 
 interface WalletStore extends WalletState {
   connect: (publicKey: string) => void;
@@ -25,7 +25,7 @@ export const useWalletStore = create<WalletStore>()(
       // the extension is gone or the user revoked site access between sessions.
       revalidate: async () => {
         if (!get().publicKey) return;
-        const authorized = await isFreighterAuthorized();
+        const authorized = await wallet.isAuthorized();
         if (!authorized) set({ publicKey: null, connected: false });
       },
     }),

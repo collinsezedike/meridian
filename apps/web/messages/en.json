@@ -38,7 +38,10 @@
     "withdrawalFailed": "Withdrawal failed",
     "withdrew": "Withdrew",
     "deposited": "Deposited",
-    "syncDelayed": "Updating your balance..."
+    "syncDelayed": "Updating your balance...",
+    "fundingWallet": "Funding testnet wallet with Blend test USDC...",
+    "walletFunded": "Testnet wallet funded",
+    "faucetFailed": "Failed to fund testnet wallet"
   },
 
   "common": {

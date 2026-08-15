@@ -15,23 +15,32 @@ const STYLES: Record<string, string> = {
 export function Toasts() {
   const { toasts, dismiss } = useToastStore();
 
-  if (toasts.length === 0) return null;
-
   return (
-    <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 w-72">
+    <div
+      className="fixed top-4 right-4 z-50 flex flex-col gap-2 w-72"
+      role="status"
+      aria-live="polite"
+      aria-relevant="additions"
+      aria-label="Notifications"
+    >
       {toasts.map((t) => (
         <div
           key={t.id}
+          role={t.kind === "error" ? "alert" : undefined}
+          aria-live={t.kind === "error" ? "assertive" : undefined}
+          aria-atomic="true"
           className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-sm shadow-lg backdrop-blur-sm animate-in fade-in slide-in-from-right-4 duration-200 ${STYLES[t.kind]}`}
         >
-          <span className="font-bold shrink-0">{ICON[t.kind]}</span>
+          <span className="font-bold shrink-0" aria-hidden="true">
+            {ICON[t.kind]}
+          </span>
           <span className="flex-1 leading-snug">{t.message}</span>
           <button
             onClick={() => dismiss(t.id)}
             className="shrink-0 opacity-50 hover:opacity-100 transition-opacity duration-100 text-xs"
-            aria-label="Dismiss"
+            aria-label={`Dismiss ${t.kind} notification`}
           >
-            ✕
+            <span aria-hidden="true">✕</span>
           </button>
         </div>
       ))}

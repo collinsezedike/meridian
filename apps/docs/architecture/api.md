@@ -2,10 +2,10 @@
 
 Meridian has two API implementations that share the same interface:
 
-| Implementation              | Used in           | Location    |
-| --------------------------- | ----------------- | ----------- |
-| Vercel serverless functions | Production        | `api/v1/`   |
-| Fastify server              | Local development | `apps/api/` |
+| Implementation              | Used in           | Location          |
+| --------------------------- | ----------------- | ----------------- |
+| Vercel serverless functions | Production        | `api/v1/`         |
+| Fastify server              | Local development | `apps/api-local/` |
 
 ## Endpoints
 
@@ -145,15 +145,15 @@ Both implementations share the same handler logic and import from the same works
 
 The Vercel functions (`api/v1/`) import workspace packages that are pre-built into self-contained JS bundles by `scripts/build-vercel.sh` before deployment. The build script runs esbuild on each package's entry point with `--bundle --packages=external`, inlining all relative imports while leaving npm packages external. Vercel then bundles the resulting `dist/index.js` files alongside the function handlers at deploy time.
 
-The Fastify server (`apps/api/`) runs the same packages directly via `tsx`, which handles TypeScript natively in the development process.
+The Fastify server (`apps/api-local/`) runs the same packages directly via `tsx`, which handles TypeScript natively in the development process.
 
-## Vault ID to protocol mapping
+## Vault ID to contract address mapping
 
-When building a deposit transaction, the `vaultId` is mapped to the `Protocol` enum expected by the vault contract:
+The vault contract's `deposit`/`withdraw` take no protocol-selection parameter — which protocol a deposit reaches is fixed by whichever adapter the target vault instance has set, not by anything passed in the call. Building a deposit transaction therefore resolves `vaultId` directly to the specific deployed vault contract address to call, via the mapping in `packages/stellar-sdk-helpers/src/known-pools.ts`:
 
-| Vault ID prefix | Protocol   |
-| --------------- | ---------- |
-| `blend-`        | `Blend`    |
-| `defindex-`     | `DeFindex` |
+| Vault ID prefix | Resolves to                                                |
+| --------------- | ---------------------------------------------------------- |
+| `blend-`        | A vault instance with `BlendAdapter` set as its adapter    |
+| `defindex-`     | A vault instance with `DefindexAdapter` set as its adapter |
 
-Any other prefix returns a 500 with a clear mapping error.
+Any unrecognized `vaultId` returns a 500 with a clear mapping error.

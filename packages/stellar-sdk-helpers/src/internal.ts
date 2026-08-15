@@ -36,3 +36,8 @@ export function getRpcServer(url: string, timeout: number): rpc.Server {
   }
   return server;
 }
+
+/** Clear the RPC server cache. Exported for test isolation. */
+export function clearRpcServerCache(): void {
+  _rpcServerCache.clear();
+}

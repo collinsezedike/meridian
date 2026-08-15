@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractclient, contractimpl, symbol_short, token::TokenClient, vec, Address, Env,
-    Symbol, Val, Vec,
+    contract, contractclient, contracterror, contractimpl, symbol_short, token::TokenClient, vec,
+    Address, Env, Symbol, Val, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -42,6 +42,18 @@ pub trait DefindexVaultInterface {
 }
 
 // ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    /// `initialize` was called on an adapter that already has a vault set.
+    AlreadyInitialized = 1,
+}
+
+// ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
 
@@ -52,13 +64,19 @@ pub struct MeridianDefindexAdapter;
 impl MeridianDefindexAdapter {
     /// Called once after deployment. Links the adapter to its vault, DeFindex
     /// vault contract, and USDC token.
-    pub fn initialize(env: Env, vault: Address, defindex_vault: Address, usdc: Address) {
+    pub fn initialize(
+        env: Env,
+        vault: Address,
+        defindex_vault: Address,
+        usdc: Address,
+    ) -> Result<(), ContractError> {
         if env.storage().instance().has(&VAULT_KEY) {
-            panic!("already initialized");
+            return Err(ContractError::AlreadyInitialized);
         }
         env.storage().instance().set(&VAULT_KEY, &vault);
         env.storage().instance().set(&DFX_VAULT, &defindex_vault);
         env.storage().instance().set(&USDC_KEY, &usdc);
+        Ok(())
     }
 
     /// Called by the vault after transferring `amount` USDC to this adapter.
@@ -116,6 +134,10 @@ impl MeridianDefindexAdapter {
         let amounts = client.get_asset_amounts_per_shares(&shares);
         amounts.get(0).unwrap_or(0)
     }
+
+    /// No-op: DeFindex's total_assets() already prices live on every call
+    /// via the vault's exchange rate, so there is no cache to refresh.
+    pub fn refresh(_env: Env) {}
 
     /// Returns the DeFindex vault this adapter deposits into.
     pub fn get_pool(env: Env) -> Address {
@@ -334,6 +356,13 @@ mod tests {
         // deposited even though it's routed through get_asset_amounts_per_shares
         // rather than a self-tracked total.
         assert_eq!(adapter.total_assets(), amount);
+    }
+
+    #[test]
+    fn reinitializing_fails() {
+        let (_env, vault, usdc_id, adapter, dfx) = setup();
+        let result = adapter.try_initialize(&vault, &dfx.address, &usdc_id);
+        assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
     }
 
     #[test]

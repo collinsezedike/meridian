@@ -6,9 +6,9 @@ browser hands that XDR to the user's wallet (Freighter) for signing. The signed 
 relayed back through the API only to be forwarded to the Stellar network — the API still
 never signs anything itself.
 
-This document is the reference for anyone implementing the XDR builder (#14) or the Freighter
-adapter (#8). Implement against this doc; you should not need to read the Soroban auth docs to
-get the flow right.
+This document is the reference for how the XDR builder and the Freighter adapter fit together.
+Implement against this doc; you should not need to read the Soroban auth docs to get the flow
+right.
 
 ## Sequence
 

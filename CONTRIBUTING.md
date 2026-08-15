@@ -146,6 +146,8 @@ npm install -g pnpm@9
    pnpm lint && pnpm typecheck && pnpm test
    ```
 
+   Note: generated Soroban contract test snapshots under `packages/contracts/**/test_snapshots` are ignored by Git and should not be committed manually.
+
 ---
 
 ## Project Structure
@@ -283,7 +285,7 @@ Commits that do not match the `^(feat|fix|docs|chore|refactor|test|style|ci|perf
 
 ## Code Standards
 
-### TypeScript (`apps/web`, `apps/api`, `packages/*`)
+### TypeScript (`apps/web`, `apps/api-local`, `packages/*`)
 
 - **Formatting:** Run `pnpm format` before committing. Prettier with default settings.
 - **Linting:** Must pass `pnpm lint` with zero errors.
@@ -382,6 +384,23 @@ cargo fmt --all
 cargo clippy --all-targets -- -D warnings
 cargo test --all
 ```
+
+### End-to-end tests
+
+The e2e suite (`apps/web/e2e/`) drives the real `apps/web` and `apps/api-local` dev servers with a real headless browser via [Playwright](https://playwright.dev). It hits the real API and real Stellar testnet RPC end to end; only Freighter's wallet-signing step is mocked (see `apps/web/e2e/fixtures.ts`), since a real browser extension can't run in CI. Only needed when modifying `apps/web`, `apps/api-local`, or anything the deposit/withdraw/vault-list flows depend on.
+
+```bash
+# One-time: install the browser binary
+pnpm --filter @meridian/web exec playwright install chromium
+
+# Run the full suite (boots both dev servers automatically)
+pnpm --filter @meridian/web test:e2e
+
+# Interactive UI mode, useful for debugging a failing spec
+pnpm --filter @meridian/web test:e2e:ui
+```
+
+Because it depends on live testnet RPC, this suite is non-blocking in CI (see the `E2E Tests` job) — treat a failure there as a signal to investigate, not necessarily a blocker for your PR.
 
 ---
 

@@ -2,8 +2,10 @@
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contractclient, contractimpl, contracttype, symbol_short, vec, Address, Env, IntoVal,
-    Map, Symbol, Val, Vec,
+    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
+    symbol_short,
+    token::TokenClient,
+    vec, Address, Env, IntoVal, Map, Symbol, Val, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -30,6 +32,17 @@ const REQUEST_WITHDRAW: u32 = 3;
 // reproduced the deposited amount plus a plausible small yield delta, while
 // dividing by `reserve.scalar` produced a ~100,000x inflated value.
 const RATE_SCALAR: i128 = 1_000_000_000_000;
+
+// Converts a bToken amount to its underlying USDC value at the given
+// `b_rate`, guarding the intermediate multiply against i128 overflow.
+// Shared by accrue() and withdraw() so the two never drift apart.
+fn b_tokens_to_usdc(b_tokens: i128, b_rate: i128) -> Result<i128, ContractError> {
+    b_tokens
+        .checked_mul(b_rate)
+        .ok_or(ContractError::Overflow)?
+        .checked_div(RATE_SCALAR)
+        .ok_or(ContractError::Overflow)
+}
 
 // ---------------------------------------------------------------------------
 // Blend pool interface types
@@ -108,6 +121,20 @@ pub trait BlendPoolInterface {
 }
 
 // ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    /// `initialize` was called on an adapter that already has a vault set.
+    AlreadyInitialized = 1,
+    /// An intermediate arithmetic operation would overflow `i128`.
+    Overflow = 2,
+}
+
+// ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
 
@@ -118,20 +145,27 @@ pub struct MeridianBlendAdapter;
 impl MeridianBlendAdapter {
     /// Called once after deployment. Links the adapter to its vault, Blend pool,
     /// and USDC token.
-    pub fn initialize(env: Env, vault: Address, pool: Address, usdc: Address) {
+    pub fn initialize(
+        env: Env,
+        vault: Address,
+        pool: Address,
+        usdc: Address,
+    ) -> Result<(), ContractError> {
         if env.storage().instance().has(&VAULT_KEY) {
-            panic!("already initialized");
+            return Err(ContractError::AlreadyInitialized);
         }
         env.storage().instance().set(&VAULT_KEY, &vault);
         env.storage().instance().set(&POOL_KEY, &pool);
         env.storage().instance().set(&USDC_KEY, &usdc);
         env.storage().instance().set(&TOTAL_KEY, &0_i128);
+        Ok(())
     }
 
     /// Called by the vault after transferring `amount` USDC to this adapter.
     /// Supplies the USDC to the Blend lending pool as collateral and returns
-    /// `amount` as adapter shares (1:1; yield is reflected separately via
-    /// `accrue()` rather than in the share-minting ratio).
+    /// the real bTokens credited, measured from Blend's own ledger rather
+    /// than assumed 1:1, so the vault's adapter-share accounting (`ADPT_SH`)
+    /// tracks genuine, appreciating shares instead of raw principal (#486).
     pub fn deposit(env: Env, amount: i128) -> i128 {
         let vault: Address = env.storage().instance().get(&VAULT_KEY).unwrap();
         vault.require_auth();
@@ -158,7 +192,15 @@ impl MeridianBlendAdapter {
             }),
         ]);
 
-        BlendPoolClient::new(&env, &pool).submit(
+        let client = BlendPoolClient::new(&env, &pool);
+        let index = client.get_reserve(&usdc).config.index;
+        let b_tokens_before = client
+            .get_positions(&adapter)
+            .collateral
+            .get(index)
+            .unwrap_or(0);
+
+        client.submit(
             &adapter,
             &adapter,
             &adapter,
@@ -172,14 +214,24 @@ impl MeridianBlendAdapter {
             ],
         );
 
+        let b_tokens_after = client
+            .get_positions(&adapter)
+            .collateral
+            .get(index)
+            .unwrap_or(0);
+        let b_tokens_credited = b_tokens_after - b_tokens_before;
+
         let prev: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
         env.storage().instance().set(&TOTAL_KEY, &(prev + amount));
 
-        amount
+        b_tokens_credited
     }
 
-    /// Called by the vault to redeem `shares` from the Blend pool. Blend
-    /// delivers USDC directly to `recipient`. Returns the USDC amount received.
+    /// Called by the vault to redeem `shares` bTokens from the Blend pool.
+    /// Blend's own withdraw request is denominated in underlying USDC, not
+    /// bTokens, so `shares` is converted using the current `b_rate` before
+    /// submitting. Returns the USDC amount actually delivered to `recipient`,
+    /// measured directly rather than assumed to equal the request (#489).
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
         let vault: Address = env.storage().instance().get(&VAULT_KEY).unwrap();
         vault.require_auth();
@@ -188,7 +240,18 @@ impl MeridianBlendAdapter {
         let usdc: Address = env.storage().instance().get(&USDC_KEY).unwrap();
 
         let adapter = env.current_contract_address();
-        BlendPoolClient::new(&env, &pool).submit(
+        let client = BlendPoolClient::new(&env, &pool);
+
+        let reserve = client.get_reserve(&usdc);
+        let request_amount = match b_tokens_to_usdc(shares, reserve.data.b_rate) {
+            Ok(amount) => amount,
+            Err(err) => panic_with_error!(&env, err),
+        };
+
+        let usdc_client = TokenClient::new(&env, &usdc);
+        let before = usdc_client.balance(&recipient);
+
+        client.submit(
             &adapter,
             &adapter,
             &recipient,
@@ -197,16 +260,23 @@ impl MeridianBlendAdapter {
                 Request {
                     request_type: REQUEST_WITHDRAW,
                     address: usdc,
-                    amount: shares,
+                    amount: request_amount,
                 },
             ],
         );
 
+        let after = usdc_client.balance(&recipient);
+        let delivered = after - before;
+
         let prev: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
-        let remaining = if prev > shares { prev - shares } else { 0 };
+        let remaining = if prev > delivered {
+            prev - delivered
+        } else {
+            0
+        };
         env.storage().instance().set(&TOTAL_KEY, &remaining);
 
-        shares
+        delivered
     }
 
     /// Refreshes the cached USDC value of the adapter's Blend position to
@@ -219,7 +289,7 @@ impl MeridianBlendAdapter {
     /// Reads the adapter's current bToken balance from Blend's own ledger
     /// (`get_positions`) rather than self-tracking it, so there is no risk of
     /// drift between the stored total and Blend's actual accounting.
-    pub fn accrue(env: Env) {
+    pub fn accrue(env: Env) -> Result<(), ContractError> {
         let pool: Address = env.storage().instance().get(&POOL_KEY).unwrap();
         let usdc: Address = env.storage().instance().get(&USDC_KEY).unwrap();
         let adapter = env.current_contract_address();
@@ -229,13 +299,19 @@ impl MeridianBlendAdapter {
         let positions = client.get_positions(&adapter);
         let b_tokens = positions.collateral.get(reserve.config.index).unwrap_or(0);
 
-        let current_value = b_tokens
-            .checked_mul(reserve.data.b_rate)
-            .expect("overflow")
-            .checked_div(RATE_SCALAR)
-            .expect("div zero");
+        let current_value = b_tokens_to_usdc(b_tokens, reserve.data.b_rate)?;
 
         env.storage().instance().set(&TOTAL_KEY, &current_value);
+        Ok(())
+    }
+
+    /// Refreshes the cached total_assets to include yield accrued since the
+    /// last call, satisfying the shared YieldAdapterInterface contract.
+    /// Currently just calls accrue(), which remains a public,
+    /// permissionless entry point in its own right.
+    #[allow(unused_must_use)]
+    pub fn refresh(env: Env) {
+        Self::accrue(env);
     }
 
     /// Returns the cached USDC value of the adapter's Blend position. Reflects
@@ -472,7 +548,7 @@ mod tests {
         // total_assets() is a cache; it must not move until accrue() is called.
         assert_eq!(adapter.total_assets(), amount);
 
-        adapter.accrue();
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
         assert_eq!(adapter.total_assets(), amount + amount / 10);
     }
 
@@ -501,7 +577,7 @@ mod tests {
 
         let new_rate = SCALAR + SCALAR / 10;
         pool.set_rate(&new_rate);
-        adapter.accrue();
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
 
         assert_eq!(adapter.total_assets(), amount + amount / 10);
     }
@@ -514,14 +590,28 @@ mod tests {
         TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
         adapter.deposit(&amount);
 
-        adapter.accrue();
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
         let after_first = adapter.total_assets();
-        adapter.accrue();
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
         let after_second = adapter.total_assets();
 
         assert_eq!(after_first, amount);
         assert_eq!(after_second, amount);
         let _ = pool;
+    }
+
+    #[test]
+    fn accrue_returns_typed_error_on_overflow() {
+        let (env, vault, usdc_id, adapter, pool) = setup();
+        let amount = 2_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        pool.set_rate(&i128::MAX);
+        let result = adapter.try_accrue();
+
+        assert_eq!(result, Err(Ok(ContractError::Overflow)));
     }
 
     #[test]
@@ -542,25 +632,42 @@ mod tests {
 
     #[test]
     fn withdraw_after_accrue_pays_out_appreciated_value() {
+        // Regression test for #486: withdraw() must size its Blend request
+        // from real bTokens converted at the *current* b_rate, not from a
+        // principal-tracking counter that never appreciates. Redeeming the
+        // same bToken count credited at deposit, after the rate has moved,
+        // must pay out the appreciated USDC value.
         let (env, vault, usdc_id, adapter, pool) = setup();
         let amount = 100_0000000_i128;
 
         TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
-        adapter.deposit(&amount);
+        let b_tokens = adapter.deposit(&amount);
+        assert_eq!(b_tokens, amount); // par rate at deposit time
 
         let new_rate = SCALAR + SCALAR / 10;
         pool.set_rate(&new_rate);
-        adapter.accrue();
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
         assert_eq!(adapter.total_assets(), amount + amount / 10);
 
         // Fund the mock pool so it can pay out the appreciated amount.
         StellarAssetClient::new(&env, &usdc_id).mint(&pool.address, &(amount / 10));
 
         let recipient = Address::generate(&env);
-        let usdc_out = adapter.withdraw(&(amount + amount / 10), &recipient);
+        // The bToken balance itself doesn't change when the rate moves, only
+        // its USDC value does — a real caller (the vault) sizes this from
+        // ADPT_SH, which now tracks real bTokens, so it withdraws the same
+        // count credited at deposit.
+        let usdc_out = adapter.withdraw(&b_tokens, &recipient);
 
         assert_eq!(usdc_out, amount + amount / 10);
         assert_eq!(adapter.total_assets(), 0);
+    }
+
+    #[test]
+    fn reinitializing_fails() {
+        let (_env, vault, usdc_id, adapter, pool) = setup();
+        let result = adapter.try_initialize(&vault, &pool.address, &usdc_id);
+        assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
     }
 
     #[test]

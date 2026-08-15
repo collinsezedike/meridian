@@ -62,15 +62,36 @@ export async function buildDefindexDepositTx(
  * withdraw the proportional underlying back to `withdrawer`.
  *
  * Contract ABI: withdraw(withdraw_shares: i128, min_amounts_out: Vec<i128>,
- * from: Address). min_amounts_out is [0] — slippage protection is deferred to a
- * later pass that quotes the expected out amount.
+ * from: Address).
+ *
+ * `slippageBps` (default 10 = 0.1%) controls the gap between the expected
+ * payout (quoted via `get_asset_amounts_per_shares`) and min_amounts_out so
+ * that a withdrawal executing at a much worse rate than expected fails cleanly.
+ * Pass 0 only in tests.
  */
 export async function buildDefindexWithdrawTx(
   config: DefindexVaultConfig,
   withdrawer: string,
-  shares: bigint
+  shares: bigint,
+  slippageBps = 10n
 ): Promise<{ xdr: string; fee: string }> {
   if (shares <= 0n) throw new Error("shares must be positive");
+
+  // Quote the expected payout so we can compute a real floor.
+  const server = getRpcServer(config.network.rpcUrl, 12_000);
+  const expectedAmounts = (await simulateView(
+    server,
+    config.vaultId,
+    config.network.passphrase,
+    "get_asset_amounts_per_shares",
+    i128(shares)
+  )) as Array<bigint | number> | null;
+  const expectedAmount =
+    Array.isArray(expectedAmounts) && expectedAmounts.length > 0
+      ? toBigInt(expectedAmounts[0])
+      : 0n;
+  const minAmount = expectedAmount - (expectedAmount * slippageBps) / 10_000n;
+
   const contract = new Contract(config.vaultId);
   return prepareSorobanTx(
     config.network,
@@ -78,7 +99,7 @@ export async function buildDefindexWithdrawTx(
     contract.call(
       "withdraw",
       i128(shares),
-      xdr.ScVal.scvVec([i128(0n)]),
+      xdr.ScVal.scvVec([i128(minAmount)]),
       Address.fromString(withdrawer).toScVal()
     )
   );

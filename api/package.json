@@ -1,5 +1,5 @@
 {
-  "name": "@meridian/api-functions",
+  "name": "@meridian/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,12 +10,12 @@
     "@meridian/api-core": "workspace:*",
     "@meridian/shared": "workspace:*",
     "@meridian/stellar-sdk-helpers": "workspace:*",
-    "@stellar/stellar-sdk": "^14.0.0",
+    "@stellar/stellar-sdk": "^14.6.1",
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.38.0"
   },
   "devDependencies": {
-    "@vercel/node": "^5.8.23",
+    "@vercel/node": "^5.9.3",
     "vitest": "^4.1.10"
   }
 }
