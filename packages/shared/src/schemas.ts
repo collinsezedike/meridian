@@ -24,7 +24,7 @@ export const TrustlineRequestSchema = z.object({
 });
 
 export const SubmitRequestSchema = z.object({
-  xdr: z.string().min(1),
+  xdr: z.string().min(1).max(10_000),
 });
 
 export type DepositRequest = z.infer<typeof DepositRequestSchema>;
