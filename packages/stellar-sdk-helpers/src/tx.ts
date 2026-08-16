@@ -303,7 +303,6 @@ function allowedContractIds(network: StellarNetwork): Set<string> {
     if (id) ids.add(id);
   };
   add(addresses.blend.pool);
-  add(addresses.defindex.factory);
   add(addresses.defindex.vault);
   add(addresses.vault);
   for (const pool of Object.values(KNOWN_POOLS[key])) {
