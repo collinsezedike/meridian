@@ -236,6 +236,20 @@ describe("loadMigrationKeeperConfig", () => {
     });
     expect(config.candidateAdapters).toEqual({});
   });
+
+  it("rejects two case-differing env var names that collide on the same protocol", () => {
+    // Without this check, MERIDIAN_ADAPTER_BLEND_ID and
+    // MERIDIAN_ADAPTER_Blend_ID would both lowercase to "blend", and
+    // whichever Object.entries() happens to visit last would silently
+    // overwrite the other with no error or log line.
+    expect(() =>
+      loadMigrationKeeperConfig({
+        MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
+        MERIDIAN_ADAPTER_BLEND_ID: "CBLENDADAPTER_A",
+        MERIDIAN_ADAPTER_Blend_ID: "CBLENDADAPTER_B",
+      })
+    ).toThrow(/both resolve to the same migration candidate protocol/);
+  });
 });
 
 describe("discoverMigrationVaults", () => {
@@ -897,6 +911,38 @@ describe("runMigrationKeeper", () => {
     // doesn't page anyone every time it fires.
     expect(result.migrations).toEqual([]);
     expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        reason: expect.stringContaining("adapter changed since discovery"),
+      },
+    ]);
+  });
+
+  it("keeps the stale-adapter skip reason informative even with real-length contract addresses", async () => {
+    // Regression test: sanitizeTxError redacts any message containing a
+    // 50+ char C-address to a generic fallback. A real Stellar address is
+    // 56 chars, well past that threshold; the short fixture addresses used
+    // elsewhere in this file (e.g. "CSOMEOTHERADAPTER") are too short to
+    // trigger that redaction, which would otherwise mask this exact
+    // scenario. This proves the skip reason survives with real addresses.
+    const realAddress = `C${"A".repeat(55)}`;
+    stellarMocks.simulateView.mockResolvedValue(realAddress);
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
     expect(result.skipped).toMatchObject([
       {
         vaultId: "meridian-usdc",

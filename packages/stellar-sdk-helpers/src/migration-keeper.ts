@@ -195,13 +195,26 @@ function parseCandidateAdapters(
   env: Record<string, string | undefined>
 ): Record<string, string> {
   const candidates: Record<string, string> = {};
+  // Tracks which raw env var name populated each lowercased protocol key,
+  // so two case-differing var names for the same protocol (e.g.
+  // MERIDIAN_ADAPTER_BLEND_ID and MERIDIAN_ADAPTER_Blend_ID) fail loudly
+  // instead of one silently overwriting the other with no error, log, or
+  // indication that a candidate was dropped.
+  const sourceKeyByProtocol: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     const match = CANDIDATE_ADAPTER_ENV_PATTERN.exec(key);
     const protocol = match?.[1];
     const trimmed = value?.trim();
-    if (protocol && trimmed) {
-      candidates[protocol.toLowerCase()] = trimmed;
+    if (!protocol || !trimmed) continue;
+    const lower = protocol.toLowerCase();
+    const existingKey = sourceKeyByProtocol[lower];
+    if (existingKey && existingKey !== key) {
+      throw new Error(
+        `${existingKey} and ${key} both resolve to the same migration candidate protocol ("${lower}"); set only one`
+      );
     }
+    sourceKeyByProtocol[lower] = key;
+    candidates[lower] = trimmed;
   }
   return candidates;
 }
@@ -837,11 +850,24 @@ export async function runMigrationKeeper(
       });
     } catch (err) {
       if (isStaleAdapterError(err)) {
-        skipped.push({ vaultId: vault.vaultId, reason: errorMessage(err) });
+        // A static, address-free reason, not redactedErrorMessage(err):
+        // the underlying message embeds two full C-addresses, which with
+        // real (56-char) Stellar addresses would trip sanitizeTxError's
+        // redaction and fall back to a generic "Keeper operation failed",
+        // discarding the one useful thing to tell an API consumer here
+        // (why the migration was skipped) for no security benefit, adapter
+        // addresses aren't secret. Full detail (with addresses) still goes
+        // to the log below, server-side only.
+        skipped.push({
+          vaultId: vault.vaultId,
+          reason:
+            "vault's adapter changed since discovery; skipped to avoid a stale migration",
+        });
         logger.info(
           "[migration-keeper] migration skipped; adapter changed since discovery",
           {
             vaultId: vault.vaultId,
+            detail: errorMessage(err),
           }
         );
         continue;
