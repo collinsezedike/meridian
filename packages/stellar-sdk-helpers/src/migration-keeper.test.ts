@@ -388,6 +388,57 @@ describe("runMigrationKeeper", () => {
     ]);
   });
 
+  it("treats a NaN rate as unavailable instead of letting it win the comparison", async () => {
+    // A buggy RateSourceFn (e.g. a division by zero, see #511) could resolve
+    // NaN instead of throwing or returning null. NaN defeats every < and >
+    // comparison, so without an explicit finiteness check this would have
+    // silently become the winning candidate and bypassed minImprovementBps.
+    const submitMigration = vi.fn();
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : NaN
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        reason: "no candidate rate was available to compare",
+      },
+    ]);
+  });
+
+  it("treats a non-finite current rate as unavailable rather than comparing against it", async () => {
+    const submitMigration = vi.fn();
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? Infinity : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([
+      { vaultId: "meridian-usdc", reason: "current rate unavailable" },
+    ]);
+  });
+
   it("reports a distinct skip reason when no candidate rate was available, not a failed threshold check", async () => {
     // A rate source implemented for one protocol but not another (e.g.
     // #511's phased rollout) never actually compares anything; reporting it

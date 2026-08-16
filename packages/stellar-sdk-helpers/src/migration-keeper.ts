@@ -97,6 +97,16 @@ export type RateSourceFn = (query: RateQuery) => Promise<number | null>;
 
 const defaultRateSource: RateSourceFn = async () => null;
 
+// A RateSourceFn is caller-supplied (see #511); a buggy implementation can
+// resolve NaN or Infinity (e.g. a division by zero) instead of throwing or
+// returning null. NaN in particular defeats every comparison below it
+// (`NaN < threshold` and `x > NaN` are both false), which would let a
+// garbage rate silently win as the best candidate rather than being
+// rejected. Treat anything non-finite the same as "rate unknown".
+function isUsableRate(rate: number | null): rate is number {
+  return rate !== null && Number.isFinite(rate);
+}
+
 export interface MigrationKeeperConfig {
   network: StellarNetwork;
   secretKey: string;
@@ -483,7 +493,7 @@ async function findBestCandidate(
       err
     );
   }
-  if (currentRate === null) {
+  if (!isUsableRate(currentRate)) {
     return { best: null, skipReason: "current rate unavailable" };
   }
 
@@ -544,7 +554,7 @@ async function findBestCandidate(
       continue;
     }
     const { rate } = outcome.value;
-    if (rate === null) continue;
+    if (!isUsableRate(rate)) continue;
     anyRateKnown = true;
 
     const improvementBps = rate - currentRate;
