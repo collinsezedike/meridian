@@ -5,6 +5,13 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 // contract (method guards, field validation, status codes, payload shape), not
 // the Soroban transaction building, which is unit-tested in the helpers package.
 vi.mock("@meridian/stellar-sdk-helpers", () => ({
+  redactedErrorMessage: vi.fn((err: unknown) => {
+    if (!(err instanceof Error)) return "Keeper operation failed";
+    const first = err.message.split("\n")[0]?.trim();
+    if (!first || /https?:\/\/|C[A-Z2-7]{50,}/.test(first))
+      return "Keeper operation failed";
+    return first;
+  }),
   buildDepositTx: vi.fn(async () => ({ xdr: "DEPOSIT_XDR", fee: "100" })),
   buildWithdrawTx: vi.fn(async () => ({ xdr: "WITHDRAW_XDR", fee: "100" })),
   buildAddTrustlineTx: vi.fn(async () => ({ xdr: "TRUST_XDR" })),
@@ -404,6 +411,24 @@ describe("GET /api/v1/keepers/accrue", () => {
     });
   });
 
+  it("redacts an unexpected keeper-run error instead of leaking it raw", async () => {
+    vi.mocked(runBlendAccrualKeeper).mockRejectedValueOnce(
+      new Error("connect ECONNREFUSED https://rpc.internal.example:443")
+    );
+
+    const res = makeRes();
+    await keeperHandler(
+      fakeReq({
+        method: "GET",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ error: "Keeper operation failed" });
+  });
+
   describe("without CRON_SECRET configured", () => {
     const savedVercelEnv = process.env.VERCEL_ENV;
     const savedNodeEnv = process.env.NODE_ENV;
@@ -561,5 +586,23 @@ describe("GET /api/v1/keepers/rebalance", () => {
     expect(res.body).toMatchObject({
       failures: [{ vaultId: "meridian-usdc", error: "try again later" }],
     });
+  });
+
+  it("redacts an unexpected keeper-run error instead of leaking it raw", async () => {
+    vi.mocked(runMigrationKeeper).mockRejectedValueOnce(
+      new Error("connect ECONNREFUSED https://rpc.internal.example:443")
+    );
+
+    const res = makeRes();
+    await rebalanceHandler(
+      fakeReq({
+        method: "GET",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ error: "Keeper operation failed" });
   });
 });

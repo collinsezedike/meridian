@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
   isMigrationKeeperConfigured,
   loadMigrationKeeperConfig,
+  redactedErrorMessage,
   runMigrationKeeper,
 } from "@meridian/stellar-sdk-helpers";
 import {
@@ -54,7 +55,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(status).json(result);
   } catch (err) {
     console.error("[migration-keeper] run failed:", err);
-    const message = err instanceof Error ? err.message : "Keeper failed";
-    return res.status(500).json({ error: message });
+    return res.status(500).json({ error: redactedErrorMessage(err) });
   }
 }
