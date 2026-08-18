@@ -97,6 +97,21 @@ vi.mock("./tx", () => ({
   waitForTransaction: stellarMocks.waitForTransaction,
 }));
 
+// The real default rate source (rate-sources.ts) is covered by its own
+// dedicated test file (rate-sources.test.ts): it talks to Blend/DeFindex
+// over the network and needs its own fixtures and mocks. Here it's mocked
+// out entirely so this file can stay focused on keeper mechanics
+// (discovery, retry, submission) without dragging that in, while still
+// proving runMigrationKeeper actually wires it up when no rateSource dep is
+// injected (see "wires the real default rate source" below).
+const rateSourcesMocks = vi.hoisted(() => ({
+  createDefaultRateSource: vi.fn(),
+}));
+
+vi.mock("./rate-sources", () => ({
+  createDefaultRateSource: rateSourcesMocks.createDefaultRateSource,
+}));
+
 import {
   discoverMigrationVaults,
   loadMigrationKeeperConfig,
@@ -158,6 +173,11 @@ beforeEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.useRealTimers();
+  // Every test other than the one specifically about default wiring passes
+  // its own `rateSource` dep, which takes precedence over this; this default
+  // just keeps those unrelated tests from ever hitting the real
+  // createDefaultRateSource mock (undefined) if they forget to.
+  rateSourcesMocks.createDefaultRateSource.mockReturnValue(async () => null);
   stellarMocks.getRpcServer.mockReturnValue(makeServer());
   stellarMocks.keypairFromSecret.mockReturnValue({
     publicKey: vi.fn(() => "GADMIN"),
@@ -305,8 +325,16 @@ describe("discoverMigrationVaults", () => {
 });
 
 describe("runMigrationKeeper", () => {
-  it("never migrates with the default rate source: no rate source is verified for either protocol yet", async () => {
+  it("wires the real default rate source (rate-sources.ts) when no rateSource dep is injected", async () => {
+    // #511: runMigrationKeeper used to fall back to a stub that always
+    // returned null, so it could never migrate anything in practice no
+    // matter how the rest of the mechanism was configured. It must now
+    // build the real Blend/DeFindex rate source (createDefaultRateSource,
+    // see rate-sources.ts and its own dedicated tests) from the run's
+    // network config whenever the caller doesn't supply one explicitly.
     const submitMigration = vi.fn();
+    const stubRateSource = vi.fn(async () => null);
+    rateSourcesMocks.createDefaultRateSource.mockReturnValue(stubRateSource);
 
     const result = await runMigrationKeeper(CONFIG, {
       discoverVaults: async () => ({
@@ -316,6 +344,12 @@ describe("runMigrationKeeper", () => {
       submitMigration,
     });
 
+    expect(rateSourcesMocks.createDefaultRateSource).toHaveBeenCalledWith(
+      CONFIG.network
+    );
+    expect(stubRateSource).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: "blend" })
+    );
     expect(submitMigration).not.toHaveBeenCalled();
     expect(result.migrations).toEqual([]);
     expect(result.skipped).toEqual([

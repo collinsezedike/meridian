@@ -20,50 +20,72 @@ consent, delegation, or signature is needed.
 
 ## Current status: not yet functional against the live testnet vault
 
-Two independent gaps, tracked separately, both must close before this keeper
-actually migrates anything in practice:
+One remaining gap blocks this keeper from actually migrating anything in
+practice:
 
 - The live testnet vault (`CONTRACT_ADDRESSES.testnet.vault`) predates
   `migrate_adapter` being added to `vault/src/lib.rs` and was never
   redeployed since; it doesn't have the function at all. Confirmed directly
   via `stellar contract invoke -- --help` against the live contract. See
   #514.
-- Rate comparison isn't implemented (below). See #511.
 
-Everything else described in this document, the discovery, retry, deadline
-budget, and structured-failure-reporting mechanism, is built and tested; it
-has nothing real to act on yet.
+Rate comparison (below) is now implemented (#511). Everything else described
+in this document — the discovery, retry, deadline budget, and
+structured-failure-reporting mechanism — is built and tested. Once #514
+closes, this keeper is functionally complete end to end; #514 is the only
+remaining blocker to a real testnet migration.
 
-## Rate comparison is not implemented yet
+## Rate comparison
 
-Neither adapter contract exposes a ready-made, comparable rate:
+Neither adapter contract exposes a ready-made, comparable rate, so
+`packages/stellar-sdk-helpers/src/rate-sources.ts` derives one for each
+protocol from what's actually available on-chain:
 
-- `BlendAdapter` exposes `total_assets()` (a point-in-time USDC value) and
-  the underlying pool's raw reserve data (utilization, the kinked-curve
-  parameters `r_base`/`r_one`/`r_two`/`r_three`). Turning that into a current
-  interest rate means reimplementing Blend's three-slope interest rate
-  formula off-chain. Nothing in this codebase does that today.
-- `DefindexAdapter` exposes `get_asset_amounts_per_shares()`, a share-price
-  snapshot. Deriving a rate from that needs a second sample over time; no
-  history is stored anywhere for it either.
+- **Blend**: `BlendAdapter` exposes `total_assets()` (a point-in-time USDC
+  value) and, via `get_pool()`, the underlying pool. Rather than
+  reimplementing Blend's three-slope interest rate curve off-chain from the
+  pool's raw reserve fields, `createBlendRateSource` loads the pool with
+  `@blend-capital/blend-sdk` (already a dependency, used elsewhere in this
+  package for position reads) and reads the reserve's own `estSupplyApy` —
+  the same weekly-compounded rate estimate Blend's own indexer and UI
+  compute, via `Reserve.setRates()`. This avoids a second, hand-rolled copy
+  of that formula that could silently drift from Blend's actual deployed
+  behavior.
+- **DeFindex**: `DefindexAdapter` exposes `get_asset_amounts_per_shares()`, a
+  live share-price snapshot with no rate on its own — a rate needs a second
+  sample separated in time. `createDefindexRateSource` takes a fresh
+  snapshot on every call and persists it via a pluggable `RateSnapshotStore`,
+  keyed by the DeFindex vault's own contract address. The first time a given
+  vault is evaluated (or any time its snapshot has expired) this correctly
+  returns null — "rate unknown" — not a fabricated rate; a comparable
+  annualized rate is only returned once two snapshots exist at least 10
+  minutes apart. In production, `createDefaultRateSource` backs this store
+  with Upstash Redis over its plain HTTP REST API, reusing the same
+  `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` credentials
+  `apps/api/_lib/middleware.ts` already requires for its rate limiter — one
+  Upstash instance backs both, no new infrastructure to provision. Without
+  those set, it falls back to an in-memory store that does **not** survive
+  across separate serverless invocations (each Vercel Cron tick is a fresh
+  process), which in practice means DeFindex never accumulates a comparable
+  rate outside of Upstash being configured.
 
-Rate comparison is deliberately pluggable (`RateSourceFn` in
-`packages/stellar-sdk-helpers/src/migration-keeper.ts`) rather than guessed
-at. The default implementation always returns `null` ("rate unknown"), so
-**the keeper never migrates anything until a real rate source is injected**.
-Implementing either protocol's rate formula is separate, dedicated follow-up
-work, not rushed into the mechanism this PR ships.
+Rate comparison stays deliberately pluggable (`RateSourceFn` in
+`migration-keeper.ts`): `createDefaultRateSource(config.network)` is
+`runMigrationKeeper`'s default when the caller doesn't inject
+`deps.rateSource` explicitly, but nothing about the mechanism assumes it's
+the only possible implementation.
 
 ## Schedule
 
 Vercel Cron calls `GET /api/v1/keepers/rebalance` hourly, as configured in
 `vercel.json`. Hourly, not every 15 minutes like the accrue keeper: a
 migration decision is not time-sensitive the way interest accrual staleness
-is, and unnecessary runs cost nothing while the rate source is unconfigured,
-but there is no reason to poll faster than the decision needs.
+is, and unnecessary runs cost nothing while no candidate adapters are
+configured (or DeFindex hasn't accumulated a second snapshot yet, see
+above), but there is no reason to poll faster than the decision needs.
 
 The cron is scheduled unconditionally, independent of whether the feature
-is actually ready (#511, #514). If `MERIDIAN_MIGRATION_KEEPER_SECRET_KEY`
+is actually ready (#514). If `MERIDIAN_MIGRATION_KEEPER_SECRET_KEY`
 isn't set, the endpoint returns `200 { status: "disabled" }` rather than
 throwing, so an intentionally-unfinished feature doesn't produce an hourly
 false alarm.

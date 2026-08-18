@@ -9,16 +9,17 @@
 //
 // Rate comparison is pluggable (see RateSourceFn below): neither adapter
 // contract exposes a ready-made comparable rate today, so the default
-// source always reports "unknown" and the keeper never migrates until a
-// real one is injected. This mirrors the accrual keeper's own shape
-// (discovery, retry, structured failure reporting, deadline budget); see
-// accrual-keeper.ts.
+// source (see rate-sources.ts) computes one for each protocol out of what
+// the on-chain data actually provides. This mirrors the accrual keeper's
+// own shape (discovery, retry, structured failure reporting, deadline
+// budget); see accrual-keeper.ts.
 
 import { Address, nativeToScVal } from "@stellar/stellar-sdk";
 import { APP_NETWORK } from "@meridian/shared";
 import { KNOWN_POOLS, type KnownPoolMeta } from "./known-pools";
 import { getRpcServer } from "./internal";
 import { simulateView } from "./tx";
+import { createDefaultRateSource } from "./rate-sources";
 import type { StellarNetwork } from "./types";
 import {
   consoleLogger,
@@ -89,13 +90,13 @@ export interface RateQuery {
  * neither Blend nor DeFindex exposes a ready-made comparable rate today:
  * Blend's adapter only exposes the raw inputs to its own kinked interest
  * rate curve, not a computed rate, and DeFindex's share price needs a
- * second sample over time to derive one. Implementing either is separate,
- * dedicated follow-up work; the default here always returns null, so the
- * keeper never migrates until a real source is injected.
+ * second sample over time to derive one. See rate-sources.ts for the real
+ * implementations runMigrationKeeper defaults to (createDefaultRateSource);
+ * this stays independently injectable via MigrationKeeperDeps.rateSource,
+ * both for tests and for swapping in a different implementation without
+ * touching this file.
  */
 export type RateSourceFn = (query: RateQuery) => Promise<number | null>;
-
-const defaultRateSource: RateSourceFn = async () => null;
 
 // A RateSourceFn is caller-supplied (see #511); a buggy implementation can
 // resolve NaN or Infinity (e.g. a division by zero) instead of throwing or
@@ -681,7 +682,7 @@ export async function runMigrationKeeper(
   const startedAt = new Date().toISOString();
   const deadlineAt = deps.deadlineAt ?? Date.now() + FUNCTION_BUDGET_MS;
   const server = getRpcServer(config.network.rpcUrl, config.rpcTimeoutMs);
-  const rateSource = deps.rateSource ?? defaultRateSource;
+  const rateSource = deps.rateSource ?? createDefaultRateSource(config.network);
   const resolveCandidatePool =
     deps.resolveCandidatePool ??
     (async (adapterId: string) =>
