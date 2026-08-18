@@ -225,10 +225,20 @@ export interface ConfirmOptions {
   now?: () => number;
 }
 
+export interface SubmitTransactionOptions
+  extends ConfirmOptions,
+    SubmittableOptions {
+  rpcTimeoutMs?: number;
+}
+
 // The slice of rpc.Server the confirmation loop needs. Narrowing it lets tests
 // pass a hand-rolled fake without constructing a real Server.
 interface TransactionReader {
   getTransaction(hash: string): Promise<rpc.Api.GetTransactionResponse>;
+}
+
+interface TransactionSubmitter extends TransactionReader {
+  sendTransaction(tx: Transaction): Promise<rpc.Api.SendTransactionResponse>;
 }
 
 const defaultSleep = (ms: number) =>
@@ -293,7 +303,14 @@ function describeSendError(res: rpc.Api.SendTransactionResponse): string {
   }
 }
 
-function allowedContractIds(network: StellarNetwork): Set<string> {
+export interface SubmittableOptions {
+  additionalContractIds?: readonly string[];
+}
+
+function allowedContractIds(
+  network: StellarNetwork,
+  opts: SubmittableOptions = {}
+): Set<string> {
   const key = network.network === "mainnet" ? "mainnet" : "testnet";
   const addresses = CONTRACT_ADDRESSES[key];
   const ids = new Set<string>();
@@ -306,6 +323,9 @@ function allowedContractIds(network: StellarNetwork): Set<string> {
   add(addresses.vault);
   for (const pool of Object.values(KNOWN_POOLS[key])) {
     add(pool.contractId);
+  }
+  for (const id of opts.additionalContractIds ?? []) {
+    add(id);
   }
   return ids;
 }
@@ -329,8 +349,9 @@ function allowedTrustlineIssuers(network: StellarNetwork): Set<string> {
  */
 export function assertSubmittable(
   tx: Transaction | FeeBumpTransaction,
-  network: StellarNetwork
-): void {
+  network: StellarNetwork,
+  opts: SubmittableOptions = {}
+): asserts tx is Transaction {
   if (!(tx instanceof Transaction)) {
     throw new Error("Fee-bump transactions are not supported");
   }
@@ -338,7 +359,6 @@ export function assertSubmittable(
     throw new Error("Transaction has no operations");
   }
 
-  const contractIds = allowedContractIds(network);
   const trustlineIssuers = allowedTrustlineIssuers(network);
 
   for (const op of tx.operations) {
@@ -349,9 +369,7 @@ export function assertSubmittable(
       const contractId = Address.fromScAddress(
         op.func.invokeContract().contractAddress()
       ).toString();
-      if (!contractIds.has(contractId)) {
-        throw new Error("Transaction targets an unrecognised contract");
-      }
+      assertSubmittableContractId(contractId, network, opts);
     } else if (op.type === "changeTrust") {
       if (!(op.line instanceof Asset)) {
         throw new Error("Transaction establishes an unrecognised trustline");
@@ -369,6 +387,16 @@ export function assertSubmittable(
   }
 }
 
+export function assertSubmittableContractId(
+  contractId: string,
+  network: StellarNetwork,
+  opts: SubmittableOptions = {}
+): void {
+  if (!allowedContractIds(network, opts).has(contractId)) {
+    throw new Error("Transaction targets an unrecognised contract");
+  }
+}
+
 /**
  * Submit a signed transaction and wait for it to actually land. Rejection at
  * submission time (ERROR / TRY_AGAIN_LATER) throws immediately; PENDING and
@@ -378,14 +406,26 @@ export function assertSubmittable(
 export async function submitTx(
   signedXdr: string,
   network: StellarNetwork,
-  opts: ConfirmOptions = {}
+  opts: SubmitTransactionOptions = {}
 ): Promise<SubmitResult> {
   const passphrase = passphraseFor(network);
   const server = getRpcServer(network.rpcUrl, 8_000);
   const tx = TransactionBuilder.fromXDR(signedXdr, passphrase);
-  assertSubmittable(tx, network);
+  return submitPreparedTransaction(tx, server, network, opts);
+}
 
-  const sent = await withSorobanTimeout(() => server.sendTransaction(tx));
+export async function submitPreparedTransaction(
+  tx: Transaction | FeeBumpTransaction,
+  server: TransactionSubmitter,
+  network: StellarNetwork,
+  opts: SubmitTransactionOptions = {}
+): Promise<SubmitResult> {
+  assertSubmittable(tx, network, opts);
+
+  const sent = await withSorobanTimeout(
+    () => server.sendTransaction(tx),
+    opts.rpcTimeoutMs
+  );
   if (sent.status === "ERROR") {
     throw new Error(
       `Transaction rejected at submission: ${describeSendError(sent)}`

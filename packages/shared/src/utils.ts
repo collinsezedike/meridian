@@ -51,6 +51,16 @@ export function withRaceTimeout<T>(
   });
 }
 
+export interface RetryOptions {
+  sleep?: (ms: number) => Promise<void>;
+  onRetry?: (context: {
+    attempt: number;
+    nextAttempt: number;
+    delayMs: number;
+    error: unknown;
+  }) => void;
+}
+
 /**
  * Retries `fn` up to `maxAttempts` times with exponential backoff starting at
  * `baseDelayMs`. Throws the last error when all attempts are exhausted.
@@ -60,21 +70,30 @@ export function withRaceTimeout<T>(
  * in-flight request is still running.
  */
 export async function withRetry<T>(
-  fn: () => Promise<T>,
+  fn: (attempt: number) => Promise<T>,
   maxAttempts = 3,
   baseDelayMs = 200,
-  shouldRetry: (err: unknown) => boolean = () => true
+  shouldRetry: (err: unknown) => boolean = () => true,
+  options: RetryOptions = {}
 ): Promise<T> {
   let lastErr: unknown;
+  const sleep =
+    options.sleep ??
+    ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      return await fn();
+      return await fn(attempt + 1);
     } catch (err) {
       lastErr = err;
       if (attempt < maxAttempts - 1 && shouldRetry(err)) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, baseDelayMs * 2 ** attempt)
-        );
+        const delayMs = baseDelayMs * 2 ** attempt;
+        options.onRetry?.({
+          attempt: attempt + 1,
+          nextAttempt: attempt + 2,
+          delayMs,
+          error: err,
+        });
+        await sleep(delayMs);
       } else {
         break;
       }

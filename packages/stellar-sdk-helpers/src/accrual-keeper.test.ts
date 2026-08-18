@@ -2,12 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const stellarMocks = vi.hoisted(() => ({
   assembleTransaction: vi.fn(),
+  assertSubmittable: vi.fn(),
+  assertSubmittableContractId: vi.fn(),
   getRpcServer: vi.fn(),
   isSimulationError: vi.fn(),
   isSimulationSuccess: vi.fn(),
   keypairFromSecret: vi.fn(),
   signPrepared: vi.fn(),
   simulateView: vi.fn(),
+  submitPreparedTransaction: vi.fn(),
   waitForTransaction: vi.fn(),
 }));
 
@@ -77,12 +80,16 @@ vi.mock("./internal", async (importOriginal) => {
 });
 
 vi.mock("./tx", () => ({
+  assertSubmittable: stellarMocks.assertSubmittable,
+  assertSubmittableContractId: stellarMocks.assertSubmittableContractId,
   simErrorMessage: (error: unknown) => String(error),
   simulateView: stellarMocks.simulateView,
+  submitPreparedTransaction: stellarMocks.submitPreparedTransaction,
   waitForTransaction: stellarMocks.waitForTransaction,
 }));
 import {
   discoverLiveAdapters,
+  isTransientKeeperError,
   loadBlendAccrualKeeperConfig,
   runBlendAccrualKeeper,
   type BlendAccrualKeeperConfig,
@@ -103,6 +110,7 @@ const CONFIG: BlendAccrualKeeperConfig = {
   maxAttempts: 3,
   baseDelayMs: 1,
   rpcTimeoutMs: 100,
+  allowedAdapterIds: ["CADAPTERBLEND"],
 };
 
 const VAULT: KnownPoolMeta = {
@@ -174,6 +182,19 @@ beforeEach(() => {
     build: () => ({ tx, sign: stellarMocks.signPrepared }),
   }));
   stellarMocks.simulateView.mockReset();
+  stellarMocks.assertSubmittable.mockReset();
+  stellarMocks.assertSubmittableContractId.mockReset();
+  stellarMocks.submitPreparedTransaction.mockImplementation(
+    async (tx, server, _network, opts) => {
+      const sent = await server.sendTransaction(tx);
+      const confirmed = await stellarMocks.waitForTransaction(
+        server,
+        sent.hash,
+        opts
+      );
+      return { hash: sent.hash, status: "SUCCESS", ledger: confirmed.ledger };
+    }
+  );
   stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 999 });
 });
 
@@ -190,12 +211,17 @@ describe("loadBlendAccrualKeeperConfig", () => {
       MERIDIAN_KEEPER_MAX_ATTEMPTS: "5",
       MERIDIAN_KEEPER_RETRY_BASE_DELAY_MS: "250",
       MERIDIAN_KEEPER_RPC_TIMEOUT_MS: "9000",
+      MERIDIAN_KEEPER_ALLOWED_ADAPTER_IDS:
+        "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
     });
 
     expect(config.secretKey).toBe("SECRET");
     expect(config.maxAttempts).toBe(5);
     expect(config.baseDelayMs).toBe(250);
     expect(config.rpcTimeoutMs).toBe(9000);
+    expect(config.allowedAdapterIds).toEqual([
+      "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+    ]);
   });
 
   it("uses the legacy keeper secret fallback and default retry tuning", () => {
@@ -207,6 +233,7 @@ describe("loadBlendAccrualKeeperConfig", () => {
     expect(config.maxAttempts).toBe(3);
     expect(config.baseDelayMs).toBe(1000);
     expect(config.rpcTimeoutMs).toBe(12000);
+    expect(config.allowedAdapterIds).toEqual([]);
   });
 
   it("rejects invalid positive integer environment values", () => {
@@ -216,6 +243,15 @@ describe("loadBlendAccrualKeeperConfig", () => {
         MERIDIAN_KEEPER_MAX_ATTEMPTS: "0",
       })
     ).toThrow("MERIDIAN_KEEPER_MAX_ATTEMPTS must be a positive integer");
+  });
+
+  it("rejects malformed configured adapter IDs", () => {
+    expect(() =>
+      loadBlendAccrualKeeperConfig({
+        MERIDIAN_KEEPER_SECRET_KEY: "SECRET",
+        MERIDIAN_KEEPER_ALLOWED_ADAPTER_IDS: "CADAPTER",
+      })
+    ).toThrow("MERIDIAN_KEEPER_ALLOWED_ADAPTER_IDS must contain Stellar contract IDs");
   });
 });
 
@@ -393,6 +429,67 @@ describe("discoverLiveAdapters", () => {
 
     expect(simulate).not.toHaveBeenCalled();
     expect(result).toEqual({ adapters: [], failures: [] });
+  });
+
+  it("reports an empty mainnet Meridian configuration as a discovery failure", async () => {
+    const simulate = vi.fn();
+    const result = await discoverLiveAdapters({
+      network: {
+        network: "mainnet",
+        rpcUrl: "https://rpc-mainnet.example",
+        passphrase: "Public Global Stellar Network ; September 2015",
+      },
+      server: {} as never,
+      simulate: simulate as never,
+      pools: { "blend-usdc-fixed": DIRECT_BLEND },
+    });
+
+    expect(simulate).not.toHaveBeenCalled();
+    expect(result.adapters).toEqual([]);
+    expect(result.failures).toEqual([
+      {
+        stage: "discover",
+        attempts: 0,
+        transient: false,
+        error:
+          "No mainnet Meridian vaults are configured for the accrual keeper",
+      },
+    ]);
+  });
+});
+
+describe("isTransientKeeperError", () => {
+  it("treats structured 500 and 503 statuses as transient", () => {
+    expect(isTransientKeeperError({ status: 500 })).toBe(true);
+    expect(isTransientKeeperError({ response: { status: 503 } })).toBe(true);
+  });
+
+  it("treats timeout and network failure codes as transient", () => {
+    expect(isTransientKeeperError(Object.assign(new Error("socket"), {
+      code: "ETIMEDOUT",
+    }))).toBe(true);
+    expect(isTransientKeeperError(Object.assign(new Error("socket"), {
+      code: "ECONNRESET",
+    }))).toBe(true);
+  });
+
+  it("treats exact not_found RPC codes as transient", () => {
+    expect(isTransientKeeperError({ code: "not_found" })).toBe(true);
+    expect(isTransientKeeperError(new Error("not_found"))).toBe(true);
+  });
+
+  it("does not retry misleading permanent messages containing transient-looking text", () => {
+    expect(isTransientKeeperError(new Error("minimum deposit is 500 stroops"))).toBe(
+      false
+    );
+    expect(isTransientKeeperError(new Error("value 503 is not valid here"))).toBe(
+      false
+    );
+    expect(
+      isTransientKeeperError(
+        new Error("storage key user_not_found_marker is permanent")
+      )
+    ).toBe(false);
   });
 });
 
@@ -625,6 +722,38 @@ describe("runBlendAccrualKeeper", () => {
     ]);
   });
 
+  it.each([
+    "minimum deposit is 500 stroops",
+    "value 503 is not valid here",
+    "storage key user_not_found_marker is permanent",
+  ])("does not retry misleading permanent submission text: %s", async (message) => {
+    const sleep = vi.fn();
+    const submitAccrual = vi.fn(async () => {
+      throw new Error(message);
+    });
+
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      logger: logger(),
+      sleep,
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+      submitAccrual,
+    });
+
+    expect(submitAccrual).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(result.failures).toMatchObject([
+      {
+        stage: "submit",
+        attempts: 1,
+        transient: false,
+        error: message,
+      },
+    ]);
+  });
+
   it("makes failed submissions observable in the run result and logs context", async () => {
     const log = logger();
     const submitAccrual = vi.fn(async () => {
@@ -805,13 +934,24 @@ describe("runBlendAccrualKeeper", () => {
     });
 
     expect(server.getAccount).toHaveBeenCalledWith("GKEEPER");
+    expect(stellarMocks.assertSubmittableContractId).toHaveBeenCalledWith(
+      "CADAPTERBLEND",
+      CONFIG.network,
+      { additionalContractIds: ["CADAPTERBLEND"] }
+    );
     expect(server.simulateTransaction).toHaveBeenCalledOnce();
     expect(stellarMocks.assembleTransaction).toHaveBeenCalledOnce();
+    expect(stellarMocks.assertSubmittable).toHaveBeenCalledWith(
+      expect.objectContaining({ sign: stellarMocks.signPrepared }),
+      CONFIG.network,
+      { additionalContractIds: ["CADAPTERBLEND"] }
+    );
     expect(stellarMocks.signPrepared).toHaveBeenCalledOnce();
     expect(server.sendTransaction).toHaveBeenCalledOnce();
     expect(stellarMocks.waitForTransaction).toHaveBeenCalledWith(
       server,
-      "SUBMITTED_HASH"
+      "SUBMITTED_HASH",
+      { timeoutMs: CONFIG.rpcTimeoutMs }
     );
     expect(result.successes).toEqual([
       {
@@ -820,6 +960,38 @@ describe("runBlendAccrualKeeper", () => {
         hash: "SUBMITTED_HASH",
         ledger: 321,
         attempts: 1,
+      },
+    ]);
+  });
+
+  it("rejects an unapproved adapter before loading the keeper account or signing", async () => {
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.assertSubmittableContractId.mockImplementationOnce(() => {
+      throw new Error("Transaction targets an unrecognised contract");
+    });
+
+    const result = await runBlendAccrualKeeper(
+      { ...CONFIG, allowedAdapterIds: [] },
+      {
+        logger: logger(),
+        discoverAdapters: async () => ({
+          adapters: [BLEND_ADAPTER],
+          failures: [],
+        }),
+        sleep: vi.fn(),
+      }
+    );
+
+    expect(server.getAccount).not.toHaveBeenCalled();
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(stellarMocks.signPrepared).not.toHaveBeenCalled();
+    expect(result.failures).toMatchObject([
+      {
+        stage: "submit",
+        attempts: 1,
+        transient: false,
+        error: "Transaction targets an unrecognised contract",
       },
     ]);
   });

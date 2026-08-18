@@ -19,6 +19,8 @@ import {
   simulateView,
   assertFaucetPayment,
   assertSubmittable,
+  assertSubmittableContractId,
+  submitPreparedTransaction,
 } from "./tx";
 import type { StellarNetwork } from "./types";
 import { CONTRACT_ADDRESSES } from "@meridian/shared";
@@ -459,6 +461,17 @@ describe("assertSubmittable", () => {
     expect(() => assertSubmittable(tx, network)).not.toThrow();
   });
 
+  it("allows an explicitly additional known adapter contract", () => {
+    const contract = new Contract(UNKNOWN_CONTRACT);
+    const tx = buildTx(contract.call("accrue"));
+    const opts = { additionalContractIds: [UNKNOWN_CONTRACT] };
+
+    expect(() =>
+      assertSubmittableContractId(UNKNOWN_CONTRACT, network, opts)
+    ).not.toThrow();
+    expect(() => assertSubmittable(tx, network, opts)).not.toThrow();
+  });
+
   it("rejects a transaction invoking an unrecognised contract", () => {
     const contract = new Contract(UNKNOWN_CONTRACT);
     const tx = buildTx(contract.call("drain"));
@@ -501,5 +514,63 @@ describe("assertSubmittable", () => {
     expect(() => assertSubmittable(tx, network)).toThrow(
       /disallowed operation type/
     );
+  });
+});
+
+describe("submitPreparedTransaction", () => {
+  const network: StellarNetwork = {
+    network: "testnet",
+    rpcUrl: "https://soroban-testnet.stellar.org",
+    passphrase: "Test SDF Network ; September 2015",
+  };
+  const SOURCE = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+
+  function buildKnownTx() {
+    const account = new Account(SOURCE, "0");
+    return new TransactionBuilder(account, {
+      fee: "100",
+      networkPassphrase: network.passphrase,
+    })
+      .addOperation(new Contract(CONTRACT_ADDRESSES.testnet.vault).call("accrue"))
+      .setTimeout(30)
+      .build();
+  }
+
+  it("submits a submittable transaction and waits for confirmation", async () => {
+    const server = {
+      sendTransaction: vi.fn(async () => ({ hash: "HASH", status: "PENDING" })),
+      getTransaction: vi.fn(async () => ({
+        status: SUCCESS,
+        ledger: 123,
+      })),
+    };
+
+    await expect(
+      submitPreparedTransaction(buildKnownTx(), server, network, {
+        timeoutMs: 10_000,
+        sleep: noopSleep,
+      })
+    ).resolves.toEqual({ hash: "HASH", status: "SUCCESS", ledger: 123 });
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(server.getTransaction).toHaveBeenCalledWith("HASH");
+  });
+
+  it("applies the configured confirmation timeout", async () => {
+    const server = {
+      sendTransaction: vi.fn(async () => ({ hash: "HASH", status: "PENDING" })),
+      getTransaction: vi.fn(async () => ({
+        status: NOT_FOUND,
+        ledger: 0,
+      })),
+    };
+
+    await expect(
+      submitPreparedTransaction(buildKnownTx(), server, network, {
+        timeoutMs: 10_000,
+        sleep: noopSleep,
+        now: steppingClock(6_000),
+      })
+    ).rejects.toThrow(/Timed out/);
+    expect(server.getTransaction).toHaveBeenCalledTimes(2);
   });
 });

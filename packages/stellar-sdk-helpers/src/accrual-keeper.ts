@@ -6,10 +6,16 @@ import {
   TransactionBuilder,
   rpc,
 } from "@stellar/stellar-sdk";
-import { APP_NETWORK, withRaceTimeout } from "@meridian/shared";
+import { APP_NETWORK, withRaceTimeout, withRetry } from "@meridian/shared";
 import { KNOWN_POOLS, type KnownPoolMeta } from "./known-pools";
 import { BASE_FEE, getRpcServer } from "./internal";
-import { simulateView, simErrorMessage, waitForTransaction } from "./tx";
+import {
+  assertSubmittable,
+  assertSubmittableContractId,
+  simulateView,
+  simErrorMessage,
+  submitPreparedTransaction,
+} from "./tx";
 import type { StellarNetwork } from "./types";
 
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -22,6 +28,7 @@ export interface BlendAccrualKeeperConfig {
   maxAttempts: number;
   baseDelayMs: number;
   rpcTimeoutMs: number;
+  allowedAdapterIds: string[];
 }
 
 export interface DiscoveredAdapter {
@@ -155,6 +162,20 @@ function parsePositiveInt(
   return parsed;
 }
 
+function parseContractIdList(value: string | undefined, name: string): string[] {
+  if (!value?.trim()) return [];
+  const ids = value
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  for (const id of ids) {
+    if (!/^C[A-Z2-7]{55}$/.test(id)) {
+      throw new Error(`${name} must contain Stellar contract IDs`);
+    }
+  }
+  return [...new Set(ids)];
+}
+
 export function loadBlendAccrualKeeperConfig(
   env: Record<string, string | undefined>
 ): BlendAccrualKeeperConfig {
@@ -182,6 +203,10 @@ export function loadBlendAccrualKeeperConfig(
       DEFAULT_RPC_TIMEOUT_MS,
       "MERIDIAN_KEEPER_RPC_TIMEOUT_MS"
     ),
+    allowedAdapterIds: parseContractIdList(
+      env.MERIDIAN_KEEPER_ALLOWED_ADAPTER_IDS,
+      "MERIDIAN_KEEPER_ALLOWED_ADAPTER_IDS"
+    ),
   };
 }
 
@@ -191,29 +216,74 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
-function describeSendError(res: rpc.Api.SendTransactionResponse): string {
-  try {
-    return res.errorResult?.result().switch().name ?? "unknown error";
-  } catch {
-    return "unknown error";
+export function isTransientKeeperError(err: unknown): boolean {
+  const status = numericField(err, [
+    "status",
+    "statusCode",
+    "code",
+    "response.status",
+  ]);
+  if (status && [408, 409, 425, 429, 500, 502, 503, 504].includes(status)) {
+    return true;
   }
+
+  const code = stringField(err, ["code", "name", "response.data.code"]);
+  if (
+    code &&
+    [
+      "aborterror",
+      "eai_again",
+      "econnaborted",
+      "econnrefused",
+      "econnreset",
+      "enetunreach",
+      "etimedout",
+      "not_found",
+      "timeout",
+      "timeouterror",
+      "und_err_connect_timeout",
+    ].includes(code.toLowerCase())
+  ) {
+    return true;
+  }
+
+  const message = errorMessage(err).trim().toLowerCase();
+  return (
+    /\btry again(?: later)?\b/.test(message) ||
+    /\b(?:timeout|timed out)\b/.test(message) ||
+    /\brate limit(?:ed)?\b/.test(message) ||
+    /\btemporarily unavailable\b/.test(message) ||
+    /^(?:http|rpc|server|stellar|soroban)?\s*(?:error|status|response)?\s*(?:code)?\s*[:=-]?\s*(?:408|409|425|429|500|502|503|504)\b/.test(
+      message
+    ) ||
+    /^not_found$/.test(message)
+  );
 }
 
-function isTransientKeeperError(err: unknown): boolean {
-  const message = errorMessage(err).toLowerCase();
-  return (
-    message.includes("try again") ||
-    message.includes("timeout") ||
-    message.includes("timed out") ||
-    message.includes("rate limit") ||
-    message.includes("429") ||
-    message.includes("500") ||
-    message.includes("502") ||
-    message.includes("503") ||
-    message.includes("504") ||
-    message.includes("temporarily") ||
-    message.includes("not_found")
-  );
+function numericField(err: unknown, paths: string[]): number | undefined {
+  for (const path of paths) {
+    const value = nestedField(err, path);
+    if (typeof value === "number") return value;
+    if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+  }
+  return undefined;
+}
+
+function stringField(err: unknown, paths: string[]): string | undefined {
+  for (const path of paths) {
+    const value = nestedField(err, path);
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
+}
+
+function nestedField(err: unknown, path: string): unknown {
+  let value: unknown = err;
+  for (const key of path.split(".")) {
+    if (value === null || typeof value !== "object") return undefined;
+    value = (value as Record<string, unknown>)[key];
+  }
+  return value;
 }
 
 async function withKeeperRetry<T>(
@@ -223,29 +293,41 @@ async function withKeeperRetry<T>(
   context: Record<string, unknown>,
   sleepFn: (ms: number) => Promise<void>
 ): Promise<{ value: T; attempts: number }> {
-  let lastErr: unknown;
   let attempts = 0;
   let transient = false;
-  for (let attempt = 1; attempt <= config.maxAttempts; attempt++) {
-    attempts = attempt;
-    try {
-      return { value: await fn(attempt), attempts: attempt };
-    } catch (err) {
-      lastErr = err;
-      transient = isTransientKeeperError(err);
-      if (!transient || attempt >= config.maxAttempts) break;
-      const delayMs = config.baseDelayMs * 2 ** (attempt - 1);
-      logger.warn("[accrual-keeper] transient failure; retrying", {
-        ...context,
-        attempt,
-        nextAttempt: attempt + 1,
-        delayMs,
-        error: errorMessage(err),
-      });
-      await sleepFn(delayMs);
-    }
+  try {
+    const value = await withRetry(
+      async (attempt) => {
+        attempts = attempt;
+        return fn(attempt);
+      },
+      config.maxAttempts,
+      config.baseDelayMs,
+      (err) => {
+        transient = isTransientKeeperError(err);
+        return transient;
+      },
+      {
+        sleep: sleepFn,
+        onRetry: ({ attempt, nextAttempt, delayMs, error }) => {
+          logger.warn("[accrual-keeper] transient failure; retrying", {
+            ...context,
+            attempt,
+            nextAttempt,
+            delayMs,
+            error: errorMessage(error),
+          });
+        },
+      }
+    );
+    return { value, attempts };
+  } catch (err) {
+    throw new KeeperRetryError(
+      err,
+      attempts || 1,
+      transient || isTransientKeeperError(err)
+    );
   }
-  throw new KeeperRetryError(lastErr, attempts, transient);
 }
 
 export async function discoverLiveAdapters(
@@ -265,9 +347,23 @@ export async function discoverLiveAdapters(
   };
   const adapters: DiscoveredAdapter[] = [];
   const failures: KeeperFailure[] = [];
+  const configuredMeridianPools = Object.values(pools).filter(
+    (meta): meta is KnownPoolMeta & { contractId: string } =>
+      meta.protocol === "meridian" && Boolean(meta.contractId)
+  );
 
-  for (const meta of Object.values(pools)) {
-    if (meta.protocol !== "meridian" || !meta.contractId) continue;
+  if (networkKey === "mainnet" && configuredMeridianPools.length === 0) {
+    failures.push({
+      stage: "discover",
+      attempts: 0,
+      transient: false,
+      error:
+        "No mainnet Meridian vaults are configured for the accrual keeper",
+    });
+    return { adapters, failures };
+  }
+
+  for (const meta of configuredMeridianPools) {
     const vaultContractId = meta.contractId;
 
     try {
@@ -327,6 +423,14 @@ async function submitAccrualTransaction(
   config: BlendAccrualKeeperConfig,
   server: KeeperRpcServer
 ): Promise<Omit<AccrualSuccess, "attempts" | "vaultId" | "adapterId">> {
+  const submittableOptions = {
+    additionalContractIds: config.allowedAdapterIds,
+  };
+  assertSubmittableContractId(
+    adapter.adapterId,
+    config.network,
+    submittableOptions
+  );
   const keypair = Keypair.fromSecret(config.secretKey);
   const source = await withRaceTimeout(
     () => server.getAccount(keypair.publicKey()),
@@ -355,24 +459,20 @@ async function submitAccrualTransaction(
   }
 
   const prepared = rpc.assembleTransaction(tx, sim).build();
+  assertSubmittable(prepared, config.network, submittableOptions);
   prepared.sign(keypair);
 
-  const sent = await withRaceTimeout(
-    () => server.sendTransaction(prepared),
-    config.rpcTimeoutMs,
-    "Soroban RPC"
+  const submitted = await submitPreparedTransaction(
+    prepared,
+    server,
+    config.network,
+    {
+      ...submittableOptions,
+      rpcTimeoutMs: config.rpcTimeoutMs,
+      timeoutMs: config.rpcTimeoutMs,
+    }
   );
-  if (sent.status === "ERROR") {
-    throw new Error(
-      `Transaction rejected at submission: ${describeSendError(sent)}`
-    );
-  }
-  if (sent.status === "TRY_AGAIN_LATER") {
-    throw new Error("Transaction could not be submitted yet (try again later)");
-  }
-
-  const confirmed = await waitForTransaction(server, sent.hash);
-  return { hash: sent.hash, ledger: confirmed.ledger };
+  return { hash: submitted.hash, ledger: submitted.ledger };
 }
 
 export async function runBlendAccrualKeeper(

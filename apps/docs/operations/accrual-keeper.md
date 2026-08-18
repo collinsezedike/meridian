@@ -27,8 +27,13 @@ The legacy fallback name `KEEPER_SECRET_KEY` is also accepted, but new
 deployments should use `MERIDIAN_KEEPER_SECRET_KEY`.
 
 Set `CRON_SECRET` as a separate secret. Scheduled calls must include
-`Authorization: Bearer $CRON_SECRET`; production deployments fail closed when
+`Authorization: Bearer $CRON_SECRET`; keeper calls fail closed when
 `CRON_SECRET` is missing.
+
+Set `MERIDIAN_KEEPER_ALLOWED_ADAPTER_IDS` to a comma-separated list of live
+Blend adapter contract IDs that the keeper is allowed to submit to. The keeper
+discovers each vault's current adapter on-chain, but it refuses to sign unless
+that adapter is also explicitly allowlisted for the deployment.
 
 ## Discovery
 
@@ -42,6 +47,11 @@ The keeper discovers adapters from live Meridian coordinator vault entries in
 DeFindex-backed adapters are skipped because their `total_assets()` value is
 computed live and does not require a separate accrue transaction.
 
+Mainnet keeper execution is intentionally unavailable until live Meridian
+coordinator vault contract IDs and their allowed Blend adapter IDs are
+configured. A mainnet run with no configured Meridian vaults returns a failure
+instead of a healthy-looking no-op.
+
 ## Retry And Failure Handling
 
 Each Blend accrue submission is built from a freshly loaded source account, then
@@ -53,6 +63,7 @@ Transient submission failures retry with exponential backoff. Configure:
 - `MERIDIAN_KEEPER_MAX_ATTEMPTS` default `3`
 - `MERIDIAN_KEEPER_RETRY_BASE_DELAY_MS` default `1000`
 - `MERIDIAN_KEEPER_RPC_TIMEOUT_MS` default `12000`
+- `MERIDIAN_KEEPER_ALLOWED_ADAPTER_IDS` required for any adapter submission
 
 Failures are logged with the vault id, adapter id, protocol, stage, attempt
 count, and error summary. Any discovery or submission failure is also included

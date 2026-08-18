@@ -3,6 +3,7 @@ import {
   loadBlendAccrualKeeperConfig,
   runBlendAccrualKeeper,
 } from "@meridian/stellar-sdk-helpers";
+import { applyCors, checkRateLimit } from "../../_lib/middleware.js";
 
 function authorizationHeader(req: VercelRequest): string | undefined {
   const raw = req.headers.authorization;
@@ -11,17 +12,28 @@ function authorizationHeader(req: VercelRequest): string | undefined {
 
 function isCronAuthorized(req: VercelRequest): boolean {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return process.env.NODE_ENV !== "production";
+  if (!secret) return false;
   return authorizationHeader(req) === `Bearer ${secret}`;
 }
 
+function missingCronSecretContext(): Record<string, string> {
+  return { vercelEnv: process.env.VERCEL_ENV ?? "local" };
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (applyCors(req, res)) return;
+  if (!(await checkRateLimit(req, res))) return;
+
   if (req.method !== "GET" && req.method !== "POST") {
     res.setHeader("Allow", "GET, POST");
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  if (!process.env.CRON_SECRET && process.env.NODE_ENV === "production") {
+  if (!process.env.CRON_SECRET) {
+    console.error(
+      "[accrual-keeper] CRON_SECRET is not configured",
+      missingCronSecretContext()
+    );
     return res.status(503).json({ error: "CRON_SECRET is not configured" });
   }
 

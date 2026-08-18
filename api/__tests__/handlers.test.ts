@@ -19,6 +19,7 @@ vi.mock("@meridian/stellar-sdk-helpers", () => ({
     maxAttempts: 3,
     baseDelayMs: 1,
     rpcTimeoutMs: 100,
+    allowedAdapterIds: ["CADAPTER"],
   })),
   runBlendAccrualKeeper: vi.fn(async () => ({
     network: "testnet",
@@ -66,6 +67,7 @@ import {
   runBlendAccrualKeeper,
   resolvePositions,
 } from "@meridian/stellar-sdk-helpers";
+import { resetRateLimitForTesting } from "../_lib/middleware.js";
 
 // A 56-char Stellar public key shape (only the length is validated).
 const PUBKEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
@@ -77,8 +79,10 @@ interface FakeRes {
   statusCode: number;
   body: unknown;
   headers: Record<string, string>;
+  ended: boolean;
   status(code: number): FakeRes;
   json(payload: unknown): FakeRes;
+  end(): FakeRes;
   setHeader(key: string, value: string): void;
 }
 
@@ -87,12 +91,17 @@ function makeRes(): FakeRes & VercelResponse {
     statusCode: 200,
     body: undefined,
     headers: {},
+    ended: false,
     status(code: number) {
       r.statusCode = code;
       return r;
     },
     json(payload: unknown) {
       r.body = payload;
+      return r;
+    },
+    end() {
+      r.ended = true;
       return r;
     },
     setHeader(key: string, value: string) {
@@ -104,7 +113,9 @@ function makeRes(): FakeRes & VercelResponse {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetRateLimitForTesting();
   process.env.CRON_SECRET = "cron-secret";
+  delete process.env.VERCEL_ENV;
 });
 
 describe("POST /api/v1/tx/deposit", () => {
@@ -291,12 +302,129 @@ describe("GET /api/v1/positions/:publicKey", () => {
 });
 
 describe("GET /api/v1/keepers/accrue", () => {
+  it("applies CORS and handles preflight before auth", async () => {
+    const res = makeRes();
+    await keeperHandler(fakeReq({ method: "OPTIONS", headers: {} }), res);
+
+    expect(res.statusCode).toBe(204);
+    expect(res.ended).toBe(true);
+    expect(res.headers["Access-Control-Allow-Origin"]).toBeDefined();
+    expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
+  });
+
   it("rejects requests without the cron bearer token", async () => {
     const res = makeRes();
     await keeperHandler(fakeReq({ method: "GET", headers: {} }), res);
 
     expect(res.statusCode).toBe(401);
     expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
+  });
+
+  it("rejects production requests with the wrong cron bearer token", async () => {
+    process.env.VERCEL_ENV = "production";
+    const res = makeRes();
+    await keeperHandler(
+      fakeReq({ method: "GET", headers: { authorization: "Bearer wrong" } }),
+      res
+    );
+
+    expect(res.statusCode).toBe(401);
+    expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["production", "production"],
+    ["preview", "preview"],
+    ["local", undefined],
+  ])("fails closed when CRON_SECRET is not configured in %s", async (
+    _label,
+    vercelEnv
+  ) => {
+    delete process.env.CRON_SECRET;
+    if (vercelEnv) {
+      process.env.VERCEL_ENV = vercelEnv;
+    } else {
+      delete process.env.VERCEL_ENV;
+    }
+    vi.spyOn(console, "error").mockImplementationOnce(() => undefined);
+
+    const res = makeRes();
+    await keeperHandler(
+      fakeReq({
+        method: "GET",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toEqual({ error: "CRON_SECRET is not configured" });
+    expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
+  });
+
+  it("runs in Vercel production only with the configured cron secret", async () => {
+    process.env.VERCEL_ENV = "production";
+    const res = makeRes();
+    await keeperHandler(
+      fakeReq({
+        method: "POST",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(runBlendAccrualKeeper).toHaveBeenCalledOnce();
+  });
+
+  it("runs in Vercel preview when the cron secret is configured", async () => {
+    process.env.VERCEL_ENV = "preview";
+    const res = makeRes();
+    await keeperHandler(
+      fakeReq({
+        method: "GET",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(runBlendAccrualKeeper).toHaveBeenCalledOnce();
+  });
+
+  it("rejects incorrect HTTP methods with 405", async () => {
+    const res = makeRes();
+    await keeperHandler(
+      fakeReq({
+        method: "PUT",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(405);
+    expect(res.headers.Allow).toBe("GET, POST");
+    expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
+  });
+
+  it("enforces the shared rate limit before running the keeper", async () => {
+    const headers = {
+      authorization: "Bearer cron-secret",
+      "x-forwarded-for": "203.0.113.10",
+    };
+
+    for (let i = 0; i < 100; i++) {
+      await keeperHandler(fakeReq({ method: "GET", headers }), makeRes());
+    }
+
+    const res = makeRes();
+    await keeperHandler(fakeReq({ method: "GET", headers }), res);
+
+    expect(res.statusCode).toBe(429);
+    expect(res.body).toEqual({
+      error: "Too many requests. Try again in a minute.",
+    });
+    expect(runBlendAccrualKeeper).toHaveBeenCalledTimes(100);
   });
 
   it("runs the accrual keeper for authorized cron calls", async () => {

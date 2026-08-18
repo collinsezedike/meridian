@@ -76,6 +76,30 @@ describe("withRetry", () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
+  it("passes attempt numbers and uses injected retry hooks", async () => {
+    const sleep = vi.fn(async () => undefined);
+    const onRetry = vi.fn();
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("transient"))
+      .mockResolvedValue("ok");
+
+    await expect(
+      withRetry(fn, 3, 25, () => true, { sleep, onRetry })
+    ).resolves.toBe("ok");
+
+    expect(fn).toHaveBeenNthCalledWith(1, 1);
+    expect(fn).toHaveBeenNthCalledWith(2, 2);
+    expect(onRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt: 1,
+        nextAttempt: 2,
+        delayMs: 25,
+      })
+    );
+    expect(sleep).toHaveBeenCalledWith(25);
+  });
+
   it("throws last error after exhausting all attempts", async () => {
     const err = new Error("persistent");
     const fn = vi.fn().mockRejectedValue(err);

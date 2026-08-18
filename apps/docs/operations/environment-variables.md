@@ -20,6 +20,7 @@
 | `MERIDIAN_KEEPER_MAX_ATTEMPTS`        | No           | `3`                                | Maximum attempts per Blend adapter accrue submission.                                                                                                                                                                                                   |
 | `MERIDIAN_KEEPER_RETRY_BASE_DELAY_MS` | No           | `1000`                             | Initial exponential-backoff delay for transient keeper failures.                                                                                                                                                                                        |
 | `MERIDIAN_KEEPER_RPC_TIMEOUT_MS`      | No           | `12000`                            | Timeout for keeper RPC calls, in milliseconds.                                                                                                                                                                                                          |
+| `MERIDIAN_KEEPER_ALLOWED_ADAPTER_IDS` | Yes (keeper) | `""`                               | Comma-separated allowlist of Blend adapter contract IDs the keeper may sign accrual transactions for. Empty means discovered adapters are rejected before signing/submission.                                                                            |
 
 ## Deploy scripts (`scripts/`)
 

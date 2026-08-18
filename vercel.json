@@ -1,6 +1,9 @@
 {
   "buildCommand": "bash scripts/build-vercel.sh",
   "outputDirectory": "dist",
+  "functions": {
+    "api/v1/keepers/accrue.ts": { "maxDuration": 180 }
+  },
   "crons": [{ "path": "/api/v1/keepers/accrue", "schedule": "*/15 * * * *" }],
   "rewrites": [
     { "source": "/app/:path*", "destination": "/app/index.html" },
