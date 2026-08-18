@@ -4,6 +4,11 @@ import {
   requestAccess,
   signTransaction as freighterSign,
 } from "@stellar/freighter-api";
+import {
+  isConnected as lobstrIsConnected,
+  getPublicKey as lobstrGetPublicKey,
+  signTransaction as lobstrSign,
+} from "@lobstrco/signer-extension-api";
 
 // Freighter's real API talks to the browser extension via an internal
 // postMessage protocol, which isn't practical to fake from outside the app.
@@ -73,6 +78,48 @@ class FreighterWallet implements WalletAdapter {
     if (result.error) throw new Error(result.error.message);
     if (!result.signedTxXdr) throw new Error("Signing cancelled");
     return result.signedTxXdr;
+  }
+}
+
+// LOBSTR uses a browser extension that pairs with the LOBSTR mobile app.
+// Its model differs from Freighter in two ways:
+//   1. There is no separate site-permission step — isConnected() covers both
+//      "is the extension installed?" and "is the mobile app paired?".
+//   2. signTransaction() takes only the XDR; the extension derives the network
+//      from its own pairing with the mobile app.
+export class LobstrWallet implements WalletAdapter {
+  async isInstalled(): Promise<boolean> {
+    const mock = mockWallet();
+    if (mock) return mock.installed;
+    return lobstrIsConnected();
+  }
+
+  // LOBSTR's extension provides both presence and authorization through a
+  // single isConnected check — there is no separate isAllowed gate. A
+  // connected extension means the user has the app paired and access is
+  // granted; an absent or unpaired extension means no access.
+  async isAuthorized(): Promise<boolean> {
+    const mock = mockWallet();
+    if (mock) return mock.installed && mock.authorized;
+    return lobstrIsConnected();
+  }
+
+  async connect(): Promise<string> {
+    const mock = mockWallet();
+    if (mock) return mock.address;
+    const publicKey = await lobstrGetPublicKey();
+    if (!publicKey) throw new Error("LOBSTR wallet returned no public key");
+    return publicKey;
+  }
+
+  async sign(xdr: string, networkPassphrase: string): Promise<string> {
+    const mock = mockWallet();
+    if (mock) return mock.sign(xdr, networkPassphrase);
+    // LOBSTR's signTransaction does not accept a networkPassphrase; the
+    // extension uses the network already configured in the paired mobile app.
+    const signedXdr = await lobstrSign(xdr);
+    if (!signedXdr) throw new Error("Signing cancelled");
+    return signedXdr;
   }
 }
 
