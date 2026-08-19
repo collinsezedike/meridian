@@ -449,7 +449,7 @@ describe("discoverLiveAdapters", () => {
     ]);
   });
 
-  it("records get_protocol discovery failures after retrying the whole discovery step", async () => {
+  it("retries only the failed call, not an already-succeeded get_adapter", async () => {
     const sleep = vi.fn();
     const simulate = vi.fn(async (_server, contractId, _passphrase, method) => {
       if (contractId === "CVAULT" && method === "get_adapter") {
@@ -468,7 +468,14 @@ describe("discoverLiveAdapters", () => {
       pools: { "meridian-usdc": VAULT },
     });
 
-    expect(simulate).toHaveBeenCalledTimes(4);
+    // get_adapter succeeds once and is cached; only the failing get_protocol
+    // call is re-issued on retry (2 get_protocol attempts + 1 get_adapter =
+    // 3 total), not 4, which would mean get_adapter was redundantly re-run.
+    const getAdapterCalls = simulate.mock.calls.filter(
+      ([, , , method]) => method === "get_adapter"
+    );
+    expect(getAdapterCalls).toHaveLength(1);
+    expect(simulate).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledWith(7);
     expect(result.adapters).toEqual([]);
     expect(result.failures).toMatchObject([
@@ -610,7 +617,7 @@ describe("runBlendAccrualKeeper", () => {
       },
     ]);
     expect(result.skipped).toEqual([
-      { ...DEFINDEX_ADAPTER, reason: "non-blend" },
+      { ...DEFINDEX_ADAPTER, reason: "non-blend (protocol: defindex)" },
     ]);
   });
 
@@ -629,7 +636,7 @@ describe("runBlendAccrualKeeper", () => {
     expect(submitAccrual).not.toHaveBeenCalled();
     expect(result.blendAdapters).toBe(0);
     expect(result.skipped).toEqual([
-      { ...DEFINDEX_ADAPTER, reason: "non-blend" },
+      { ...DEFINDEX_ADAPTER, reason: "non-blend (protocol: defindex)" },
     ]);
   });
 

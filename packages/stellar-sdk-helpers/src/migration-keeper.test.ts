@@ -287,6 +287,38 @@ describe("discoverMigrationVaults", () => {
     expect(result.vaults).toEqual([DISCOVERED_VAULT]);
   });
 
+  it("retries only the failed call, not already-succeeded get_adapter/get_protocol", async () => {
+    // Fail get_pool once, then succeed, without exhausting maxAttempts.
+    let poolCalls = 0;
+    stellarMocks.simulateView.mockImplementation(
+      async (_server, _contractId, _passphrase, method) => {
+        if (method === "get_adapter") return "CBLENDADAPTER";
+        if (method === "get_protocol") return "blend";
+        if (method === "get_pool") {
+          poolCalls++;
+          if (poolCalls < 2) throw new Error("try again later");
+          return "CBLENDPOOL";
+        }
+        throw new Error(`unexpected method: ${method}`);
+      }
+    );
+
+    const result = await discoverMigrationVaults({
+      network: NETWORK,
+      pools: { "meridian-usdc": VAULT },
+      logger: logger(),
+      sleep: vi.fn(),
+    });
+
+    expect(result.vaults).toEqual([DISCOVERED_VAULT]);
+    const callsByMethod = (method: string) =>
+      stellarMocks.simulateView.mock.calls.filter(([, , , m]) => m === method)
+        .length;
+    expect(callsByMethod("get_adapter")).toBe(1);
+    expect(callsByMethod("get_protocol")).toBe(1);
+    expect(callsByMethod("get_pool")).toBe(2);
+  });
+
   it("does not retry a permanent discovery error", async () => {
     stellarMocks.simulateView.mockRejectedValue(
       new Error("contract not found")

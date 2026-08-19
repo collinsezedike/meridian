@@ -317,9 +317,19 @@ export async function discoverMigrationVaults(
   const settled = await Promise.allSettled(
     targets.map((meta) => {
       const vaultContractId = meta.contractId as string;
+      // Cached across this target's own retry attempts (not shared with any
+      // other target): a transient failure on get_protocol or get_pool used
+      // to also re-issue an already-succeeded get_adapter call (and, for
+      // whichever of get_protocol/get_pool already succeeded, that call too)
+      // on retry, since all three lived in the same combined closure.
+      // Caching whatever already succeeded means a retry only re-issues the
+      // call(s) that actually failed.
+      let currentAdapterId: string | undefined;
+      let currentProtocol: string | undefined;
+      let currentPoolId: string | undefined;
       return withKeeperRetry(
         async () => {
-          const currentAdapterId = expectString(
+          currentAdapterId ??= expectString(
             await simulate(
               server as never,
               vaultContractId,
@@ -329,33 +339,50 @@ export async function discoverMigrationVaults(
             "get_adapter",
             vaultContractId
           );
-          // Independent of each other, both depend only on
-          // currentAdapterId: run concurrently rather than doubling this
-          // vault's discovery latency for no reason.
-          const [currentProtocol, currentPoolId] = await Promise.all([
-            simulate(
-              server as never,
-              currentAdapterId,
-              network.passphrase,
-              "get_protocol"
-            ).then((value) =>
-              expectString(value, "get_protocol", currentAdapterId)
-            ),
-            simulate(
-              server as never,
-              currentAdapterId,
-              network.passphrase,
-              "get_pool"
-            ).then((value) =>
-              expectString(value, "get_pool", currentAdapterId)
-            ),
+          const adapterId = currentAdapterId;
+          // Independent of each other, both depend only on adapterId: run
+          // concurrently rather than doubling this vault's discovery latency
+          // for no reason. Each caches its own result the moment IT resolves
+          // (not after Promise.all as a whole settles): if get_pool rejects,
+          // Promise.all rejects immediately without waiting for get_protocol,
+          // so caching only after Promise.all succeeds would lose a
+          // get_protocol result that had, in fact, already resolved.
+          const [protocol, poolId] = await Promise.all([
+            currentProtocol !== undefined
+              ? Promise.resolve(currentProtocol)
+              : simulate(
+                  server as never,
+                  adapterId,
+                  network.passphrase,
+                  "get_protocol"
+                ).then((value) => {
+                  const resolved = expectString(
+                    value,
+                    "get_protocol",
+                    adapterId
+                  );
+                  currentProtocol = resolved;
+                  return resolved;
+                }),
+            currentPoolId !== undefined
+              ? Promise.resolve(currentPoolId)
+              : simulate(
+                  server as never,
+                  adapterId,
+                  network.passphrase,
+                  "get_pool"
+                ).then((value) => {
+                  const resolved = expectString(value, "get_pool", adapterId);
+                  currentPoolId = resolved;
+                  return resolved;
+                }),
           ]);
           return {
             vaultId: meta.id,
             vaultContractId,
-            currentAdapterId,
-            currentProtocol,
-            currentPoolId,
+            currentAdapterId: adapterId,
+            currentProtocol: protocol,
+            currentPoolId: poolId,
           };
         },
         retryConfig,
