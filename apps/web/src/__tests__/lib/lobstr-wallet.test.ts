@@ -39,16 +39,36 @@ describe("LobstrWallet — real LOBSTR path (no mock wallet present)", () => {
     await expect(lobstr.isInstalled()).resolves.toBe(false);
   });
 
-  // LOBSTR has no separate site-permission step: isConnected covers both
-  // "is the extension installed?" and "is access granted?".
-  it("isAuthorized returns true when the extension is connected", async () => {
+  // LOBSTR's API has no separate site-permission query: isConnected() only
+  // confirms the extension is installed (its REQUEST_CONNECTION_STATUS
+  // handler returns true unconditionally). isAuthorized() delegates the
+  // install check to isInstalled(), then verifies pairing via getPublicKey(),
+  // which resolves with a public key only after the user approves a paired
+  // account in the grant-access popup.
+  it("isAuthorized returns true when installed and getPublicKey resolves a key", async () => {
     vi.mocked(lobstrIsConnected).mockResolvedValue(true);
+    vi.mocked(lobstrGetPublicKey).mockResolvedValue(ADDRESS);
     await expect(lobstr.isAuthorized()).resolves.toBe(true);
   });
 
-  it("isAuthorized returns false when the extension is absent", async () => {
+  it("isAuthorized returns false when getPublicKey resolves empty (unpaired)", async () => {
+    vi.mocked(lobstrIsConnected).mockResolvedValue(true);
+    vi.mocked(lobstrGetPublicKey).mockResolvedValue("");
+    await expect(lobstr.isAuthorized()).resolves.toBe(false);
+  });
+
+  it("isAuthorized returns false when getPublicKey throws (declined/error)", async () => {
+    vi.mocked(lobstrIsConnected).mockResolvedValue(true);
+    vi.mocked(lobstrGetPublicKey).mockRejectedValue(
+      new Error("User declined access")
+    );
+    await expect(lobstr.isAuthorized()).resolves.toBe(false);
+  });
+
+  it("isAuthorized returns false when the extension is not installed", async () => {
     vi.mocked(lobstrIsConnected).mockResolvedValue(false);
     await expect(lobstr.isAuthorized()).resolves.toBe(false);
+    expect(lobstrGetPublicKey).not.toHaveBeenCalled();
   });
 
   it("connect returns the public key on success", async () => {
@@ -130,6 +150,7 @@ describe("LobstrWallet — e2e mock wallet path", () => {
     setMockWallet({ installed: true, authorized: true });
     await expect(lobstr.isAuthorized()).resolves.toBe(true);
 
+    expect(lobstrGetPublicKey).not.toHaveBeenCalled();
     expect(lobstrIsConnected).not.toHaveBeenCalled();
   });
 

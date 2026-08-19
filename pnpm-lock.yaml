@@ -129,7 +129,7 @@ importers:
   apps/web:
     dependencies:
       '@lobstrco/signer-extension-api':
-        specifier: 2.1.0
+        specifier: ^2.1.0
         version: 2.1.0
       '@meridian/shared':
         specifier: workspace:*
