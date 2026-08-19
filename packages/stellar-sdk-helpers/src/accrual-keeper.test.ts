@@ -521,6 +521,40 @@ describe("discoverLiveAdapters", () => {
     ]);
   });
 
+  it("classifies a permanent error on the final attempt as non-transient, even after an earlier attempt was transient", async () => {
+    // Regression test: transient was previously tracked via a side-effecting
+    // closure variable only assigned inside shouldRetry, which withRetry
+    // skips calling on the last attempt. A transient failure followed by a
+    // permanent failure on the final attempt used to leave transient stuck
+    // at the earlier attempt's classification (true), wrongly reporting a
+    // permanent failure as transient.
+    const sleep = vi.fn();
+    const simulate = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("request timed out"))
+      .mockRejectedValueOnce(new Error("not_found"));
+
+    const result = await discoverLiveAdapters({
+      network: NETWORK,
+      server: {} as never,
+      simulate: simulate as never,
+      maxAttempts: 2,
+      baseDelayMs: 5,
+      sleep,
+      pools: { "meridian-usdc": VAULT },
+    });
+
+    expect(simulate).toHaveBeenCalledTimes(2);
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        attempts: 2,
+        transient: false,
+        error: "not_found",
+      },
+    ]);
+  });
+
   it("returns no adapters or failures when no Meridian vaults are configured", async () => {
     const simulate = vi.fn();
 

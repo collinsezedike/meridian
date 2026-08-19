@@ -145,15 +145,13 @@ export async function withKeeperRetry<T>(
   logPrefix: string
 ): Promise<{ value: T; attempts: number }> {
   let attempts = 0;
-  let transient = false;
 
   // Folds the deadline check into shouldRetry (rather than a separate
   // control point in withRetry) so withRetry itself stays deadline-agnostic;
   // this is the one place that decides "no, don't retry" for a reason other
   // than the error itself, and logs why.
   const shouldRetry = (err: unknown, attempt: number): boolean => {
-    transient = isTransient(err);
-    if (!transient) return false;
+    if (!isTransient(err)) return false;
     if (config.deadlineAt !== undefined) {
       const delayMs = config.baseDelayMs * 2 ** attempt;
       if (Date.now() + delayMs >= config.deadlineAt) {
@@ -191,6 +189,6 @@ export async function withKeeperRetry<T>(
     );
     return { value, attempts };
   } catch (err) {
-    throw new KeeperRetryError(err, attempts || 1, transient);
+    throw new KeeperRetryError(err, attempts || 1, isTransient(err));
   }
 }
