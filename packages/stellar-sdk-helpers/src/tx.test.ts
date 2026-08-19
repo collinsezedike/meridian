@@ -490,6 +490,17 @@ describe("assertSubmittable", () => {
     expect(() => assertSubmittable(tx, network)).toThrow(/unrecognised issuer/);
   });
 
+  it("rejects a transaction invoking the DeFindex factory contract", () => {
+    // The factory deploys other contracts; allowlisting it would let
+    // /tx/submit relay arbitrary invocations against it, no real deposit or
+    // withdraw flow ever calls it (see #482).
+    const contract = new Contract(CONTRACT_ADDRESSES.testnet.defindex.factory);
+    const tx = buildTx(contract.call("deploy"));
+    expect(() => assertSubmittable(tx, network)).toThrow(
+      /unrecognised contract/
+    );
+  });
+
   it("rejects a disallowed operation type", () => {
     const tx = buildTx(
       Operation.payment({

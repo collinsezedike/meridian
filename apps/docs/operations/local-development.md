@@ -91,7 +91,7 @@ pnpm --filter @meridian/shared build
 
 ## Working with the contracts
 
-`packages/contracts/` has four crates: `vault` (the coordinator), `router` (reserved for v2), and two yield adapters, `blend-adapter` and `defindex-adapter`. Build and test them all together from the `contracts` package root, or individually:
+`packages/contracts/` has three crates: `vault` (the coordinator) and two yield adapters, `blend-adapter` and `defindex-adapter`. Build and test them all together from the `contracts` package root, or individually:
 
 ```bash
 cd packages/contracts

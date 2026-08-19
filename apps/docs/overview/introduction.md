@@ -20,4 +20,4 @@ Switching which protocol a vault routes to happens via `set_adapter` (admin-only
 
 ## Status
 
-Meridian is a testnet technical preview. The coordinator vault, `BlendAdapter`, router, XDR builder, and frontend are all deployed and live on Stellar testnet, with a working end-to-end deposit/withdraw signing flow. A `DefindexAdapter` contract exists but has no live testnet DeFindex vault wired up yet. Mainnet deployment and a security audit are still ahead — see the root [README](https://github.com/drydocs/meridian#project-status) for the current, detailed status.
+Meridian is a testnet technical preview. The coordinator vault, `BlendAdapter`, XDR builder, and frontend are all deployed and live on Stellar testnet, with a working end-to-end deposit/withdraw signing flow. A `DefindexAdapter` contract exists but has no live testnet DeFindex vault wired up yet. Mainnet deployment and a security audit are still ahead — see the root [README](https://github.com/drydocs/meridian#project-status) for the current, detailed status.

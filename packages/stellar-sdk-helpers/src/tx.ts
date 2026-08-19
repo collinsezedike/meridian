@@ -285,7 +285,9 @@ export function simErrorMessage(raw: string): string {
 
 // Best-effort decode of the result code the RPC returns on a rejected submit
 // (e.g. txInsufficientBalance), without letting an unexpected XDR shape throw.
-function describeSendError(res: rpc.Api.SendTransactionResponse): string {
+export function describeSendError(
+  res: rpc.Api.SendTransactionResponse
+): string {
   try {
     return res.errorResult?.result().switch().name ?? "unknown error";
   } catch {
@@ -301,7 +303,6 @@ function allowedContractIds(network: StellarNetwork): Set<string> {
     if (id) ids.add(id);
   };
   add(addresses.blend.pool);
-  add(addresses.defindex.factory);
   add(addresses.defindex.vault);
   add(addresses.vault);
   for (const pool of Object.values(KNOWN_POOLS[key])) {

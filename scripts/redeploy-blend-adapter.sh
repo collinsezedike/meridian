@@ -9,10 +9,14 @@ set -euo pipefail
 # adapter's code is to deploy a new contract and swap the vault onto it.
 #
 # IMPORTANT: set_adapter resets the vault's adapter-share accounting
-# (ADPT_SH) to zero. If any funds are currently deposited through the vault's
-# CURRENT adapter, they will become unreachable through the vault's normal
-# withdraw flow unless withdrawn before the swap. Confirm no funds are at
-# risk before running the final set_adapter step this script prints.
+# (ADPT_SH) to zero and does not itself move any funds out of the old
+# adapter first. If the vault has real depositors, use migrate_adapter
+# instead of set_adapter for the final step this script prints, it moves
+# the vault's entire position to the new adapter atomically, with a
+# slippage-bounded value check, and does not require every depositor to
+# withdraw first. set_adapter remains correct only for a vault with no
+# depositors yet (e.g. right after a fresh deploy, before any real funds
+# are at risk).
 #
 # Usage: bash scripts/redeploy-blend-adapter.sh
 
@@ -63,12 +67,20 @@ echo ""
 echo "New adapter deployed and initialized at: $ADAPTER_ID"
 echo "It is NOT yet live. The vault ($VAULT_ID) still points at its old adapter."
 echo ""
-echo "Before continuing: confirm no funds are currently deposited through the"
-echo "vault's CURRENT adapter (query vault.get_adapter, then that adapter's"
-echo "total_assets). If there are, withdraw them first."
+echo "Check whether the vault has real depositors (query vault.get_total_shares)."
 echo ""
-echo "Once confirmed safe, point the vault at the new adapter by running"
-echo "(requires DEPLOYER to be the vault's admin):"
+echo "If it has depositors, use migrate_adapter (requires DEPLOYER to be the"
+echo "vault's admin). It moves the vault's entire position to the new adapter"
+echo "atomically, checked against a slippage tolerance in basis points:"
+echo ""
+echo "  stellar contract invoke \\"
+echo "    --network $NETWORK \\"
+echo "    --source \$DEPLOYER \\"
+echo "    --id $VAULT_ID \\"
+echo "    -- migrate_adapter --new-adapter $ADAPTER_ID --max-slippage-bps 100"
+echo ""
+echo "If it has no depositors yet (get_total_shares == 0), set_adapter is"
+echo "simpler and sufficient (requires DEPLOYER to be the vault's admin):"
 echo ""
 echo "  stellar contract invoke \\"
 echo "    --network $NETWORK \\"

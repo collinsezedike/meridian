@@ -2,10 +2,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useWalletStore } from "../../store/wallet";
 
 vi.mock("../../lib/wallet", () => ({
-  isFreighterAuthorized: vi.fn(),
+  wallet: {
+    isAuthorized: vi.fn(),
+  },
 }));
 
-import { isFreighterAuthorized } from "../../lib/wallet";
+import { wallet } from "../../lib/wallet";
 
 const KEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 
@@ -43,12 +45,12 @@ describe("useWalletStore", () => {
 
   it("revalidate does nothing when no publicKey is set", async () => {
     await useWalletStore.getState().revalidate();
-    expect(isFreighterAuthorized).not.toHaveBeenCalled();
+    expect(wallet.isAuthorized).not.toHaveBeenCalled();
   });
 
   it("revalidate keeps connection when site is still authorized", async () => {
     useWalletStore.setState({ publicKey: KEY, connected: true });
-    vi.mocked(isFreighterAuthorized).mockResolvedValue(true);
+    vi.mocked(wallet.isAuthorized).mockResolvedValue(true);
     await useWalletStore.getState().revalidate();
     expect(useWalletStore.getState()).toMatchObject({
       publicKey: KEY,
@@ -58,7 +60,7 @@ describe("useWalletStore", () => {
 
   it("revalidate disconnects when site access was revoked", async () => {
     useWalletStore.setState({ publicKey: KEY, connected: true });
-    vi.mocked(isFreighterAuthorized).mockResolvedValue(false);
+    vi.mocked(wallet.isAuthorized).mockResolvedValue(false);
     await useWalletStore.getState().revalidate();
     expect(useWalletStore.getState()).toMatchObject({
       publicKey: null,

@@ -1,0 +1,1066 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const stellarMocks = vi.hoisted(() => ({
+  assembleTransaction: vi.fn(),
+  getRpcServer: vi.fn(),
+  isSimulationError: vi.fn(),
+  isSimulationSuccess: vi.fn(),
+  keypairFromSecret: vi.fn(),
+  signPrepared: vi.fn(),
+  simulateView: vi.fn(),
+  waitForTransaction: vi.fn(),
+}));
+
+vi.mock("@stellar/stellar-sdk", () => {
+  class Contract {
+    constructor(readonly contractId: string) {}
+
+    call(method: string, ...args: unknown[]) {
+      return { contractId: this.contractId, method, args };
+    }
+  }
+
+  class TransactionBuilder {
+    private readonly operations: unknown[] = [];
+    private timeout = 0;
+
+    constructor(
+      private readonly source: unknown,
+      private readonly options: unknown
+    ) {}
+
+    addOperation(operation: unknown) {
+      this.operations.push(operation);
+      return this;
+    }
+
+    setTimeout(timeout: number) {
+      this.timeout = timeout;
+      return this;
+    }
+
+    build() {
+      return {
+        operations: this.operations,
+        options: this.options,
+        sign: stellarMocks.signPrepared,
+        source: this.source,
+        timeout: this.timeout,
+      };
+    }
+  }
+
+  return {
+    Account: class Account {},
+    Address: {
+      fromString: (address: string) => ({
+        toScVal: () => ({ scAddress: address }),
+      }),
+    },
+    Contract,
+    Keypair: {
+      fromSecret: stellarMocks.keypairFromSecret,
+    },
+    nativeToScVal: (value: unknown, opts: unknown) => ({ value, opts }),
+    Transaction: class Transaction {},
+    TransactionBuilder,
+    rpc: {
+      Api: {
+        isSimulationError: stellarMocks.isSimulationError,
+        isSimulationSuccess: stellarMocks.isSimulationSuccess,
+      },
+      assembleTransaction: stellarMocks.assembleTransaction,
+    },
+  };
+});
+
+vi.mock("./internal", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./internal")>();
+  return {
+    ...actual,
+    getRpcServer: stellarMocks.getRpcServer,
+  };
+});
+
+vi.mock("./tx", () => ({
+  describeSendError: (res: {
+    errorResult?: { result(): { switch(): { name: string } } };
+  }) => {
+    try {
+      return res.errorResult?.result().switch().name ?? "unknown error";
+    } catch {
+      return "unknown error";
+    }
+  },
+  simErrorMessage: (error: unknown) => String(error),
+  simulateView: stellarMocks.simulateView,
+  waitForTransaction: stellarMocks.waitForTransaction,
+}));
+
+import {
+  discoverMigrationVaults,
+  loadMigrationKeeperConfig,
+  runMigrationKeeper,
+  type DiscoveredVault,
+  type MigrationKeeperConfig,
+} from "./migration-keeper";
+import type { KeeperLogger } from "./keeper-retry";
+import type { KnownPoolMeta } from "./known-pools";
+
+const NETWORK = {
+  network: "testnet" as const,
+  rpcUrl: "https://rpc.example",
+  passphrase: "Test SDF Network ; September 2015",
+};
+
+const CONFIG: MigrationKeeperConfig = {
+  network: NETWORK,
+  secretKey: "S".repeat(56),
+  maxAttempts: 3,
+  baseDelayMs: 1,
+  rpcTimeoutMs: 100,
+  minImprovementBps: 50,
+  maxSlippageBps: 100,
+  candidateAdapters: { defindex: "CDEFINDEXADAPTER" },
+};
+
+const VAULT: KnownPoolMeta = {
+  id: "meridian-usdc",
+  name: "Meridian",
+  protocol: "meridian",
+  label: "USDC Vault",
+  contractId: "CVAULT",
+};
+
+const DISCOVERED_VAULT: DiscoveredVault = {
+  vaultId: "meridian-usdc",
+  vaultContractId: "CVAULT",
+  currentAdapterId: "CBLENDADAPTER",
+  currentProtocol: "blend",
+  currentPoolId: "CBLENDPOOL",
+};
+
+function logger(): KeeperLogger {
+  return { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+}
+
+function makeServer(overrides: Record<string, unknown> = {}) {
+  return {
+    getAccount: vi.fn(async () => ({ accountId: "GADMIN" })),
+    getTransaction: vi.fn(),
+    sendTransaction: vi.fn(async () => ({ hash: "HASH", status: "PENDING" })),
+    simulateTransaction: vi.fn(async () => ({ kind: "success" })),
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+  vi.clearAllMocks();
+  vi.useRealTimers();
+  stellarMocks.getRpcServer.mockReturnValue(makeServer());
+  stellarMocks.keypairFromSecret.mockReturnValue({
+    publicKey: vi.fn(() => "GADMIN"),
+  });
+  stellarMocks.isSimulationError.mockReturnValue(false);
+  stellarMocks.isSimulationSuccess.mockReturnValue(true);
+  stellarMocks.assembleTransaction.mockReturnValue({
+    build: () => ({ sign: stellarMocks.signPrepared }),
+  });
+});
+
+describe("loadMigrationKeeperConfig", () => {
+  it("throws when MERIDIAN_MIGRATION_KEEPER_SECRET_KEY is missing", () => {
+    expect(() => loadMigrationKeeperConfig({})).toThrow(
+      "MERIDIAN_MIGRATION_KEEPER_SECRET_KEY is required"
+    );
+  });
+
+  it("rejects an unlimited (10_000 bps) max slippage as never allowed in automated operation", () => {
+    expect(() =>
+      loadMigrationKeeperConfig({
+        MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
+        MERIDIAN_MIGRATION_MAX_SLIPPAGE_BPS: "10000",
+      })
+    ).toThrow(/never allowed in automated operation/);
+  });
+
+  it("accepts the max allowed slippage just below the unlimited value", () => {
+    const config = loadMigrationKeeperConfig({
+      MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
+      MERIDIAN_MIGRATION_MAX_SLIPPAGE_BPS: "9999",
+    });
+    expect(config.maxSlippageBps).toBe(9999);
+  });
+
+  it("defaults to a tight 100 bps slippage and 50 bps improvement threshold", () => {
+    const config = loadMigrationKeeperConfig({
+      MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
+    });
+    expect(config.maxSlippageBps).toBe(100);
+    expect(config.minImprovementBps).toBe(50);
+  });
+
+  it("reads an explicit MERIDIAN_ADAPTER_<PROTOCOL>_ID override", () => {
+    const config = loadMigrationKeeperConfig({
+      MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
+      MERIDIAN_ADAPTER_DEFINDEX_ID: "COVERRIDE",
+    });
+    expect(config.candidateAdapters.defindex).toBe("COVERRIDE");
+  });
+
+  it("leaves candidateAdapters empty with no env vars set", () => {
+    const config = loadMigrationKeeperConfig({
+      MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
+    });
+    expect(config.candidateAdapters).toEqual({});
+  });
+
+  it("picks up a protocol never referenced in source, purely from its env var name", () => {
+    // The whole point of the adapter pattern is that the vault (and
+    // migrate_adapter) never need to know which protocol an adapter wraps;
+    // this proves the keeper's own config layer honors that too, a new
+    // protocol needs no code change here, only an env var.
+    const config = loadMigrationKeeperConfig({
+      MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
+      MERIDIAN_ADAPTER_SOROSWAP_ID: "CSOROSWAPADAPTER",
+    });
+    expect(config.candidateAdapters).toEqual({ soroswap: "CSOROSWAPADAPTER" });
+  });
+
+  it("ignores env vars that don't match the MERIDIAN_ADAPTER_<PROTOCOL>_ID pattern", () => {
+    const config = loadMigrationKeeperConfig({
+      MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
+      MERIDIAN_KEEPER_SECRET_KEY: "S".repeat(56),
+      MERIDIAN_ADAPTER_ID: "CNOTMATCHED",
+    });
+    expect(config.candidateAdapters).toEqual({});
+  });
+
+  it("rejects two case-differing env var names that collide on the same protocol", () => {
+    // Without this check, MERIDIAN_ADAPTER_BLEND_ID and
+    // MERIDIAN_ADAPTER_Blend_ID would both lowercase to "blend", and
+    // whichever Object.entries() happens to visit last would silently
+    // overwrite the other with no error or log line.
+    expect(() =>
+      loadMigrationKeeperConfig({
+        MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
+        MERIDIAN_ADAPTER_BLEND_ID: "CBLENDADAPTER_A",
+        MERIDIAN_ADAPTER_Blend_ID: "CBLENDADAPTER_B",
+      })
+    ).toThrow(/both resolve to the same migration candidate protocol/);
+  });
+});
+
+describe("discoverMigrationVaults", () => {
+  it("resolves the vault's current adapter, protocol, and pool", async () => {
+    stellarMocks.simulateView
+      .mockResolvedValueOnce("CBLENDADAPTER")
+      .mockResolvedValueOnce("blend")
+      .mockResolvedValueOnce("CBLENDPOOL");
+
+    const result = await discoverMigrationVaults({
+      network: NETWORK,
+      pools: { "meridian-usdc": VAULT },
+      logger: logger(),
+      sleep: vi.fn(),
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.vaults).toEqual([DISCOVERED_VAULT]);
+  });
+
+  it("retries a transient discovery failure and succeeds", async () => {
+    stellarMocks.simulateView
+      .mockRejectedValueOnce(new Error("try again later"))
+      .mockResolvedValueOnce("CBLENDADAPTER")
+      .mockResolvedValueOnce("blend")
+      .mockResolvedValueOnce("CBLENDPOOL");
+
+    const result = await discoverMigrationVaults({
+      network: NETWORK,
+      pools: { "meridian-usdc": VAULT },
+      logger: logger(),
+      sleep: vi.fn(),
+    });
+
+    expect(result.vaults).toEqual([DISCOVERED_VAULT]);
+  });
+
+  it("does not retry a permanent discovery error", async () => {
+    stellarMocks.simulateView.mockRejectedValue(
+      new Error("contract not found")
+    );
+
+    const result = await discoverMigrationVaults({
+      network: NETWORK,
+      pools: { "meridian-usdc": VAULT },
+      logger: logger(),
+      sleep: vi.fn(),
+    });
+
+    expect(result.vaults).toEqual([]);
+    expect(result.failures).toMatchObject([{ attempts: 1, transient: false }]);
+  });
+});
+
+describe("runMigrationKeeper", () => {
+  it("never migrates with the default rate source: no rate source is verified for either protocol yet", async () => {
+    const submitMigration = vi.fn();
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      submitMigration,
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.migrations).toEqual([]);
+    expect(result.skipped).toEqual([
+      { vaultId: "meridian-usdc", reason: "current rate unavailable" },
+    ]);
+  });
+
+  it("migrates when a candidate clears the minimum improvement threshold", async () => {
+    const submitMigration = vi.fn(async () => ({
+      hash: "MIGRATE_HASH",
+      ledger: 999,
+    }));
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 600
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+    });
+
+    expect(submitMigration).toHaveBeenCalledWith(
+      DISCOVERED_VAULT,
+      "CDEFINDEXADAPTER",
+      1
+    );
+    expect(result.migrations).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        fromAdapterId: "CBLENDADAPTER",
+        fromProtocol: "blend",
+        toAdapterId: "CDEFINDEXADAPTER",
+        toProtocol: "defindex",
+        improvementBps: 100,
+        hash: "MIGRATE_HASH",
+        ledger: 999,
+        attempts: 1,
+      },
+    ]);
+  });
+
+  it("does not migrate when the candidate's improvement is below the configured threshold", async () => {
+    const submitMigration = vi.fn();
+    // 20 bps improvement, below CONFIG.minImprovementBps (50).
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 520
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        reason: "no candidate clears the improvement threshold",
+      },
+    ]);
+  });
+
+  it("treats a NaN rate as unavailable instead of letting it win the comparison", async () => {
+    // A buggy RateSourceFn (e.g. a division by zero, see #511) could resolve
+    // NaN instead of throwing or returning null. NaN defeats every < and >
+    // comparison, so without an explicit finiteness check this would have
+    // silently become the winning candidate and bypassed minImprovementBps.
+    const submitMigration = vi.fn();
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : NaN
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        reason: "no candidate rate was available to compare",
+      },
+    ]);
+  });
+
+  it("treats a non-finite current rate as unavailable rather than comparing against it", async () => {
+    const submitMigration = vi.fn();
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? Infinity : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([
+      { vaultId: "meridian-usdc", reason: "current rate unavailable" },
+    ]);
+  });
+
+  it("reports a distinct skip reason when no candidate rate was available, not a failed threshold check", async () => {
+    // A rate source implemented for one protocol but not another (e.g.
+    // #511's phased rollout) never actually compares anything; reporting it
+    // as "no candidate clears the improvement threshold" would mislead
+    // anyone reading skipped[] into thinking a comparison happened.
+    const submitMigration = vi.fn();
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : null
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        reason: "no candidate rate was available to compare",
+      },
+    ]);
+  });
+
+  it("reports a valid below-threshold comparison as a skip, even when a different candidate failed to evaluate", async () => {
+    // Regression test: a candidate that failed to evaluate must never turn
+    // a genuinely-reached "no migration needed" decision (from a different,
+    // successfully-compared candidate) into a hard failure.
+    const submitMigration = vi.fn();
+    const twoCandidateConfig: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {
+        blend: "CBLENDADAPTER_V2",
+        defindex: "CDEFINDEXADAPTER",
+      },
+    };
+    const resolveCandidatePool = vi.fn(async (adapterId: string) => {
+      if (adapterId === "CDEFINDEXADAPTER") {
+        throw new Error("contract not found");
+      }
+      return "CBLENDPOOL_V2";
+    });
+    // blend candidate: 20 bps improvement, below CONFIG.minImprovementBps (50).
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 520 : 500
+    );
+
+    const result = await runMigrationKeeper(twoCandidateConfig, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool,
+      submitMigration,
+      sleep: vi.fn(),
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        reason: "no candidate clears the improvement threshold",
+      },
+    ]);
+  });
+
+  it("reports a definitive on-chain revert (e.g. slippage exceeded) as a non-transient failure without retrying", async () => {
+    const sleep = vi.fn();
+    const submitMigration = vi.fn(async () => {
+      throw new Error("Transaction HASH123 failed on-chain");
+    });
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 600
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+      sleep,
+    });
+
+    expect(submitMigration).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(result.migrations).toEqual([]);
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        adapterId: "CDEFINDEXADAPTER",
+        protocol: "defindex",
+        stage: "submit",
+        attempts: 1,
+        transient: false,
+      },
+    ]);
+  });
+
+  it("retries a transient submission failure and eventually succeeds", async () => {
+    const sleep = vi.fn();
+    const submitMigration = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("try again later"))
+      .mockResolvedValueOnce({ hash: "RETRY_HASH", ledger: 42 });
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 600
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+      sleep,
+    });
+
+    expect(submitMigration).toHaveBeenCalledTimes(2);
+    expect(result.migrations).toMatchObject([
+      { hash: "RETRY_HASH", ledger: 42, attempts: 2 },
+    ]);
+  });
+
+  it("skips a candidate that is the same adapter already active", async () => {
+    const submitMigration = vi.fn();
+    const sameAdapterConfig: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: { blend: DISCOVERED_VAULT.currentAdapterId },
+    };
+    const rateSource = vi.fn(async () => 500);
+
+    const result = await runMigrationKeeper(sameAdapterConfig, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      submitMigration,
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    // No candidates survive the same-adapter filter, so no rate comparison
+    // ever runs, and rateSource is never even called for the current rate.
+    expect(rateSource).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        reason: "every configured candidate is the vault's current adapter",
+      },
+    ]);
+  });
+
+  it("skips an already-started vault once the run deadline has passed", async () => {
+    const submitMigration = vi.fn();
+    const rateSource = vi.fn(async () => 600);
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      submitMigration,
+      deadlineAt: Date.now() - 1,
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        stage: "submit",
+        attempts: 0,
+        transient: true,
+      },
+    ]);
+  });
+
+  it("builds the migrate_adapter transaction through the default Stellar submission path", async () => {
+    const server = makeServer({
+      sendTransaction: vi.fn(async () => ({
+        hash: "SUBMITTED_HASH",
+        status: "PENDING",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+    // The pre-submit "vault hasn't moved since discovery" guard reads
+    // get_adapter() fresh; keep it matching DISCOVERED_VAULT's adapter.
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
+    expect(server.getAccount).toHaveBeenCalledWith("GADMIN");
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(result.migrations).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        fromAdapterId: "CBLENDADAPTER",
+        fromProtocol: "blend",
+        toAdapterId: "CDEFINDEXADAPTER",
+        toProtocol: "defindex",
+        improvementBps: 200,
+        hash: "SUBMITTED_HASH",
+        ledger: 321,
+        attempts: 1,
+      },
+    ]);
+  });
+
+  it("checks a prior submission's real status before resubmitting, avoiding a duplicate migrate_adapter call", async () => {
+    // Same regression as the accrue keeper's equivalent test, but higher
+    // stakes here: a duplicate migrate_adapter call costs real slippage
+    // twice, not just a wasted fee (see migration-keeper.md).
+    const server = makeServer({
+      sendTransaction: vi.fn(async () => ({
+        hash: "SUBMITTED_HASH",
+        status: "PENDING",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction
+      .mockRejectedValueOnce(new Error("Soroban RPC timed out after 100ms"))
+      .mockResolvedValueOnce({ ledger: 321 });
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(stellarMocks.waitForTransaction).toHaveBeenCalledTimes(2);
+    expect(stellarMocks.waitForTransaction).toHaveBeenNthCalledWith(
+      2,
+      server,
+      "SUBMITTED_HASH",
+      { timeoutMs: 20000 }
+    );
+    expect(result.migrations).toMatchObject([
+      { hash: "SUBMITTED_HASH", ledger: 321, attempts: 2 },
+    ]);
+  });
+
+  it("never drops a successful candidate because a different candidate failed to evaluate", async () => {
+    // Regression test: findBestCandidate evaluates candidates concurrently.
+    // An earlier version threw on the first rejected candidate found by
+    // array order, discarding any other candidate that had already
+    // succeeded and cleared the improvement threshold.
+    const submitMigration = vi.fn(async () => ({
+      hash: "GOOD_HASH",
+      ledger: 42,
+    }));
+    const mixedConfig: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {
+        blend: "CBLENDADAPTER_V2",
+        defindex: "CDEFINDEXADAPTER",
+      },
+    };
+    const resolveCandidatePool = vi.fn(async (adapterId: string) => {
+      if (adapterId === "CBLENDADAPTER_V2") {
+        throw new Error("try again later");
+      }
+      return "CDEFINDEXPOOL";
+    });
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(mixedConfig, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool,
+      submitMigration,
+      sleep: vi.fn(),
+    });
+
+    expect(submitMigration).toHaveBeenCalledOnce();
+    expect(result.migrations).toMatchObject([
+      { toAdapterId: "CDEFINDEXADAPTER", hash: "GOOD_HASH" },
+    ]);
+    expect(result.failures).toEqual([]);
+  });
+
+  it("retries a transient failure while evaluating a candidate's rate, then succeeds", async () => {
+    const sleep = vi.fn();
+    const submitMigration = vi.fn(async () => ({
+      hash: "MIGRATE_HASH",
+      ledger: 999,
+    }));
+    const resolveCandidatePool = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("try again later"))
+      .mockResolvedValueOnce("CDEFINDEXPOOL");
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 600
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool,
+      submitMigration,
+      sleep,
+    });
+
+    expect(resolveCandidatePool).toHaveBeenCalledTimes(2);
+    expect(result.migrations).toMatchObject([
+      { toAdapterId: "CDEFINDEXADAPTER", hash: "MIGRATE_HASH" },
+    ]);
+  });
+
+  it("attributes a candidate-evaluation failure to the failing candidate, not the vault's current adapter", async () => {
+    const resolveCandidatePool = vi
+      .fn()
+      .mockRejectedValue(new Error("contract not found"));
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 600
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool,
+      sleep: vi.fn(),
+    });
+
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        adapterId: "CDEFINDEXADAPTER",
+        protocol: "defindex",
+        stage: "evaluate",
+        transient: false,
+      },
+    ]);
+  });
+
+  it("passes an arbitrary current protocol straight through to the rate source, no hardcoded allowlist", async () => {
+    // There's no fixed set of "recognized" protocols: the vault's currentProtocol
+    // is whatever the adapter's own get_protocol() reports, and it flows
+    // through to rateSource unmodified. A protocol the rate source doesn't
+    // know about is handled the same way any other unknown rate is: skipped
+    // via "current rate unavailable", not a special protocol-name check.
+    const submitMigration = vi.fn();
+    const rateSource = vi.fn(
+      async ({ protocol }: { protocol: string }) =>
+        ({ blend: 500, defindex: 700 })[protocol] ?? null
+    );
+    const soroswapVault = {
+      ...DISCOVERED_VAULT,
+      currentAdapterId: "CSOROSWAPADAPTER",
+      currentProtocol: "soroswap",
+    };
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [soroswapVault],
+        failures: [],
+      }),
+      rateSource,
+      submitMigration,
+    });
+
+    expect(rateSource).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: "soroswap" })
+    );
+    expect(submitMigration).not.toHaveBeenCalled();
+    expect(result.skipped).toMatchObject([
+      { vaultId: "meridian-usdc", reason: "current rate unavailable" },
+    ]);
+  });
+
+  it("considers a candidate with the same protocol name as a different adapter address (e.g. a redeployed BlendAdapter)", async () => {
+    // Only the adapter address, not the protocol name, excludes a candidate:
+    // migrate_adapter itself only forbids migrating to the exact same
+    // adapter address (SameAdapter), not a different adapter of the same
+    // protocol, matching a real redeploy-blend-adapter.sh workflow.
+    const submitMigration = vi.fn(async () => ({
+      hash: "REDEPLOY_HASH",
+      ledger: 555,
+    }));
+    const redeployConfig: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: { blend: "CBLENDADAPTER_V2" },
+    };
+    const rateSource = vi.fn(async ({ adapterId }: { adapterId: string }) =>
+      adapterId === "CBLENDADAPTER_V2" ? 900 : 500
+    );
+
+    const result = await runMigrationKeeper(redeployConfig, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CBLENDPOOL_V2",
+      submitMigration,
+    });
+
+    expect(submitMigration).toHaveBeenCalledOnce();
+    expect(result.migrations).toMatchObject([
+      { toAdapterId: "CBLENDADAPTER_V2", toProtocol: "blend" },
+    ]);
+  });
+
+  it("evaluates candidates concurrently rather than blocking on each other", async () => {
+    const releaseBlend = { resolve: () => {} };
+    const blendGate = new Promise<void>((resolve) => {
+      releaseBlend.resolve = resolve;
+    });
+    const resolveCandidatePool = vi.fn(async (adapterId: string) => {
+      if (adapterId === "CBLENDADAPTER_V2") {
+        await blendGate;
+      }
+      return `POOL_FOR_${adapterId}`;
+    });
+    const rateSource = vi.fn(async () => 900);
+    const multiCandidateConfig: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {
+        blend: "CBLENDADAPTER_V2",
+        defindex: "CDEFINDEXADAPTER",
+      },
+    };
+
+    const run = runMigrationKeeper(multiCandidateConfig, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool,
+      submitMigration: vi.fn(async () => ({ hash: "H", ledger: 1 })),
+    });
+
+    // The defindex candidate's pool resolves immediately; if candidates were
+    // evaluated sequentially in declaration order, blend (gated open) would
+    // block defindex from ever being attempted before the run settles.
+    await vi.waitFor(() =>
+      expect(resolveCandidatePool).toHaveBeenCalledWith("CDEFINDEXADAPTER")
+    );
+    releaseBlend.resolve();
+    await run;
+
+    expect(resolveCandidatePool).toHaveBeenCalledWith("CBLENDADAPTER_V2");
+  });
+
+  it("skips submission when the vault's adapter changed since discovery, instead of migrating on stale data", async () => {
+    // A different invocation (or an admin) already migrated this vault
+    // since this run's discovery read; submitting anyway would build a
+    // migrate_adapter call using stale assumptions about the vault's
+    // current adapter.
+    stellarMocks.simulateView.mockResolvedValue("CSOMEOTHERADAPTER");
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
+    // This is the benign, expected race the guard exists to catch, not an
+    // operational failure: it belongs in skipped, not failures, so it
+    // doesn't page anyone every time it fires.
+    expect(result.migrations).toEqual([]);
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        reason: expect.stringContaining("adapter changed since discovery"),
+      },
+    ]);
+  });
+
+  it("keeps the stale-adapter skip reason informative even with real-length contract addresses", async () => {
+    // Regression test: sanitizeTxError redacts any message containing a
+    // 50+ char C-address to a generic fallback. A real Stellar address is
+    // 56 chars, well past that threshold; the short fixture addresses used
+    // elsewhere in this file (e.g. "CSOMEOTHERADAPTER") are too short to
+    // trigger that redaction, which would otherwise mask this exact
+    // scenario. This proves the skip reason survives with real addresses.
+    const realAddress = `C${"A".repeat(55)}`;
+    stellarMocks.simulateView.mockResolvedValue(realAddress);
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        reason: expect.stringContaining("adapter changed since discovery"),
+      },
+    ]);
+  });
+
+  it("skips evaluation entirely when no candidate adapters are configured", async () => {
+    const rateSource = vi.fn();
+    const noCandidatesConfig: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {},
+    };
+
+    const result = await runMigrationKeeper(noCandidatesConfig, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+    });
+
+    expect(rateSource).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        reason: "no candidate adapters configured",
+      },
+    ]);
+  });
+
+  it("skips submission when the deadline is reached during evaluation, not just before it started", async () => {
+    // The deadline check at the top of the loop only catches a budget
+    // that's already gone before this vault starts; evaluation itself can
+    // eat the rest of it. Submitting anyway would fire an irreversible,
+    // slippage-costing transaction right as the platform is about to kill
+    // the invocation.
+    const submitMigration = vi.fn();
+    const deadlineAt = Date.now() + 15;
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return protocol === "blend" ? 500 : 700;
+    });
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+      deadlineAt,
+    });
+
+    expect(submitMigration).not.toHaveBeenCalled();
+    // Reports the migration that was actually being skipped (best, the
+    // defindex candidate), not the vault's current (blend) adapter.
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        adapterId: "CDEFINDEXADAPTER",
+        protocol: "defindex",
+        stage: "submit",
+        transient: true,
+      },
+    ]);
+  });
+});
