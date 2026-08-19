@@ -378,10 +378,10 @@ export async function discoverMigrationVaults(
           if (poolResult.status === "fulfilled") {
             currentPoolId = poolResult.value;
           }
-          const rejections = [protocolResult, poolResult].filter(
-            (r): r is PromiseRejectedResult => r.status === "rejected"
-          );
-          if (rejections.length > 0) {
+          if (
+            protocolResult.status === "rejected" ||
+            poolResult.status === "rejected"
+          ) {
             // If get_protocol and get_pool reject with different transience
             // (e.g. one transient rate-limit, one permanent "contract not
             // found"), surfacing whichever happens to be checked first would
@@ -389,10 +389,20 @@ export async function discoverMigrationVaults(
             // the full retry budget on a target that was never going to
             // succeed. Prefer the permanent rejection so the keeper stops
             // retrying for the real reason.
-            const permanent = rejections.find(
-              (r) => !isTransientKeeperError(r.reason)
+            const protocolRejection =
+              protocolResult.status === "rejected" ? protocolResult : null;
+            const poolRejection =
+              poolResult.status === "rejected" ? poolResult : null;
+            const permanent = [protocolRejection, poolRejection].find(
+              (r): r is PromiseRejectedResult =>
+                r !== null && !isTransientKeeperError(r.reason)
             );
-            throw (permanent ?? rejections[0]).reason;
+            const fallback = protocolRejection ?? poolRejection;
+            // fallback can't actually be null here: the outer if already
+            // guarantees at least one of protocolResult/poolResult was
+            // rejected, so at least one of protocolRejection/poolRejection
+            // is non-null.
+            throw (permanent ?? fallback)!.reason;
           }
           const protocol = protocolResult.value;
           const poolId = poolResult.value;
