@@ -363,6 +363,40 @@ describe("discoverMigrationVaults", () => {
     expect(callsByMethod("get_pool")).toBe(2);
   });
 
+  it("surfaces a permanent failure over a transient one when both get_protocol and get_pool reject", async () => {
+    // Regression test: throwing whichever of the two rejections was checked
+    // first would let a permanent get_pool failure hide behind a transient
+    // get_protocol failure, wasting the full retry budget on a target that
+    // was never going to succeed.
+    stellarMocks.simulateView.mockImplementation(
+      async (_server, _contractId, _passphrase, method) => {
+        if (method === "get_adapter") return "CBLENDADAPTER";
+        if (method === "get_protocol") throw new Error("try again later");
+        if (method === "get_pool") throw new Error("contract not found");
+        throw new Error(`unexpected method: ${method}`);
+      }
+    );
+
+    const result = await discoverMigrationVaults({
+      network: NETWORK,
+      pools: { "meridian-usdc": VAULT },
+      logger: logger(),
+      maxAttempts: 3,
+      baseDelayMs: 1,
+      sleep: vi.fn(),
+    });
+
+    expect(result.vaults).toEqual([]);
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        attempts: 1,
+        transient: false,
+        error: "contract not found",
+      },
+    ]);
+  });
+
   it("does not retry a permanent discovery error", async () => {
     stellarMocks.simulateView.mockRejectedValue(
       new Error("contract not found")

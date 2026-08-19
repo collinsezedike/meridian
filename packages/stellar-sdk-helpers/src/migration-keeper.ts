@@ -378,8 +378,22 @@ export async function discoverMigrationVaults(
           if (poolResult.status === "fulfilled") {
             currentPoolId = poolResult.value;
           }
-          if (protocolResult.status === "rejected") throw protocolResult.reason;
-          if (poolResult.status === "rejected") throw poolResult.reason;
+          const rejections = [protocolResult, poolResult].filter(
+            (r): r is PromiseRejectedResult => r.status === "rejected"
+          );
+          if (rejections.length > 0) {
+            // If get_protocol and get_pool reject with different transience
+            // (e.g. one transient rate-limit, one permanent "contract not
+            // found"), surfacing whichever happens to be checked first would
+            // let a permanent failure hide behind a transient one, wasting
+            // the full retry budget on a target that was never going to
+            // succeed. Prefer the permanent rejection so the keeper stops
+            // retrying for the real reason.
+            const permanent = rejections.find(
+              (r) => !isTransientKeeperError(r.reason)
+            );
+            throw (permanent ?? rejections[0]).reason;
+          }
           const protocol = protocolResult.value;
           const poolId = poolResult.value;
           return {
