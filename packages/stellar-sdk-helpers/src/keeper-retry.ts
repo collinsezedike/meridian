@@ -145,13 +145,24 @@ export async function withKeeperRetry<T>(
   logPrefix: string
 ): Promise<{ value: T; attempts: number }> {
   let attempts = 0;
+  // Cached only alongside the exact error it was computed for, checked by
+  // reference below, so reusing it can never go stale the way a bare
+  // boolean flag once did: if the final thrown error is one shouldRetry
+  // never saw (e.g. maxAttempts was exhausted, which withRetry doesn't call
+  // shouldRetry for), the identity check fails below and isTransient(err) is
+  // simply recomputed fresh instead of reusing a classification for a
+  // different error.
+  let lastClassifiedErr: unknown;
+  let lastClassifiedTransient = false;
 
   // Folds the deadline check into shouldRetry (rather than a separate
   // control point in withRetry) so withRetry itself stays deadline-agnostic;
   // this is the one place that decides "no, don't retry" for a reason other
   // than the error itself, and logs why.
   const shouldRetry = (err: unknown, attempt: number): boolean => {
-    if (!isTransient(err)) return false;
+    lastClassifiedErr = err;
+    lastClassifiedTransient = isTransient(err);
+    if (!lastClassifiedTransient) return false;
     if (config.deadlineAt !== undefined) {
       const delayMs = config.baseDelayMs * 2 ** attempt;
       if (Date.now() + delayMs >= config.deadlineAt) {
@@ -189,6 +200,8 @@ export async function withKeeperRetry<T>(
     );
     return { value, attempts };
   } catch (err) {
-    throw new KeeperRetryError(err, attempts || 1, isTransient(err));
+    const transient =
+      err === lastClassifiedErr ? lastClassifiedTransient : isTransient(err);
+    throw new KeeperRetryError(err, attempts || 1, transient);
   }
 }
