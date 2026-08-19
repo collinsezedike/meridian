@@ -70,7 +70,7 @@ pub fn get_vault(env: &Env) -> Option<Address> {
     env.storage().instance().get(&VAULT_KEY)
 }
 
-/// Reads the USDC token address from storage
+/// Reads the USDC token address from storage.
 /// Panics if not set.
 pub fn get_usdc(env: &Env) -> Address {
     env.storage().instance().get(&USDC_KEY).unwrap()
