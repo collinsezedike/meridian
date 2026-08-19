@@ -53,7 +53,7 @@ export function withRaceTimeout<T>(
 
 export interface RetryOptions {
   // Called right before sleeping ahead of a retry, purely for observability
-  // (e.g. keeper logging) — has no control over whether the retry happens,
+  // (e.g. keeper logging). Has no control over whether the retry happens,
   // that's shouldRetry's job.
   onRetry?: (attempt: number, delayMs: number, err: unknown) => void;
   // Injectable for tests that want to skip real timers; defaults to a real

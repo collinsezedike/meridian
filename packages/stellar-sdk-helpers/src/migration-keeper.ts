@@ -342,12 +342,17 @@ export async function discoverMigrationVaults(
           const adapterId = currentAdapterId;
           // Independent of each other, both depend only on adapterId: run
           // concurrently rather than doubling this vault's discovery latency
-          // for no reason. Each caches its own result the moment IT resolves
-          // (not after Promise.all as a whole settles): if get_pool rejects,
-          // Promise.all rejects immediately without waiting for get_protocol,
-          // so caching only after Promise.all succeeds would lose a
-          // get_protocol result that had, in fact, already resolved.
-          const [protocol, poolId] = await Promise.all([
+          // for no reason. Promise.allSettled, not Promise.all: if get_pool
+          // rejects while get_protocol is still in flight, Promise.all would
+          // reject immediately and move on, leaving get_protocol's call
+          // still running in the background. A retry starting before that
+          // stray call resolves would then see currentProtocol still
+          // undefined and issue its own, second get_protocol call, two
+          // concurrent calls in flight for the same thing, exactly what the
+          // caching above exists to avoid. Waiting for both to settle first
+          // means no call from this attempt is ever still in flight once the
+          // next attempt starts.
+          const [protocolResult, poolResult] = await Promise.allSettled([
             currentProtocol !== undefined
               ? Promise.resolve(currentProtocol)
               : simulate(
@@ -355,15 +360,9 @@ export async function discoverMigrationVaults(
                   adapterId,
                   network.passphrase,
                   "get_protocol"
-                ).then((value) => {
-                  const resolved = expectString(
-                    value,
-                    "get_protocol",
-                    adapterId
-                  );
-                  currentProtocol = resolved;
-                  return resolved;
-                }),
+                ).then((value) =>
+                  expectString(value, "get_protocol", adapterId)
+                ),
             currentPoolId !== undefined
               ? Promise.resolve(currentPoolId)
               : simulate(
@@ -371,12 +370,18 @@ export async function discoverMigrationVaults(
                   adapterId,
                   network.passphrase,
                   "get_pool"
-                ).then((value) => {
-                  const resolved = expectString(value, "get_pool", adapterId);
-                  currentPoolId = resolved;
-                  return resolved;
-                }),
+                ).then((value) => expectString(value, "get_pool", adapterId)),
           ]);
+          if (protocolResult.status === "fulfilled") {
+            currentProtocol = protocolResult.value;
+          }
+          if (poolResult.status === "fulfilled") {
+            currentPoolId = poolResult.value;
+          }
+          if (protocolResult.status === "rejected") throw protocolResult.reason;
+          if (poolResult.status === "rejected") throw poolResult.reason;
+          const protocol = protocolResult.value;
+          const poolId = poolResult.value;
           return {
             vaultId: meta.id,
             vaultContractId,
