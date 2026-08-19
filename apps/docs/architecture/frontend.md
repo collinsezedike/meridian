@@ -76,7 +76,7 @@ interface WalletAdapter {
 
 `useWalletConnect` drives the connection flow through this interface: it calls `wallet.isInstalled()` to detect the extension and `wallet.connect()` to request access, then persists the returned public key in the store. On page load the store revalidates a restored key via `wallet.isAuthorized()`.
 
-The only implementation today is `FreighterWallet`, exported as `wallet`. Adding a wallet (e.g. xBull, LOBSTR) means adding a new `WalletAdapter` implementation and selecting it in `wallet.ts` — no callers change.
+The only implementation today is `FreighterWallet`, exported as `wallet`. Adding a wallet (e.g. xBull, LOBSTR) means adding a new `WalletAdapter` implementation and selecting it in `wallet.ts`. No callers change.
 
 ## API client
 
