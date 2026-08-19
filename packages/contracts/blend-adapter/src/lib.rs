@@ -132,6 +132,8 @@ pub enum ContractError {
     AlreadyInitialized = 1,
     /// An intermediate arithmetic operation would overflow `i128`.
     Overflow = 2,
+    /// A state-mutating call was made before `initialize`.
+    NotInitialized = 3,
 }
 
 // ---------------------------------------------------------------------------
@@ -167,11 +169,29 @@ impl MeridianBlendAdapter {
     /// than assumed 1:1, so the vault's adapter-share accounting (`ADPT_SH`)
     /// tracks genuine, appreciating shares instead of raw principal (#486).
     pub fn deposit(env: Env, amount: i128) -> i128 {
-        let vault: Address = env.storage().instance().get(&VAULT_KEY).unwrap();
+        let vault: Address = env
+            .storage()
+            .instance()
+            .get(&VAULT_KEY)
+            .unwrap_or_else(|| {
+                panic_with_error!(&env, ContractError::NotInitialized);
+            });
         vault.require_auth();
 
-        let pool: Address = env.storage().instance().get(&POOL_KEY).unwrap();
-        let usdc: Address = env.storage().instance().get(&USDC_KEY).unwrap();
+        let pool: Address = env
+            .storage()
+            .instance()
+            .get(&POOL_KEY)
+            .unwrap_or_else(|| {
+                panic_with_error!(&env, ContractError::NotInitialized);
+            });
+        let usdc: Address = env
+            .storage()
+            .instance()
+            .get(&USDC_KEY)
+            .unwrap_or_else(|| {
+                panic_with_error!(&env, ContractError::NotInitialized);
+            });
 
         let adapter = env.current_contract_address();
 
@@ -194,6 +214,7 @@ impl MeridianBlendAdapter {
 
         let client = BlendPoolClient::new(&env, &pool);
         let index = client.get_reserve(&usdc).config.index;
+        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
         let b_tokens_before = client
             .get_positions(&adapter)
             .collateral
@@ -214,6 +235,7 @@ impl MeridianBlendAdapter {
             ],
         );
 
+        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
         let b_tokens_after = client
             .get_positions(&adapter)
             .collateral
@@ -221,6 +243,9 @@ impl MeridianBlendAdapter {
             .unwrap_or(0);
         let b_tokens_credited = b_tokens_after - b_tokens_before;
 
+        // Instance storage read defaults to 0 if TOTAL_KEY hasn't been set, which is safe since
+        // initialize() sets this key to 0. This unwrap_or pattern is the idiomatic way to handle
+        // optional storage values in Soroban.
         let prev: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
         env.storage().instance().set(&TOTAL_KEY, &(prev + amount));
 
@@ -233,11 +258,29 @@ impl MeridianBlendAdapter {
     /// submitting. Returns the USDC amount actually delivered to `recipient`,
     /// measured directly rather than assumed to equal the request (#489).
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
-        let vault: Address = env.storage().instance().get(&VAULT_KEY).unwrap();
+        let vault: Address = env
+            .storage()
+            .instance()
+            .get(&VAULT_KEY)
+            .unwrap_or_else(|| {
+                panic_with_error!(&env, ContractError::NotInitialized);
+            });
         vault.require_auth();
 
-        let pool: Address = env.storage().instance().get(&POOL_KEY).unwrap();
-        let usdc: Address = env.storage().instance().get(&USDC_KEY).unwrap();
+        let pool: Address = env
+            .storage()
+            .instance()
+            .get(&POOL_KEY)
+            .unwrap_or_else(|| {
+                panic_with_error!(&env, ContractError::NotInitialized);
+            });
+        let usdc: Address = env
+            .storage()
+            .instance()
+            .get(&USDC_KEY)
+            .unwrap_or_else(|| {
+                panic_with_error!(&env, ContractError::NotInitialized);
+            });
 
         let adapter = env.current_contract_address();
         let client = BlendPoolClient::new(&env, &pool);
@@ -268,6 +311,9 @@ impl MeridianBlendAdapter {
         let after = usdc_client.balance(&recipient);
         let delivered = after - before;
 
+        // Instance storage read defaults to 0 if TOTAL_KEY hasn't been set, which is safe since
+        // initialize() sets this key to 0. This unwrap_or pattern is the idiomatic way to handle
+        // optional storage values in Soroban.
         let prev: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
         let remaining = if prev > delivered {
             prev - delivered
@@ -290,13 +336,22 @@ impl MeridianBlendAdapter {
     /// (`get_positions`) rather than self-tracking it, so there is no risk of
     /// drift between the stored total and Blend's actual accounting.
     pub fn accrue(env: Env) -> Result<(), ContractError> {
-        let pool: Address = env.storage().instance().get(&POOL_KEY).unwrap();
-        let usdc: Address = env.storage().instance().get(&USDC_KEY).unwrap();
+        let pool: Address = env
+            .storage()
+            .instance()
+            .get(&POOL_KEY)
+            .ok_or(ContractError::NotInitialized)?;
+        let usdc: Address = env
+            .storage()
+            .instance()
+            .get(&USDC_KEY)
+            .ok_or(ContractError::NotInitialized)?;
         let adapter = env.current_contract_address();
 
         let client = BlendPoolClient::new(&env, &pool);
         let reserve = client.get_reserve(&usdc);
         let positions = client.get_positions(&adapter);
+        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
         let b_tokens = positions.collateral.get(reserve.config.index).unwrap_or(0);
 
         let current_value = b_tokens_to_usdc(b_tokens, reserve.data.b_rate)?;
@@ -318,12 +373,20 @@ impl MeridianBlendAdapter {
     /// yield only as of the last `accrue()` call; call `accrue()` first for a
     /// value that includes interest accrued since then.
     pub fn total_assets(env: Env) -> i128 {
+        // Instance storage read defaults to 0 if TOTAL_KEY hasn't been set, which is safe since
+        // initialize() sets this key to 0. This unwrap_or pattern is the idiomatic way to handle
+        // optional storage values in Soroban.
         env.storage().instance().get(&TOTAL_KEY).unwrap_or(0)
     }
 
     /// Returns the Blend pool this adapter supplies to.
     pub fn get_pool(env: Env) -> Address {
-        env.storage().instance().get(&POOL_KEY).unwrap()
+        env.storage()
+            .instance()
+            .get(&POOL_KEY)
+            .unwrap_or_else(|| {
+                panic_with_error!(&env, ContractError::NotInitialized);
+            })
     }
 
     /// Returns "blend", identifying which protocol this adapter wraps.
@@ -391,8 +454,21 @@ mod tests {
             to: Address,
             requests: Vec<Request>,
         ) -> Val {
-            let scalar: i128 = env.storage().instance().get(&M_SCALAR).unwrap();
-            let rate: i128 = env.storage().instance().get(&M_RATE).unwrap();
+            // Scalar and rate are always set in initialize(), so these are safe.
+            let scalar: i128 = env
+                .storage()
+                .instance()
+                .get(&M_SCALAR)
+                .unwrap_or_else(|| {
+                    panic_with_error!(&env, ContractError::NotInitialized);
+                });
+            let rate: i128 = env
+                .storage()
+                .instance()
+                .get(&M_RATE)
+                .unwrap_or_else(|| {
+                    panic_with_error!(&env, ContractError::NotInitialized);
+                });
             let mut collateral: i128 = env.storage().instance().get(&M_COLLAT).unwrap_or(0);
 
             for req in requests.iter() {
@@ -417,14 +493,33 @@ mod tests {
         }
 
         pub fn get_reserve(env: Env, asset: Address) -> Reserve {
-            let internal_scalar: i128 = env.storage().instance().get(&M_SCALAR).unwrap();
+            // Scalar and rate are always set in initialize(), so these are safe.
+            let internal_scalar: i128 = env
+                .storage()
+                .instance()
+                .get(&M_SCALAR)
+                .unwrap_or_else(|| {
+                    panic_with_error!(&env, ContractError::NotInitialized);
+                });
             let scalar: i128 = env
                 .storage()
                 .instance()
                 .get(&M_REP_SCL)
                 .unwrap_or(internal_scalar);
-            let rate: i128 = env.storage().instance().get(&M_RATE).unwrap();
-            let index: u32 = env.storage().instance().get(&M_INDEX).unwrap();
+            let rate: i128 = env
+                .storage()
+                .instance()
+                .get(&M_RATE)
+                .unwrap_or_else(|| {
+                    panic_with_error!(&env, ContractError::NotInitialized);
+                });
+            let index: u32 = env
+                .storage()
+                .instance()
+                .get(&M_INDEX)
+                .unwrap_or_else(|| {
+                    panic_with_error!(&env, ContractError::NotInitialized);
+                });
             Reserve {
                 asset,
                 config: ReserveConfig {
@@ -456,7 +551,15 @@ mod tests {
         }
 
         pub fn get_positions(env: Env, _address: Address) -> Positions {
-            let index: u32 = env.storage().instance().get(&M_INDEX).unwrap();
+            // Index is always set in initialize(), so this is safe.
+            let index: u32 = env
+                .storage()
+                .instance()
+                .get(&M_INDEX)
+                .unwrap_or_else(|| {
+                    panic_with_error!(&env, ContractError::NotInitialized);
+                });
+            // Collateral safely defaults to 0 if not set yet, which is correct for a fresh adapter.
             let collateral: i128 = env.storage().instance().get(&M_COLLAT).unwrap_or(0);
             let mut collateral_map = Map::new(&env);
             collateral_map.set(index, collateral);
