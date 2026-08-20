@@ -82,7 +82,10 @@ export interface SkippedAdapter {
   vaultContractId: string;
   adapterId: string;
   protocol: string;
-  reason: "non-blend";
+  // Names the actual protocol that was skipped, not a fixed literal: once a
+  // second non-Blend protocol is discoverable, every skip reporting the same
+  // hardcoded string would be indistinguishable from each other.
+  reason: string;
 }
 
 export interface BlendAccrualKeeperResult {
@@ -183,9 +186,15 @@ export async function discoverLiveAdapters(
   const settled = await Promise.allSettled(
     targets.map((meta) => {
       const vaultContractId = meta.contractId as string;
+      // Cached across this target's own retry attempts (not shared with any
+      // other target): a transient failure on get_protocol used to also
+      // re-issue an already-succeeded get_adapter call on retry, since both
+      // lived in the same combined closure. Caching whatever already
+      // succeeded means a retry only re-issues the call that actually failed.
+      let adapterId: string | undefined;
       return withKeeperRetry(
         async () => {
-          const adapterId = expectString(
+          adapterId ??= expectString(
             await simulate(
               server as never,
               vaultContractId,
@@ -299,7 +308,10 @@ export async function runBlendAccrualKeeper(
   const skipped: SkippedAdapter[] = [];
   const blendAdapters = discovery.adapters.filter((adapter) => {
     if (adapter.protocol === "blend") return true;
-    skipped.push({ ...adapter, reason: "non-blend" });
+    skipped.push({
+      ...adapter,
+      reason: `non-blend (protocol: ${adapter.protocol})`,
+    });
     return false;
   });
 

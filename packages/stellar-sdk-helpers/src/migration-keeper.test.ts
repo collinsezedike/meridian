@@ -287,6 +287,116 @@ describe("discoverMigrationVaults", () => {
     expect(result.vaults).toEqual([DISCOVERED_VAULT]);
   });
 
+  it("retries only the failed call, not already-succeeded get_adapter/get_protocol", async () => {
+    // Fail get_pool once, then succeed, without exhausting maxAttempts.
+    let poolCalls = 0;
+    stellarMocks.simulateView.mockImplementation(
+      async (_server, _contractId, _passphrase, method) => {
+        if (method === "get_adapter") return "CBLENDADAPTER";
+        if (method === "get_protocol") return "blend";
+        if (method === "get_pool") {
+          poolCalls++;
+          if (poolCalls < 2) throw new Error("try again later");
+          return "CBLENDPOOL";
+        }
+        throw new Error(`unexpected method: ${method}`);
+      }
+    );
+
+    const result = await discoverMigrationVaults({
+      network: NETWORK,
+      pools: { "meridian-usdc": VAULT },
+      logger: logger(),
+      sleep: vi.fn(),
+    });
+
+    expect(result.vaults).toEqual([DISCOVERED_VAULT]);
+    const callsByMethod = (method: string) =>
+      stellarMocks.simulateView.mock.calls.filter(([, , , m]) => m === method)
+        .length;
+    expect(callsByMethod("get_adapter")).toBe(1);
+    expect(callsByMethod("get_protocol")).toBe(1);
+    expect(callsByMethod("get_pool")).toBe(2);
+  });
+
+  it("waits for a slower in-flight get_protocol before retrying, instead of issuing a duplicate", async () => {
+    // Regression test: get_pool used to reject via Promise.all before a
+    // still-pending get_protocol call had settled, leaving that call
+    // running in the background. If the next retry attempt started before
+    // it resolved, it would see currentProtocol still undefined and issue
+    // its own second get_protocol call. Promise.allSettled fixes this by
+    // always waiting for both to settle before the attempt completes.
+    let poolCalls = 0;
+    stellarMocks.simulateView.mockImplementation(
+      async (_server, _contractId, _passphrase, method) => {
+        if (method === "get_adapter") return "CBLENDADAPTER";
+        if (method === "get_protocol") {
+          // Slower than get_pool's immediate rejection below, so it's still
+          // in flight when get_pool settles.
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return "blend";
+        }
+        if (method === "get_pool") {
+          poolCalls++;
+          if (poolCalls < 2) throw new Error("try again later");
+          return "CBLENDPOOL";
+        }
+        throw new Error(`unexpected method: ${method}`);
+      }
+    );
+
+    const result = await discoverMigrationVaults({
+      network: NETWORK,
+      pools: { "meridian-usdc": VAULT },
+      logger: logger(),
+      maxAttempts: 3,
+      baseDelayMs: 1,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    });
+
+    expect(result.vaults).toEqual([DISCOVERED_VAULT]);
+    const callsByMethod = (method: string) =>
+      stellarMocks.simulateView.mock.calls.filter(([, , , m]) => m === method)
+        .length;
+    expect(callsByMethod("get_adapter")).toBe(1);
+    expect(callsByMethod("get_protocol")).toBe(1);
+    expect(callsByMethod("get_pool")).toBe(2);
+  });
+
+  it("surfaces a permanent failure over a transient one when both get_protocol and get_pool reject", async () => {
+    // Regression test: throwing whichever of the two rejections was checked
+    // first would let a permanent get_pool failure hide behind a transient
+    // get_protocol failure, wasting the full retry budget on a target that
+    // was never going to succeed.
+    stellarMocks.simulateView.mockImplementation(
+      async (_server, _contractId, _passphrase, method) => {
+        if (method === "get_adapter") return "CBLENDADAPTER";
+        if (method === "get_protocol") throw new Error("try again later");
+        if (method === "get_pool") throw new Error("contract not found");
+        throw new Error(`unexpected method: ${method}`);
+      }
+    );
+
+    const result = await discoverMigrationVaults({
+      network: NETWORK,
+      pools: { "meridian-usdc": VAULT },
+      logger: logger(),
+      maxAttempts: 3,
+      baseDelayMs: 1,
+      sleep: vi.fn(),
+    });
+
+    expect(result.vaults).toEqual([]);
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        attempts: 1,
+        transient: false,
+        error: "contract not found",
+      },
+    ]);
+  });
+
   it("does not retry a permanent discovery error", async () => {
     stellarMocks.simulateView.mockRejectedValue(
       new Error("contract not found")
