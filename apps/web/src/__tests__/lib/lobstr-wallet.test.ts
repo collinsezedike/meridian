@@ -26,6 +26,7 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.sessionStorage.clear();
 });
 
 describe("LobstrWallet — real LOBSTR path (no mock wallet present)", () => {
@@ -40,29 +41,22 @@ describe("LobstrWallet — real LOBSTR path (no mock wallet present)", () => {
   });
 
   // LOBSTR's API has no separate site-permission query: isConnected() only
-  // confirms the extension is installed (its REQUEST_CONNECTION_STATUS
-  // handler returns true unconditionally). isAuthorized() delegates the
-  // install check to isInstalled(), then verifies pairing via getPublicKey(),
-  // which resolves with a public key only after the user approves a paired
-  // account in the grant-access popup.
-  it("isAuthorized returns true when installed and getPublicKey resolves a key", async () => {
+  // confirms the extension is installed (its REQUEST_CONNECTION_STATUS handler
+  // returns true unconditionally). isAuthorized() is a passive background check
+  // (revalidate() runs it on mount and focus), so it must not call
+  // getPublicKey(), which opens the grant-access popup. Instead it treats
+  // "installed + a public key stored by a prior connect()" as authorized.
+  it("isAuthorized returns true when installed and a key was stored by connect", async () => {
     vi.mocked(lobstrIsConnected).mockResolvedValue(true);
-    vi.mocked(lobstrGetPublicKey).mockResolvedValue(ADDRESS);
+    window.sessionStorage.setItem("meridian-lobstr-public-key", ADDRESS);
     await expect(lobstr.isAuthorized()).resolves.toBe(true);
+    expect(lobstrGetPublicKey).not.toHaveBeenCalled();
   });
 
-  it("isAuthorized returns false when getPublicKey resolves empty (unpaired)", async () => {
+  it("isAuthorized returns false when installed but nothing was stored", async () => {
     vi.mocked(lobstrIsConnected).mockResolvedValue(true);
-    vi.mocked(lobstrGetPublicKey).mockResolvedValue("");
     await expect(lobstr.isAuthorized()).resolves.toBe(false);
-  });
-
-  it("isAuthorized returns false when getPublicKey throws (declined/error)", async () => {
-    vi.mocked(lobstrIsConnected).mockResolvedValue(true);
-    vi.mocked(lobstrGetPublicKey).mockRejectedValue(
-      new Error("User declined access")
-    );
-    await expect(lobstr.isAuthorized()).resolves.toBe(false);
+    expect(lobstrGetPublicKey).not.toHaveBeenCalled();
   });
 
   it("isAuthorized returns false when the extension is not installed", async () => {
@@ -71,9 +65,21 @@ describe("LobstrWallet — real LOBSTR path (no mock wallet present)", () => {
     expect(lobstrGetPublicKey).not.toHaveBeenCalled();
   });
 
-  it("connect returns the public key on success", async () => {
+  it("isAuthorized never calls getPublicKey (passive, no prompt)", async () => {
+    vi.mocked(lobstrIsConnected).mockResolvedValue(true);
+    await lobstr.isAuthorized();
+    expect(lobstrGetPublicKey).not.toHaveBeenCalled();
+  });
+
+  it("connect returns the public key and remembers it for isAuthorized", async () => {
     vi.mocked(lobstrGetPublicKey).mockResolvedValue(ADDRESS);
     await expect(lobstr.connect()).resolves.toBe(ADDRESS);
+    expect(window.sessionStorage.getItem("meridian-lobstr-public-key")).toBe(
+      ADDRESS
+    );
+
+    vi.mocked(lobstrIsConnected).mockResolvedValue(true);
+    await expect(lobstr.isAuthorized()).resolves.toBe(true);
   });
 
   it("connect throws when getPublicKey returns an empty string", async () => {
