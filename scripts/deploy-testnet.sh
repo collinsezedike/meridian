@@ -79,11 +79,36 @@ stellar contract invoke \
   --network "$NETWORK" --source "$DEPLOYER" --id "$BLEND_ADAPTER_ID" \
   -- initialize --vault "$VAULT_ID" --pool "$BLEND_POOL_ID" --usdc "$USDC_ID"
 
-echo "Initializing vault (admin=$ADMIN_ADDRESS, usdc=$USDC_ID, musdc=$MUSDC_ID, adapter=$BLEND_ADAPTER_ID)..."
-stellar contract invoke \
-  --network "$NETWORK" --source "$DEPLOYER" --id "$VAULT_ID" \
-  -- initialize \
-  --admin "$ADMIN_ADDRESS" --usdc "$USDC_ID" --musdc "$MUSDC_ID" --adapter "$BLEND_ADAPTER_ID"
+if [ "$ADMIN_ADDRESS" = "$DEPLOYER_ADDRESS" ]; then
+  # ADMIN defaulted to DEPLOYER's own address, so DEPLOYER is both the tx
+  # source and the address initialize()'s admin.require_auth() needs --
+  # DEPLOYER's signature alone satisfies both, one call handles it.
+  echo "Initializing vault (admin=$ADMIN_ADDRESS, usdc=$USDC_ID, musdc=$MUSDC_ID, adapter=$BLEND_ADAPTER_ID)..."
+  stellar contract invoke \
+    --network "$NETWORK" --source "$DEPLOYER" --id "$VAULT_ID" \
+    -- initialize \
+    --admin "$ADMIN_ADDRESS" --usdc "$USDC_ID" --musdc "$MUSDC_ID" --adapter "$BLEND_ADAPTER_ID"
+else
+  # ADMIN is a separate address from DEPLOYER -- the recommended setup for
+  # anything beyond a throwaway run (see "The DEPLOYER / ADMIN split" in
+  # apps/docs/operations/testnet-deployment.md). initialize() calls
+  # admin.require_auth(), so this call needs ADMIN's own signature, and this
+  # script deliberately never has access to ADMIN's secret key. Submitting
+  # with only DEPLOYER's signature would fail with "Missing signing key for
+  # account $ADMIN_ADDRESS", so print the call for whoever holds the ADMIN
+  # key to run themselves, instead of attempting (and failing) to run it here.
+  echo ""
+  echo "ADMIN ($ADMIN_ADDRESS) is separate from DEPLOYER: initialize() needs"
+  echo "ADMIN's own signature, which this script does not have access to."
+  echo "Ask whoever holds the ADMIN secret key to run, using ADMIN as the"
+  echo "invoking source account so its signature satisfies admin.require_auth():"
+  echo ""
+  echo "  stellar contract invoke --network $NETWORK --source <your-ADMIN-key-or-alias> \\"
+  echo "    --id $VAULT_ID -- initialize \\"
+  echo "    --admin $ADMIN_ADDRESS --usdc $USDC_ID --musdc $MUSDC_ID --adapter $BLEND_ADAPTER_ID"
+  echo ""
+  echo "The vault is deployed but NOT YET INITIALIZED until that runs."
+fi
 
 echo "Setting the vault as mUSDC's admin so it can mint/burn shares..."
 stellar contract invoke \
@@ -95,3 +120,8 @@ echo "Done. Add these to your .env:"
 echo "  VAULT_CONTRACT_ID=$VAULT_ID"
 echo "  BLEND_ADAPTER_CONTRACT_ID=$BLEND_ADAPTER_ID"
 echo "  MUSDC_CONTRACT_ID=$MUSDC_ID"
+if [ "$ADMIN_ADDRESS" != "$DEPLOYER_ADDRESS" ]; then
+  echo ""
+  echo "Reminder: the vault is deployed but NOT YET INITIALIZED -- see the"
+  echo "initialize() command printed above for the ADMIN key holder to run."
+fi
