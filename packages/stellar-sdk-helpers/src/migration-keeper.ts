@@ -317,9 +317,19 @@ export async function discoverMigrationVaults(
   const settled = await Promise.allSettled(
     targets.map((meta) => {
       const vaultContractId = meta.contractId as string;
+      // Cached across this target's own retry attempts (not shared with any
+      // other target): a transient failure on get_protocol or get_pool used
+      // to also re-issue an already-succeeded get_adapter call (and, for
+      // whichever of get_protocol/get_pool already succeeded, that call too)
+      // on retry, since all three lived in the same combined closure.
+      // Caching whatever already succeeded means a retry only re-issues the
+      // call(s) that actually failed.
+      let currentAdapterId: string | undefined;
+      let currentProtocol: string | undefined;
+      let currentPoolId: string | undefined;
       return withKeeperRetry(
         async () => {
-          const currentAdapterId = expectString(
+          currentAdapterId ??= expectString(
             await simulate(
               server as never,
               vaultContractId,
@@ -329,33 +339,79 @@ export async function discoverMigrationVaults(
             "get_adapter",
             vaultContractId
           );
-          // Independent of each other, both depend only on
-          // currentAdapterId: run concurrently rather than doubling this
-          // vault's discovery latency for no reason.
-          const [currentProtocol, currentPoolId] = await Promise.all([
-            simulate(
-              server as never,
-              currentAdapterId,
-              network.passphrase,
-              "get_protocol"
-            ).then((value) =>
-              expectString(value, "get_protocol", currentAdapterId)
-            ),
-            simulate(
-              server as never,
-              currentAdapterId,
-              network.passphrase,
-              "get_pool"
-            ).then((value) =>
-              expectString(value, "get_pool", currentAdapterId)
-            ),
+          const adapterId = currentAdapterId;
+          // Independent of each other, both depend only on adapterId: run
+          // concurrently rather than doubling this vault's discovery latency
+          // for no reason. Promise.allSettled, not Promise.all: if get_pool
+          // rejects while get_protocol is still in flight, Promise.all would
+          // reject immediately and move on, leaving get_protocol's call
+          // still running in the background. A retry starting before that
+          // stray call resolves would then see currentProtocol still
+          // undefined and issue its own, second get_protocol call, two
+          // concurrent calls in flight for the same thing, exactly what the
+          // caching above exists to avoid. Waiting for both to settle first
+          // means no call from this attempt is ever still in flight once the
+          // next attempt starts.
+          const [protocolResult, poolResult] = await Promise.allSettled([
+            currentProtocol !== undefined
+              ? Promise.resolve(currentProtocol)
+              : simulate(
+                  server as never,
+                  adapterId,
+                  network.passphrase,
+                  "get_protocol"
+                ).then((value) =>
+                  expectString(value, "get_protocol", adapterId)
+                ),
+            currentPoolId !== undefined
+              ? Promise.resolve(currentPoolId)
+              : simulate(
+                  server as never,
+                  adapterId,
+                  network.passphrase,
+                  "get_pool"
+                ).then((value) => expectString(value, "get_pool", adapterId)),
           ]);
+          if (protocolResult.status === "fulfilled") {
+            currentProtocol = protocolResult.value;
+          }
+          if (poolResult.status === "fulfilled") {
+            currentPoolId = poolResult.value;
+          }
+          if (
+            protocolResult.status === "rejected" ||
+            poolResult.status === "rejected"
+          ) {
+            // If get_protocol and get_pool reject with different transience
+            // (e.g. one transient rate-limit, one permanent "contract not
+            // found"), surfacing whichever happens to be checked first would
+            // let a permanent failure hide behind a transient one, wasting
+            // the full retry budget on a target that was never going to
+            // succeed. Prefer the permanent rejection so the keeper stops
+            // retrying for the real reason.
+            const protocolRejection =
+              protocolResult.status === "rejected" ? protocolResult : null;
+            const poolRejection =
+              poolResult.status === "rejected" ? poolResult : null;
+            const permanent = [protocolRejection, poolRejection].find(
+              (r): r is PromiseRejectedResult =>
+                r !== null && !isTransientKeeperError(r.reason)
+            );
+            const fallback = protocolRejection ?? poolRejection;
+            // fallback can't actually be null here: the outer if already
+            // guarantees at least one of protocolResult/poolResult was
+            // rejected, so at least one of protocolRejection/poolRejection
+            // is non-null.
+            throw (permanent ?? fallback)!.reason;
+          }
+          const protocol = protocolResult.value;
+          const poolId = poolResult.value;
           return {
             vaultId: meta.id,
             vaultContractId,
-            currentAdapterId,
-            currentProtocol,
-            currentPoolId,
+            currentAdapterId: adapterId,
+            currentProtocol: protocol,
+            currentPoolId: poolId,
           };
         },
         retryConfig,

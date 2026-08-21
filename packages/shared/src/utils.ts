@@ -51,30 +51,46 @@ export function withRaceTimeout<T>(
   });
 }
 
+export interface RetryOptions {
+  // Called right before sleeping ahead of a retry, purely for observability
+  // (e.g. keeper logging). Has no control over whether the retry happens,
+  // that's shouldRetry's job.
+  onRetry?: (attempt: number, delayMs: number, err: unknown) => void;
+  // Injectable for tests that want to skip real timers; defaults to a real
+  // setTimeout-based delay.
+  sleepFn?: (ms: number) => Promise<void>;
+}
+
 /**
  * Retries `fn` up to `maxAttempts` times with exponential backoff starting at
  * `baseDelayMs`. Throws the last error when all attempts are exhausted.
  *
  * Pass `shouldRetry` to exclude certain errors from the retry loop — for
  * example, to avoid retrying a deadline-exceeded error while the previous
- * in-flight request is still running.
+ * in-flight request is still running. `fn` and `shouldRetry` both receive the
+ * zero-indexed attempt number; callers that don't need it can ignore the
+ * parameter.
  */
 export async function withRetry<T>(
-  fn: () => Promise<T>,
+  fn: (attempt: number) => Promise<T>,
   maxAttempts = 3,
   baseDelayMs = 200,
-  shouldRetry: (err: unknown) => boolean = () => true
+  shouldRetry: (err: unknown, attempt: number) => boolean = () => true,
+  options: RetryOptions = {}
 ): Promise<T> {
+  const sleep =
+    options.sleepFn ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let lastErr: unknown;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      return await fn();
+      return await fn(attempt);
     } catch (err) {
       lastErr = err;
-      if (attempt < maxAttempts - 1 && shouldRetry(err)) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, baseDelayMs * 2 ** attempt)
-        );
+      if (attempt < maxAttempts - 1 && shouldRetry(err, attempt)) {
+        const delayMs = baseDelayMs * 2 ** attempt;
+        options.onRetry?.(attempt, delayMs, err);
+        await sleep(delayMs);
       } else {
         break;
       }

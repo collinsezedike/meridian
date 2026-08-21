@@ -449,7 +449,7 @@ describe("discoverLiveAdapters", () => {
     ]);
   });
 
-  it("records get_protocol discovery failures after retrying the whole discovery step", async () => {
+  it("retries only the failed call, not an already-succeeded get_adapter", async () => {
     const sleep = vi.fn();
     const simulate = vi.fn(async (_server, contractId, _passphrase, method) => {
       if (contractId === "CVAULT" && method === "get_adapter") {
@@ -468,7 +468,14 @@ describe("discoverLiveAdapters", () => {
       pools: { "meridian-usdc": VAULT },
     });
 
-    expect(simulate).toHaveBeenCalledTimes(4);
+    // get_adapter succeeds once and is cached; only the failing get_protocol
+    // call is re-issued on retry (2 get_protocol attempts + 1 get_adapter =
+    // 3 total), not 4, which would mean get_adapter was redundantly re-run.
+    const getAdapterCalls = simulate.mock.calls.filter(
+      ([, , , method]) => method === "get_adapter"
+    );
+    expect(getAdapterCalls).toHaveLength(1);
+    expect(simulate).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledWith(7);
     expect(result.adapters).toEqual([]);
     expect(result.failures).toMatchObject([
@@ -508,6 +515,40 @@ describe("discoverLiveAdapters", () => {
     expect(result.failures).toMatchObject([
       {
         vaultId: "meridian-usdc",
+        transient: false,
+        error: "not_found",
+      },
+    ]);
+  });
+
+  it("classifies a permanent error on the final attempt as non-transient, even after an earlier attempt was transient", async () => {
+    // Regression test: transient was previously tracked via a side-effecting
+    // closure variable only assigned inside shouldRetry, which withRetry
+    // skips calling on the last attempt. A transient failure followed by a
+    // permanent failure on the final attempt used to leave transient stuck
+    // at the earlier attempt's classification (true), wrongly reporting a
+    // permanent failure as transient.
+    const sleep = vi.fn();
+    const simulate = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("request timed out"))
+      .mockRejectedValueOnce(new Error("not_found"));
+
+    const result = await discoverLiveAdapters({
+      network: NETWORK,
+      server: {} as never,
+      simulate: simulate as never,
+      maxAttempts: 2,
+      baseDelayMs: 5,
+      sleep,
+      pools: { "meridian-usdc": VAULT },
+    });
+
+    expect(simulate).toHaveBeenCalledTimes(2);
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        attempts: 2,
         transient: false,
         error: "not_found",
       },
@@ -610,7 +651,7 @@ describe("runBlendAccrualKeeper", () => {
       },
     ]);
     expect(result.skipped).toEqual([
-      { ...DEFINDEX_ADAPTER, reason: "non-blend" },
+      { ...DEFINDEX_ADAPTER, reason: "non-blend (protocol: defindex)" },
     ]);
   });
 
@@ -629,7 +670,7 @@ describe("runBlendAccrualKeeper", () => {
     expect(submitAccrual).not.toHaveBeenCalled();
     expect(result.blendAdapters).toBe(0);
     expect(result.skipped).toEqual([
-      { ...DEFINDEX_ADAPTER, reason: "non-blend" },
+      { ...DEFINDEX_ADAPTER, reason: "non-blend (protocol: defindex)" },
     ]);
   });
 

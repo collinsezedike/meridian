@@ -1,5 +1,8 @@
 #![no_std]
 
+use adapter_common::{
+    get_usdc, require_not_initialized, require_vault_auth, store_vault_and_usdc, AdapterError,
+};
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, panic_with_error, symbol_short,
     token::TokenClient, vec, Address, Env, Symbol, Val, Vec,
@@ -9,9 +12,7 @@ use soroban_sdk::{
 // Storage keys
 // ---------------------------------------------------------------------------
 
-const VAULT_KEY: Symbol = symbol_short!("VAULT");
 const DFX_VAULT: Symbol = symbol_short!("DFXVAULT");
-const USDC_KEY: Symbol = symbol_short!("USDC");
 
 // ---------------------------------------------------------------------------
 // DeFindex vault interface
@@ -55,6 +56,14 @@ pub enum ContractError {
     NotInitialized = 2,
 }
 
+impl From<AdapterError> for ContractError {
+    fn from(err: AdapterError) -> Self {
+        match err {
+            AdapterError::AlreadyInitialized => ContractError::AlreadyInitialized,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
@@ -72,12 +81,9 @@ impl MeridianDefindexAdapter {
         defindex_vault: Address,
         usdc: Address,
     ) -> Result<(), ContractError> {
-        if env.storage().instance().has(&VAULT_KEY) {
-            return Err(ContractError::AlreadyInitialized);
-        }
-        env.storage().instance().set(&VAULT_KEY, &vault);
+        require_not_initialized(&env)?;
+        store_vault_and_usdc(&env, &vault, &usdc);
         env.storage().instance().set(&DFX_VAULT, &defindex_vault);
-        env.storage().instance().set(&USDC_KEY, &usdc);
         Ok(())
     }
 
@@ -85,14 +91,7 @@ impl MeridianDefindexAdapter {
     /// Deposits USDC into the DeFindex vault on behalf of the adapter and
     /// returns the dfToken shares received.
     pub fn deposit(env: Env, amount: i128) -> i128 {
-        let vault: Address = env
-            .storage()
-            .instance()
-            .get(&VAULT_KEY)
-            .unwrap_or_else(|| {
-                panic_with_error!(&env, ContractError::NotInitialized);
-            });
-        vault.require_auth();
+        require_vault_auth(&env);
 
         let dfx: Address = env
             .storage()
@@ -115,29 +114,10 @@ impl MeridianDefindexAdapter {
     /// DeFindex sends USDC to this adapter; the adapter forwards it to
     /// `recipient`. Returns the USDC amount received.
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
-        let vault: Address = env
-            .storage()
-            .instance()
-            .get(&VAULT_KEY)
-            .unwrap_or_else(|| {
-                panic_with_error!(&env, ContractError::NotInitialized);
-            });
-        vault.require_auth();
+        require_vault_auth(&env);
 
-        let dfx: Address = env
-            .storage()
-            .instance()
-            .get(&DFX_VAULT)
-            .unwrap_or_else(|| {
-                panic_with_error!(&env, ContractError::NotInitialized);
-            });
-        let usdc: Address = env
-            .storage()
-            .instance()
-            .get(&USDC_KEY)
-            .unwrap_or_else(|| {
-                panic_with_error!(&env, ContractError::NotInitialized);
-            });
+        let dfx: Address = env.storage().instance().get(&DFX_VAULT).unwrap();
+        let usdc = get_usdc(&env);
         let adapter = env.current_contract_address();
 
         let amounts =

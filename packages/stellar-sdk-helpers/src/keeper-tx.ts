@@ -4,10 +4,8 @@
 // timeout on retry never causes a duplicate on-chain call.
 
 import {
-  Account,
   Contract,
   Keypair,
-  Transaction,
   TransactionBuilder,
   rpc,
   xdr,
@@ -18,14 +16,13 @@ import { describeSendError, simErrorMessage, waitForTransaction } from "./tx";
 import type { StellarNetwork } from "./types";
 import { errorMessage } from "./keeper-retry";
 
-export interface KeeperRpcServer {
-  getAccount(publicKey: string): Promise<Account>;
-  simulateTransaction(
-    tx: Transaction
-  ): Promise<rpc.Api.SimulateTransactionResponse>;
-  sendTransaction(tx: Transaction): Promise<rpc.Api.SendTransactionResponse>;
-  getTransaction(hash: string): Promise<rpc.Api.GetTransactionResponse>;
-}
+// A real rpc.Server satisfies this directly (no cast needed); a narrower
+// Pick instead of the hand-written interface this used to be means the
+// signatures can never silently drift from the real SDK's.
+export type KeeperRpcServer = Pick<
+  rpc.Server,
+  "getAccount" | "simulateTransaction" | "sendTransaction" | "getTransaction"
+>;
 
 // Thrown when a transaction was successfully sent (we have its hash) but
 // confirmation couldn't be observed before the configured timeout elapsed.
