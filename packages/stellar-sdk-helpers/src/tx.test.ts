@@ -21,7 +21,7 @@ import {
   assertSubmittable,
 } from "./tx";
 import type { StellarNetwork } from "./types";
-import { CONTRACT_ADDRESSES } from "@meridian/shared";
+import { CONTRACT_ADDRESSES, MUSDC_ISSUER } from "@meridian/shared";
 
 const { SUCCESS, FAILED, NOT_FOUND } = rpc.Api.GetTransactionStatus;
 
@@ -242,8 +242,10 @@ const TESTNET: StellarNetwork = {
 
 const USDC_ISSUER_TESTNET =
   "GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56";
-const MUSDC_ISSUER_TESTNET =
-  "GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD";
+// Pulled from the source of truth rather than hardcoded, so this fixture
+// doesn't drift out of sync the next time the vault (and its mUSDC issuer)
+// is redeployed, as happened with the previous hardcoded value in #514.
+const MUSDC_ISSUER_TESTNET = MUSDC_ISSUER.testnet;
 
 function makeBalance(
   code: string,
@@ -432,8 +434,10 @@ describe("assertSubmittable", () => {
     "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
   const USDC_ISSUER_TESTNET =
     "GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56";
-  const MUSDC_ISSUER_TESTNET =
-    "GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD";
+  // Pulled from the source of truth rather than hardcoded, so this fixture
+  // doesn't drift out of sync the next time the vault (and its mUSDC issuer)
+  // is redeployed, as happened with the previous hardcoded value in #514.
+  const MUSDC_ISSUER_TESTNET = MUSDC_ISSUER.testnet;
   // Circle's mainnet USDC issuer: a validly-formed address that is not on the
   // testnet allowlist.
   const UNKNOWN_ISSUER =
