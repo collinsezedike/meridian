@@ -12,7 +12,12 @@ import {
 } from "@stellar/stellar-sdk";
 import { withRaceTimeout } from "@meridian/shared";
 import { BASE_FEE } from "./internal";
-import { describeSendError, simErrorMessage, waitForTransaction } from "./tx";
+import {
+  describeSendError,
+  simErrorMessage,
+  simulateView,
+  waitForTransaction,
+} from "./tx";
 import type { StellarNetwork } from "./types";
 import { errorMessage } from "./keeper-retry";
 
@@ -113,6 +118,88 @@ export function expectString(
   return value;
 }
 
+// Thrown by the stale-adapter guard below: the caller's view of which
+// adapter a vault is using is out of date, something else already changed
+// it. Shared by both keepers: the migration keeper uses it to avoid
+// migrating off an adapter the vault no longer has, and the accrual keeper
+// to avoid accruing on an adapter the vault has already migrated away from
+// (a silently ineffective call, since a detached adapter is still a valid
+// contract). Both treat it as a benign, expected race, a skip rather than a
+// failure.
+//
+// Detected downstream by message text, not `instanceof`: withKeeperRetry
+// wraps whatever it catches in a KeeperRetryError (keeper-retry.ts), which
+// preserves the message but not the original error's type. Same approach
+// isDefinitiveOnChainFailure already uses for the equivalent problem.
+export const STALE_ADAPTER_MESSAGE = "Vault's adapter changed since discovery";
+
+export class StaleAdapterError extends Error {
+  constructor(expected: string, actual: string) {
+    super(
+      `${STALE_ADAPTER_MESSAGE} (expected ${expected}, now ${actual}); skipping to avoid a stale call`
+    );
+    this.name = "StaleAdapterError";
+  }
+}
+
+export function isStaleAdapterError(err: unknown): boolean {
+  return errorMessage(err).includes(STALE_ADAPTER_MESSAGE);
+}
+
+/**
+ * Re-reads the vault's live `get_adapter()` and throws StaleAdapterError if
+ * it no longer matches what this run discovered. A cheap, best-effort guard
+ * that narrows, but cannot close, the window between deciding to act on an
+ * adapter and the transaction landing: it catches the common case of "a
+ * prior run already changed this vault's adapter" for one simulate call.
+ */
+export async function assertAdapterUnchanged(
+  server: KeeperRpcServer,
+  vaultContractId: string,
+  networkPassphrase: string,
+  expectedAdapterId: string
+): Promise<void> {
+  const liveAdapterId = expectString(
+    await simulateView(
+      server as never,
+      vaultContractId,
+      networkPassphrase,
+      "get_adapter"
+    ),
+    "get_adapter",
+    vaultContractId
+  );
+  if (liveAdapterId !== expectedAdapterId) {
+    throw new StaleAdapterError(expectedAdapterId, liveAdapterId);
+  }
+}
+
+// Lifecycle hooks around the one moment that matters for cross-invocation
+// dedup: `onSubmitted` fires immediately after a transaction is broadcast
+// and a hash exists (never before, so a crash mid-build leaves no record
+// behind), `onResolved` once that hash's fate is known, success or a
+// definitive on-chain failure. Both are invoked defensively: a throwing hook
+// must never surface as a submission error, since the retry loop would
+// answer that by broadcasting a second transaction, exactly the duplicate
+// the hooks exist to prevent. Implementations are expected to log their own
+// failures (see keeper-state.ts).
+export interface KeeperSubmissionHooks {
+  onSubmitted?: (hash: string) => Promise<void>;
+  onResolved?: (hash: string) => Promise<void>;
+}
+
+async function runHook(
+  hook: ((hash: string) => Promise<void>) | undefined,
+  hash: string
+): Promise<void> {
+  if (!hook) return;
+  try {
+    await hook(hash);
+  } catch {
+    // Deliberately swallowed, see KeeperSubmissionHooks above.
+  }
+}
+
 export interface KeeperTxConfig {
   network: StellarNetwork;
   secretKey: string;
@@ -127,23 +214,27 @@ export interface KeeperTxConfig {
 // transaction on this call, only re-throws to keep tracking the *same* hash,
 // until the prior transaction's fate is actually known (confirmed success or
 // confirmed on-chain failure). Callers must persist `priorHash` across their
-// own retry attempts (see accrual-keeper.ts and migration-keeper.ts).
+// own retry attempts (see accrual-keeper.ts and migration-keeper.ts), and
+// persist it across invocations through `hooks` (see keeper-state.ts).
 export async function submitKeeperOperation(
   contractId: string,
   method: string,
   args: xdr.ScVal[],
   config: KeeperTxConfig,
   server: KeeperRpcServer,
-  priorHash?: string
+  priorHash?: string,
+  hooks?: KeeperSubmissionHooks
 ): Promise<{ hash: string; ledger: number }> {
   if (priorHash) {
     try {
       const confirmed = await waitForTransaction(server, priorHash, {
         timeoutMs: config.confirmationTimeoutMs,
       });
+      await runHook(hooks?.onResolved, priorHash);
       return { hash: priorHash, ledger: confirmed.ledger };
     } catch (err) {
       if (isDefinitiveOnChainFailure(err)) {
+        await runHook(hooks?.onResolved, priorHash);
         throw new SubmissionFailedError(err);
       }
       throw new SubmissionInFlightError(priorHash, err);
@@ -194,13 +285,20 @@ export async function submitKeeperOperation(
     throw new Error("Transaction could not be submitted yet (try again later)");
   }
 
+  // The transaction is out; from here on a second one would be a duplicate.
+  // Recorded before waiting for confirmation, not after, precisely because
+  // the wait is what times out.
+  await runHook(hooks?.onSubmitted, sent.hash);
+
   try {
     const confirmed = await waitForTransaction(server, sent.hash, {
       timeoutMs: config.confirmationTimeoutMs,
     });
+    await runHook(hooks?.onResolved, sent.hash);
     return { hash: sent.hash, ledger: confirmed.ledger };
   } catch (err) {
     if (isDefinitiveOnChainFailure(err)) {
+      await runHook(hooks?.onResolved, sent.hash);
       throw new SubmissionFailedError(err);
     }
     throw new SubmissionInFlightError(sent.hash, err);

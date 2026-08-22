@@ -5,6 +5,7 @@ export * from "./defilamma";
 export * from "./defindex";
 export * from "./horizon";
 export * from "./keeper-retry";
+export * from "./keeper-state";
 export * from "./keeper-tx";
 export * from "./known-pools";
 export * from "./migration-keeper";

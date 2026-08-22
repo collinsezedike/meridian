@@ -34,12 +34,24 @@ import {
   type RetryConfig,
 } from "./keeper-retry";
 import {
+  assertAdapterUnchanged,
   expectString,
+  isStaleAdapterError,
   isTransientKeeperError,
   submitKeeperOperation,
   SubmissionInFlightError,
   type KeeperRpcServer,
+  type KeeperSubmissionHooks,
 } from "./keeper-tx";
+import {
+  clearSubmission,
+  loadKeeperStateStore,
+  parseSubmissionTtlMs,
+  recordSubmission,
+  resolvePriorSubmission,
+  submissionStateKey,
+  type KeeperStateStore,
+} from "./keeper-state";
 
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_BASE_DELAY_MS = 1_000;
@@ -115,6 +127,7 @@ export interface MigrationKeeperConfig {
   rpcTimeoutMs: number;
   minImprovementBps: number;
   maxSlippageBps: number;
+  submissionTtlMs: number;
   candidateAdapters: Record<string, string>;
 }
 
@@ -190,6 +203,9 @@ export interface MigrationKeeperDeps {
       | "improvementBps"
     >
   >;
+  // Cross-invocation submission tracking (#515). Defaults to whatever the
+  // environment provides (Upstash Redis when configured); injected in tests.
+  stateStore?: KeeperStateStore;
   logger?: KeeperLogger;
   sleep?: (ms: number) => Promise<void>;
   deadlineAt?: number;
@@ -290,6 +306,7 @@ export function loadMigrationKeeperConfig(
       "MERIDIAN_MIGRATION_MIN_IMPROVEMENT_BPS"
     ),
     maxSlippageBps,
+    submissionTtlMs: parseSubmissionTtlMs(env),
     candidateAdapters: parseCandidateAdapters(env),
   };
 }
@@ -650,33 +667,6 @@ async function findBestCandidate(
   };
 }
 
-// Thrown by the stale-adapter guard below: this run's discovery data is out
-// of date, something else already changed the vault's adapter. This is the
-// benign, expected outcome the guard exists to catch (the cross-invocation
-// race documented in migration-keeper.md, tracked in #515), not a genuine
-// operational problem, so it's reported as a skip, not a KeeperFailure.
-//
-// Detected downstream by message text, not `instanceof`: withKeeperRetry
-// wraps whatever it catches in a KeeperRetryError (keeper-retry.ts), which
-// preserves the message but not the original error's type, so by the time
-// this reaches runMigrationKeeper's catch block, `err` is a
-// KeeperRetryError, never a StaleAdapterError. Same approach
-// isDefinitiveOnChainFailure already uses for the equivalent problem.
-const STALE_ADAPTER_MESSAGE = "Vault's adapter changed since discovery";
-
-class StaleAdapterError extends Error {
-  constructor(expected: string, actual: string) {
-    super(
-      `${STALE_ADAPTER_MESSAGE} (expected ${expected}, now ${actual}); skipping to avoid a stale migration`
-    );
-    this.name = "StaleAdapterError";
-  }
-}
-
-function isStaleAdapterError(err: unknown): boolean {
-  return errorMessage(err).includes(STALE_ADAPTER_MESSAGE);
-}
-
 async function submitMigrationTransaction(
   vaultContractId: string,
   expectedCurrentAdapterId: string,
@@ -684,30 +674,23 @@ async function submitMigrationTransaction(
   maxSlippageBps: number,
   config: MigrationKeeperConfig,
   server: KeeperRpcServer,
-  priorHash?: string
+  priorHash?: string,
+  hooks?: KeeperSubmissionHooks
 ): Promise<{ hash: string; ledger: number }> {
   // Only checked before building a brand-new transaction, never when
   // rechecking an already-sent one (priorHash set): a cheap, best-effort
-  // guard against the cross-invocation race documented in
-  // migration-keeper.md, this run's discovery data could be stale if
-  // another invocation already migrated this vault since. Narrows, doesn't
-  // close, the window: a genuine TOCTOU gap remains between this check and
-  // the transaction actually landing, real cross-invocation dedup is
-  // tracked separately in #515.
+  // guard against this run's discovery data being stale because another
+  // invocation already migrated this vault since. It also covers the one
+  // window the submission record can't (broadcast succeeded, then the
+  // process died before the record was written), so the two guards are
+  // complementary rather than redundant, see migration-keeper.md.
   if (!priorHash) {
-    const liveAdapterId = expectString(
-      await simulateView(
-        server as never,
-        vaultContractId,
-        config.network.passphrase,
-        "get_adapter"
-      ),
-      "get_adapter",
-      vaultContractId
+    await assertAdapterUnchanged(
+      server,
+      vaultContractId,
+      config.network.passphrase,
+      expectedCurrentAdapterId
     );
-    if (liveAdapterId !== expectedCurrentAdapterId) {
-      throw new StaleAdapterError(expectedCurrentAdapterId, liveAdapterId);
-    }
   }
 
   return submitKeeperOperation(
@@ -724,7 +707,8 @@ async function submitMigrationTransaction(
       confirmationTimeoutMs: CONFIRMATION_TIMEOUT_MS,
     },
     server,
-    priorHash
+    priorHash,
+    hooks
   );
 }
 
@@ -737,6 +721,16 @@ export async function runMigrationKeeper(
   const startedAt = new Date().toISOString();
   const deadlineAt = deps.deadlineAt ?? Date.now() + FUNCTION_BUDGET_MS;
   const server = getRpcServer(config.network.rpcUrl, config.rpcTimeoutMs);
+  // Shared, not per-run, state: this is the only thing that survives a
+  // killed invocation, so it's what stops the next cron tick from sending a
+  // second migrate_adapter while the first is still landing (#515).
+  const stateStore =
+    deps.stateStore ??
+    loadKeeperStateStore(process.env, {
+      keeper: "migration",
+      requireShared: true,
+      logger,
+    });
   const rateSource = deps.rateSource ?? defaultRateSource;
   const resolveCandidatePool =
     deps.resolveCandidatePool ??
@@ -790,6 +784,51 @@ export async function runMigrationKeeper(
         error: "Skipped: run deadline reached before this vault could start",
       });
       continue;
+    }
+
+    // Checked before evaluation, not just before submission: a vault whose
+    // prior migration is still in flight isn't going to be migrated this
+    // run either way, so there's no reason to spend the rate lookups (and
+    // the deadline budget they consume) reaching that conclusion.
+    const stateKey = submissionStateKey(
+      "migration",
+      config.network.network,
+      vault.vaultId
+    );
+    const prior = await resolvePriorSubmission({
+      store: stateStore,
+      key: stateKey,
+      server,
+      ttlMs: config.submissionTtlMs,
+      logger,
+      context: { vaultId: vault.vaultId, keeper: "migration-keeper" },
+    });
+    if (prior.state === "in-flight" || prior.state === "unknown") {
+      const reason =
+        prior.state === "in-flight"
+          ? "a prior migrate_adapter submission is still unconfirmed; skipped to avoid a duplicate migration"
+          : `prior submission state could not be verified (${prior.reason}); skipped rather than risk a duplicate migration`;
+      skipped.push({ vaultId: vault.vaultId, reason });
+      logger.warn("[migration-keeper] migration skipped; prior submission", {
+        vaultId: vault.vaultId,
+        state: prior.state,
+        ...(prior.state === "in-flight" && {
+          hash: prior.hash,
+          ageMs: prior.ageMs,
+        }),
+      });
+      continue;
+    }
+    if (prior.state !== "none") {
+      // landed / failed / expired: the record is already cleared, this run
+      // is free to evaluate again. Logged because "the previous run's
+      // transaction turned out to have landed after all" is exactly the
+      // sequence that's impossible to reconstruct afterwards otherwise.
+      logger.info("[migration-keeper] prior submission resolved", {
+        vaultId: vault.vaultId,
+        state: prior.state,
+        hash: prior.hash,
+      });
     }
 
     let evaluation: { best: BestCandidate | null; skipReason?: string };
@@ -859,6 +898,23 @@ export async function runMigrationKeeper(
       continue;
     }
     let priorHash: string | undefined;
+    const submissionHooks: KeeperSubmissionHooks = {
+      onSubmitted: (hash) =>
+        recordSubmission(
+          stateStore,
+          stateKey,
+          hash,
+          config.submissionTtlMs,
+          logger,
+          { vaultId: vault.vaultId, keeper: "migration-keeper" }
+        ),
+      onResolved: (hash) =>
+        clearSubmission(stateStore, stateKey, logger, {
+          vaultId: vault.vaultId,
+          keeper: "migration-keeper",
+          hash,
+        }),
+    };
     try {
       const result = await withKeeperRetry(
         (attempt) =>
@@ -871,7 +927,8 @@ export async function runMigrationKeeper(
                 config.maxSlippageBps,
                 config,
                 server,
-                priorHash
+                priorHash,
+                submissionHooks
               ).catch((err: unknown) => {
                 if (err instanceof SubmissionInFlightError) {
                   priorHash = err.sentHash;

@@ -180,32 +180,91 @@ failure (e.g. slippage exceeded) is reported immediately without retrying,
 and the run stops starting new work once it's within `vercel.json`'s
 `maxDuration` budget rather than risk being killed mid-retry.
 
-The in-flight-transaction tracking (`priorHash`) only covers a single
-invocation, exactly like the accrue keeper's own version of this gap (see
-`apps/docs/operations/accrual-keeper.md`). If the process is killed (or a
-run exhausts its retries) while a `migrate_adapter` transaction is sent but
-still unconfirmed, the next scheduled run has no memory of it: discovery
-reads whatever adapter is live on-chain at that point and evaluates fresh,
-so it will not deliberately resend the exact same migration, but if the
-prior transaction is still landing when the next run fires, a second,
-independent `migrate_adapter` call can still go out before the first
-confirms. Unlike `accrue()`, this isn't free: each call is its own
-slippage-bounded transaction, so a genuine double-migration costs real
-slippage twice. This is an accepted, bounded gap
-covered by the same cross-invocation persistence work needed for the accrue
-keeper, not something this keeper solves on its own (tracked in #515, which
-also needs to account for the accrue keeper racing against this one: both
-act on the same vault's adapter independently, with no coordination between
-them, see #515 for the full scope once `migrate_adapter` is actually live
-on the vault).
+## Cross-Invocation Duplicate Protection
 
-Before building a brand-new transaction (not when rechecking an
-already-sent one), the keeper re-reads the vault's live `get_adapter()` and
-compares it against what discovery saw for this run. A mismatch means
-something else already changed the vault's adapter since this run started,
-and the migration is skipped rather than submitted against stale
-assumptions. This narrows the cross-invocation race window; it does not
-close it, a mismatch can still occur between this check and the
-transaction actually landing on-chain (an unavoidable TOCTOU gap without a
-contract-level compare-and-swap), but it catches the common case of "a
-prior run's migration already landed" for free.
+`priorHash` (in `keeper-tx.ts`) only tracks an unconfirmed transaction
+_within_ one invocation. That alone is not enough here: if the process is
+killed, or a run exhausts its retries while a `migrate_adapter` transaction
+is sent but unconfirmed, the next scheduled run would have no memory of it
+and could send a second, independent migration while the first is still
+landing. Unlike `accrue()`, that isn't free, each call is its own
+slippage-bounded transaction, so a double-migration costs real slippage
+twice.
+
+Two guards close that, and they cover different failure windows:
+
+**1. A shared submission record** (`packages/stellar-sdk-helpers/src/keeper-state.ts`).
+One record per vault, in Upstash Redis, keyed
+`meridian:keeper:migration:<network>:<vaultId>`, holding just the submitted
+transaction hash and the time it was broadcast.
+
+The record is written **only after** `sendTransaction` returns a hash, never
+before. There is deliberately no "about to send" state, so a crash between
+deciding to migrate and actually broadcasting leaves nothing behind that
+could block the next run.
+
+At the start of every run, an existing record is **resolved against the
+network**, never trusted on its own word:
+
+| Lookup of the recorded hash                           | Meaning                              | Action                           |
+| ----------------------------------------------------- | ------------------------------------ | -------------------------------- |
+| `SUCCESS`                                             | the migration landed                 | clear the record, evaluate again |
+| `FAILED`                                              | it failed on-chain                   | clear the record, retry allowed  |
+| not found, older than the transaction validity window | provably dead, it can never land now | clear the record, retry allowed  |
+| not found, still inside that window                   | genuinely still in flight            | **skip this vault this run**     |
+| the store or the lookup itself errored                | unknown                              | **skip this vault this run**     |
+
+So a record can never block a vault indefinitely: it either resolves to a
+real outcome or ages out. The window comes from the transaction's own time
+bounds, `submitKeeperOperation` builds with `.setTimeout(300)`, so
+`MERIDIAN_KEEPER_SUBMISSION_TTL_MS` defaults to `360000` (300s plus 60s of
+clock-skew margin). Every record is also written with a Redis-side expiry of
+the same length, so even a run that dies before it can clear a record cannot
+leave one behind past the point where its transaction could still land.
+
+An unreadable store is treated as _unknown_, not as "nothing was submitted":
+reading a KV outage as "safe to migrate" would produce exactly the duplicate
+this exists to prevent. Migrations pause (visibly, in `skipped[]`) until the
+store is reachable again.
+
+Because a per-process fallback cannot dedup across invocations at all, the
+migration keeper **refuses to run in production** without
+`UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN`, the same pair
+`api/_lib/middleware.ts` already requires there for distributed rate
+limiting. Outside production it falls back to a per-invocation in-memory
+store and logs that dedup is inactive for the run.
+
+**2. The on-chain adapter re-check.** Before building a brand-new transaction
+(not when rechecking an already-sent one), the keeper re-reads the vault's
+live `get_adapter()` and compares it against what discovery saw for this run.
+A mismatch means something else already changed the vault's adapter, and the
+migration is skipped rather than submitted against stale assumptions.
+
+This is not redundant with the record: it covers the one window the record
+cannot, where the broadcast succeeded but the process died before the record
+was written. In that case the next run has no record, but it does see the
+vault already sitting on the new adapter, and skips. Conversely, the record
+covers what the re-check cannot, an unconfirmed transaction that has not yet
+changed the adapter. A TOCTOU gap still remains between the re-check and the
+transaction landing (unavoidable without a contract-level compare-and-swap),
+which is why both guards exist rather than either alone.
+
+Skips from either guard land in `skipped[]`, not `failures[]`: both are
+benign, expected races, and a keeper that returned HTTP 500 every time one
+fired would page someone for correct behavior.
+
+## Coordination With The Accrue Keeper
+
+The two keepers act on the same vault's adapter independently. The accrue
+keeper can read `get_adapter()` at discovery, have this keeper switch the
+vault to a different adapter before its submission lands, and then call
+`accrue()` on the now-detached adapter, a silently ineffective call (a
+detached adapter is still a valid contract, so nothing errors) whose yield
+never reaches the vault.
+
+The accrue keeper therefore runs the same live-`get_adapter()` re-check
+before building its own transaction, and skips when the vault has moved on
+(see `apps/docs/operations/accrual-keeper.md`). No lock or shared ordering
+between the two keepers is introduced: each independently refuses to act on
+an adapter the vault no longer uses, which is enough to make the race benign
+without coupling their schedules.

@@ -99,6 +99,7 @@ import {
   type KeeperLogger,
 } from "./accrual-keeper";
 import type { KnownPoolMeta } from "./known-pools";
+import { submissionStateKey, type SubmissionRecord } from "./keeper-state";
 
 const NETWORK = {
   network: "testnet" as const,
@@ -112,6 +113,7 @@ const CONFIG: BlendAccrualKeeperConfig = {
   maxAttempts: 3,
   baseDelayMs: 1,
   rpcTimeoutMs: 100,
+  submissionTtlMs: 360_000,
 };
 
 const VAULT: KnownPoolMeta = {
@@ -183,6 +185,10 @@ beforeEach(() => {
     build: () => ({ tx, sign: stellarMocks.signPrepared }),
   }));
   stellarMocks.simulateView.mockReset();
+  // The pre-submit "the vault still uses this adapter" guard reads
+  // get_adapter() fresh on the default submission path; keep it matching
+  // BLEND_ADAPTER unless a test is specifically exercising a mismatch.
+  stellarMocks.simulateView.mockResolvedValue(BLEND_ADAPTER.adapterId);
   stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 999 });
 });
 
@@ -1363,6 +1369,205 @@ describe("runBlendAccrualKeeper", () => {
         stage: "submit",
         attempts: 1,
         transient: true,
+      },
+    ]);
+  });
+});
+
+describe("runBlendAccrualKeeper cross-invocation dedup", () => {
+  function store(initial?: Record<string, SubmissionRecord>) {
+    const records = new Map<string, SubmissionRecord>(
+      Object.entries(initial ?? {})
+    );
+    return {
+      records,
+      get: vi.fn(async (key: string) => records.get(key) ?? null),
+      set: vi.fn(async (key: string, record: SubmissionRecord) => {
+        records.set(key, record);
+      }),
+      delete: vi.fn(async (key: string) => {
+        records.delete(key);
+      }),
+    };
+  }
+
+  const KEY = submissionStateKey(
+    "accrual",
+    "testnet",
+    BLEND_ADAPTER.vaultId,
+    BLEND_ADAPTER.adapterId
+  );
+
+  it("skips an adapter whose prior accrue() is still unconfirmed instead of sending a second one", async () => {
+    // The gap this closes: the record is the only thing that survives a
+    // killed invocation, so without it the next cron tick would happily
+    // broadcast a duplicate while the first transaction is still landing.
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    const stateStore = store({
+      [KEY]: { hash: "INFLIGHT_HASH", submittedAtMs: Date.now() - 1_000 },
+    });
+
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore,
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+    });
+
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(result.successes).toEqual([]);
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        adapterId: "CADAPTERBLEND",
+        reason: expect.stringContaining("still unconfirmed"),
+      },
+    ]);
+    // The record is left in place: it's still genuinely in flight.
+    expect(stateStore.records.get(KEY)).toBeDefined();
+  });
+
+  it("clears a prior submission that actually landed and submits again", async () => {
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "SUCCESS", ledger: 12 })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    const stateStore = store({
+      [KEY]: { hash: "LANDED_HASH", submittedAtMs: Date.now() - 1_000 },
+    });
+
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore,
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+    });
+
+    expect(result.successes).toMatchObject([{ hash: "HASH" }]);
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    // Cleared once resolved, and again once this run's own submission
+    // confirmed, so nothing is left to block the next tick.
+    expect(stateStore.records.get(KEY)).toBeUndefined();
+  });
+
+  it("ages out a record whose transaction can no longer land, rather than blocking forever", async () => {
+    // NOT_FOUND past the transaction's own validity window means it is
+    // provably dead; without this the record would block every subsequent
+    // run until a human intervened.
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    const stateStore = store({
+      [KEY]: {
+        hash: "DEAD_HASH",
+        submittedAtMs: Date.now() - CONFIG.submissionTtlMs - 1_000,
+      },
+    });
+
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore,
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+    });
+
+    expect(result.successes).toMatchObject([{ hash: "HASH" }]);
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("records the broadcast hash before waiting for confirmation, not after", async () => {
+    // The wait is exactly what times out, so a record written after it
+    // would be missing in the case it exists for.
+    let recordedWhilePending: SubmissionRecord | undefined;
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+      sendTransaction: vi.fn(async () => ({
+        hash: "FRESH_HASH",
+        status: "PENDING",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    const stateStore = store();
+    stellarMocks.waitForTransaction.mockImplementation(async () => {
+      recordedWhilePending = stateStore.records.get(KEY);
+      return { ledger: 7 };
+    });
+
+    await runBlendAccrualKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore,
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+    });
+
+    expect(recordedWhilePending).toMatchObject({ hash: "FRESH_HASH" });
+    expect(stateStore.records.get(KEY)).toBeUndefined();
+  });
+
+  it("skips rather than guesses when the submission state store cannot be read", async () => {
+    const stateStore = store();
+    stateStore.get.mockRejectedValue(new Error("KV unavailable"));
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore,
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+    });
+
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(result.skipped).toMatchObject([
+      { reason: expect.stringContaining("could not be verified") },
+    ]);
+  });
+
+  it("skips accruing an adapter the vault has already migrated away from", async () => {
+    // The accrue/migrate race folded into #515: accrue() on a detached
+    // adapter succeeds and does nothing, so it must not be reported as a
+    // success (nor as a failure, it is a benign race).
+    stellarMocks.simulateView.mockResolvedValue("CADAPTERDEFINDEX_NEW");
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore: store(),
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+    });
+
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(result.successes).toEqual([]);
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        adapterId: "CADAPTERBLEND",
+        reason: expect.stringContaining("adapter changed since discovery"),
       },
     ]);
   });

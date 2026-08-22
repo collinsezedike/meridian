@@ -105,6 +105,7 @@ import {
   type MigrationKeeperConfig,
 } from "./migration-keeper";
 import type { KeeperLogger } from "./keeper-retry";
+import { submissionStateKey, type SubmissionRecord } from "./keeper-state";
 import type { KnownPoolMeta } from "./known-pools";
 
 const NETWORK = {
@@ -121,6 +122,7 @@ const CONFIG: MigrationKeeperConfig = {
   rpcTimeoutMs: 100,
   minImprovementBps: 50,
   maxSlippageBps: 100,
+  submissionTtlMs: 360_000,
   candidateAdapters: { defindex: "CDEFINDEXADAPTER" },
 };
 
@@ -1171,6 +1173,204 @@ describe("runMigrationKeeper", () => {
         stage: "submit",
         transient: true,
       },
+    ]);
+  });
+});
+
+describe("runMigrationKeeper cross-invocation dedup", () => {
+  function store(initial?: Record<string, SubmissionRecord>) {
+    const records = new Map<string, SubmissionRecord>(
+      Object.entries(initial ?? {})
+    );
+    return {
+      records,
+      get: vi.fn(async (key: string) => records.get(key) ?? null),
+      set: vi.fn(async (key: string, record: SubmissionRecord) => {
+        records.set(key, record);
+      }),
+      delete: vi.fn(async (key: string) => {
+        records.delete(key);
+      }),
+    };
+  }
+
+  const KEY = submissionStateKey("migration", "testnet", "meridian-usdc");
+
+  const rateSource = () =>
+    vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+  it("does not send a second migrate_adapter while a prior one is still unconfirmed", async () => {
+    // The whole point of #515: unlike accrue(), a duplicate here costs real
+    // slippage a second time, not a flat fee.
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
+    const rates = rateSource();
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore: store({
+        [KEY]: { hash: "INFLIGHT_HASH", submittedAtMs: Date.now() - 1_000 },
+      }),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource: rates,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+    });
+
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    // Blocked before evaluation, so the rate lookups (and the deadline
+    // budget they spend) are never paid for a vault that cannot migrate.
+    expect(rates).not.toHaveBeenCalled();
+    expect(result.migrations).toEqual([]);
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        reason: expect.stringContaining("still unconfirmed"),
+      },
+    ]);
+  });
+
+  it("resolves a prior submission that landed and evaluates again", async () => {
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "SUCCESS", ledger: 5 })),
+      sendTransaction: vi.fn(async () => ({
+        hash: "SUBMITTED_HASH",
+        status: "PENDING",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
+    const stateStore = store({
+      [KEY]: { hash: "LANDED_HASH", submittedAtMs: Date.now() - 1_000 },
+    });
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore,
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource: rateSource(),
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+    });
+
+    expect(result.migrations).toMatchObject([{ hash: "SUBMITTED_HASH" }]);
+    expect(stateStore.records.get(KEY)).toBeUndefined();
+  });
+
+  it("clears a record whose transaction is past its validity window instead of blocking on it", async () => {
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+      sendTransaction: vi.fn(async () => ({
+        hash: "SUBMITTED_HASH",
+        status: "PENDING",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore: store({
+        [KEY]: {
+          hash: "DEAD_HASH",
+          submittedAtMs: Date.now() - CONFIG.submissionTtlMs - 1,
+        },
+      }),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource: rateSource(),
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+    });
+
+    expect(result.migrations).toMatchObject([{ hash: "SUBMITTED_HASH" }]);
+  });
+
+  it("records the hash the moment it is broadcast, so a killed run still blocks the next one", async () => {
+    let recordedWhilePending: SubmissionRecord | undefined;
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+      sendTransaction: vi.fn(async () => ({
+        hash: "SUBMITTED_HASH",
+        status: "PENDING",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
+    const stateStore = store();
+    stellarMocks.waitForTransaction.mockImplementation(async () => {
+      recordedWhilePending = stateStore.records.get(KEY);
+      return { ledger: 321 };
+    });
+
+    await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore,
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource: rateSource(),
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+    });
+
+    expect(recordedWhilePending).toMatchObject({ hash: "SUBMITTED_HASH" });
+    expect(stateStore.records.get(KEY)).toBeUndefined();
+  });
+
+  it("skips the vault when the prior submission's status cannot be checked", async () => {
+    // A store or RPC outage must not be read as "nothing was submitted":
+    // that is precisely the assumption that produces a double migration.
+    const server = makeServer({
+      getTransaction: vi.fn(async () => {
+        throw new Error("rpc unavailable");
+      }),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore: store({
+        [KEY]: { hash: "UNKNOWN_HASH", submittedAtMs: Date.now() },
+      }),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource: rateSource(),
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+    });
+
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      { reason: expect.stringContaining("could not be verified") },
     ]);
   });
 });
