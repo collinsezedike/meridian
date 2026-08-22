@@ -18,7 +18,9 @@ Neither script requires manual `stellar contract invoke` steps — read them bef
 
 Both scripts require a `DEPLOYER` secret key, funded via [Friendbot](https://friendbot.stellar.org/). `DEPLOYER` only pays transaction fees and signs the setup calls — it does **not** need to be kept around afterward, and can be thrown away once the script finishes.
 
-`deploy-testnet.sh` additionally accepts an optional `ADMIN` **public key**. This becomes the deployed vault's permanent admin, the only address that can ever call `set_admin`, `set_paused`, `set_adapter`, or `migrate_adapter` on it. `ADMIN` is deliberately independent of `DEPLOYER` as an identity — but not as a _signer_: the vault's `initialize()` calls `admin.require_auth()`, so the deployed-with-`ADMIN`-set-separately case still needs a signature from `ADMIN` itself, not just from `DEPLOYER`. The script cannot provide that signature on your behalf (it never has access to `ADMIN`'s secret key, by design), so when `ADMIN` differs from `DEPLOYER` it builds the vault deployment up to that point and then prints the `initialize()` command for whoever holds the `ADMIN` key to run themselves. If you don't set `ADMIN`, the script defaults it to `DEPLOYER`'s own address and prints a warning — fine for a quick throwaway test (and the one case where the script _can_ fully automate `initialize()`, since `DEPLOYER`'s own signature already covers it), but you should always set `ADMIN` explicitly to a separate, durable key for anything you intend to keep testing against, and it **must** be set explicitly ahead of any mainnet deployment.
+`deploy-testnet.sh` additionally accepts an optional `ADMIN` **public key**. This becomes the deployed vault's permanent admin, the only address that can ever call `set_admin`, `set_paused`, `set_adapter`, or `migrate_adapter` on it. `ADMIN` is deliberately independent of `DEPLOYER` as an identity — but not as a _signer_: the vault's `initialize()` calls `admin.require_auth()`, so the deployed-with-`ADMIN`-set-separately case still needs a signature from `ADMIN` itself, not just from `DEPLOYER`. So when `ADMIN` differs from `DEPLOYER`, pass the `ADMIN` signing key as `ADMIN_KEY` (a secret key, or a `stellar keys` alias) alongside it, and the script signs and submits `initialize()` itself in the same run. `ADMIN_KEY` is validated up front: if it resolves to an address other than `ADMIN`, the script exits before building anything. If you don't set `ADMIN`, the script defaults it to `DEPLOYER`'s own address and prints a warning — fine for a quick throwaway test (and the one case where the script _can_ fully automate `initialize()`, since `DEPLOYER`'s own signature already covers it), but you should always set `ADMIN` explicitly to a separate, durable key for anything you intend to keep testing against, and it **must** be set explicitly ahead of any mainnet deployment.
+
+**Set `ADMIN_KEY` whenever the key is on the machine running the script.** `initialize()` is callable by any address and only checks that the admin it is handed authorizes the call, so a vault that is deployed but not yet initialized can be claimed by whoever calls `initialize()` first, with themselves as admin. They would then control `set_admin`, `set_paused`, and `set_adapter` on it, and the real `ADMIN`'s later call would fail with `AlreadyInitialized`. If `ADMIN_KEY` is genuinely not available where the script runs, it falls back to printing the `initialize()` command for the key holder to run, and warns that the vault is claimable until they do. Run it immediately in that case, then confirm the vault is yours with `get_admin` before funding it.
 
 Save the `ADMIN` secret key somewhere durable (a password manager, not a plaintext file) the moment you deploy with it — there is no recovery path if it's lost. `set_admin`/`set_paused`/`set_adapter` become permanently inaccessible, and since adapters have no in-place upgrade path, that also means the vault can never be pointed at fixed adapter code again.
 
@@ -33,13 +35,15 @@ DEPLOYER_ADDR=$(stellar keys address my-deployer)
 stellar keys generate my-admin --fund --network testnet
 ADMIN_ADDR=$(stellar keys address my-admin)
 
-DEPLOYER=my-deployer ADMIN=$ADMIN_ADDR bash scripts/deploy-testnet.sh
+# ADMIN_KEY lets the script sign initialize() in the same run, so the vault is
+# never left deployed-but-uninitialized and claimable by a third party.
+DEPLOYER=my-deployer ADMIN=$ADMIN_ADDR ADMIN_KEY=my-admin bash scripts/deploy-testnet.sh
 ```
 
 This builds all three contract crates (`vault`, `blend-adapter`, `defindex-adapter`), uploads and deploys the vault and a `BlendAdapter`, deploys a fresh mUSDC Stellar Asset Contract, and wires everything together:
 
 1. Initializes the `BlendAdapter` with the vault address, Blend's testnet pool, and USDC.
-2. Initializes the vault with `admin`, `usdc`, `musdc`, and `adapter` (the just-deployed `BlendAdapter`) — automatically if `ADMIN` was left to default to `DEPLOYER`, or by printing the command for the `ADMIN` key holder to run themselves if `ADMIN` is a separate address (see "The `DEPLOYER` / `ADMIN` split" above).
+2. Initializes the vault with `admin`, `usdc`, `musdc`, and `adapter` (the just-deployed `BlendAdapter`), signed by `DEPLOYER` when `ADMIN` defaulted to it, or by `ADMIN_KEY` when `ADMIN` is a separate address. Without `ADMIN_KEY` this step is printed for the `ADMIN` key holder to run instead, leaving the vault claimable until they do (see "The `DEPLOYER` / `ADMIN` split" above).
 3. Sets the vault as mUSDC's admin, so it can mint/burn shares autonomously.
 
 It prints the three contract IDs you need at the end:
