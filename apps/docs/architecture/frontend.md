@@ -61,7 +61,22 @@ useVaultActions.deposit(amount, vaultId)
 }
 ```
 
-Connection is triggered by `useWalletConnect`, which calls `connectFreighter()` and persists the public key. The store is not persisted to `localStorage`; users re-connect on page load.
+### WalletAdapter abstraction
+
+Frontend code never talks to a wallet SDK directly. It depends on the `WalletAdapter` interface in `apps/web/src/lib/wallet.ts`, which every supported wallet implements:
+
+```typescript
+interface WalletAdapter {
+  isInstalled(): Promise<boolean>;
+  isAuthorized(): Promise<boolean>;
+  connect(): Promise<string>;
+  sign(xdr: string, networkPassphrase: string): Promise<string>;
+}
+```
+
+`useWalletConnect` drives the connection flow through this interface: it calls `wallet.isInstalled()` to detect the extension and `wallet.connect()` to request access, then persists the returned public key in the store. On page load the store revalidates a restored key via `wallet.isAuthorized()`.
+
+The only implementation today is `FreighterWallet`, exported as `wallet`. Adding a wallet (e.g. xBull, LOBSTR) means adding a new `WalletAdapter` implementation and selecting it in `wallet.ts`. No callers change.
 
 ## API client
 

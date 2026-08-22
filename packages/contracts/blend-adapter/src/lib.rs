@@ -1,5 +1,8 @@
 #![no_std]
 
+use adapter_common::{
+    get_usdc, require_not_initialized, require_vault_auth, store_vault_and_usdc, AdapterError,
+};
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
@@ -12,9 +15,7 @@ use soroban_sdk::{
 // Storage keys
 // ---------------------------------------------------------------------------
 
-const VAULT_KEY: Symbol = symbol_short!("VAULT");
 const POOL_KEY: Symbol = symbol_short!("POOL");
-const USDC_KEY: Symbol = symbol_short!("USDC");
 const TOTAL_KEY: Symbol = symbol_short!("TOTAL");
 
 // Blend RequestType constants
@@ -134,6 +135,14 @@ pub enum ContractError {
     Overflow = 2,
 }
 
+impl From<AdapterError> for ContractError {
+    fn from(err: AdapterError) -> Self {
+        match err {
+            AdapterError::AlreadyInitialized => ContractError::AlreadyInitialized,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
@@ -151,12 +160,9 @@ impl MeridianBlendAdapter {
         pool: Address,
         usdc: Address,
     ) -> Result<(), ContractError> {
-        if env.storage().instance().has(&VAULT_KEY) {
-            return Err(ContractError::AlreadyInitialized);
-        }
-        env.storage().instance().set(&VAULT_KEY, &vault);
+        require_not_initialized(&env)?;
+        store_vault_and_usdc(&env, &vault, &usdc);
         env.storage().instance().set(&POOL_KEY, &pool);
-        env.storage().instance().set(&USDC_KEY, &usdc);
         env.storage().instance().set(&TOTAL_KEY, &0_i128);
         Ok(())
     }
@@ -167,11 +173,10 @@ impl MeridianBlendAdapter {
     /// than assumed 1:1, so the vault's adapter-share accounting (`ADPT_SH`)
     /// tracks genuine, appreciating shares instead of raw principal (#486).
     pub fn deposit(env: Env, amount: i128) -> i128 {
-        let vault: Address = env.storage().instance().get(&VAULT_KEY).unwrap();
-        vault.require_auth();
+        require_vault_auth(&env);
 
         let pool: Address = env.storage().instance().get(&POOL_KEY).unwrap();
-        let usdc: Address = env.storage().instance().get(&USDC_KEY).unwrap();
+        let usdc = get_usdc(&env);
 
         let adapter = env.current_contract_address();
 
@@ -233,11 +238,10 @@ impl MeridianBlendAdapter {
     /// submitting. Returns the USDC amount actually delivered to `recipient`,
     /// measured directly rather than assumed to equal the request (#489).
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
-        let vault: Address = env.storage().instance().get(&VAULT_KEY).unwrap();
-        vault.require_auth();
+        require_vault_auth(&env);
 
         let pool: Address = env.storage().instance().get(&POOL_KEY).unwrap();
-        let usdc: Address = env.storage().instance().get(&USDC_KEY).unwrap();
+        let usdc = get_usdc(&env);
 
         let adapter = env.current_contract_address();
         let client = BlendPoolClient::new(&env, &pool);
@@ -291,7 +295,7 @@ impl MeridianBlendAdapter {
     /// drift between the stored total and Blend's actual accounting.
     pub fn accrue(env: Env) -> Result<(), ContractError> {
         let pool: Address = env.storage().instance().get(&POOL_KEY).unwrap();
-        let usdc: Address = env.storage().instance().get(&USDC_KEY).unwrap();
+        let usdc = get_usdc(&env);
         let adapter = env.current_contract_address();
 
         let client = BlendPoolClient::new(&env, &pool);

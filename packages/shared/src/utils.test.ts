@@ -125,6 +125,51 @@ describe("withRetry", () => {
     await assertion;
     expect(fn).toHaveBeenCalledTimes(2);
   });
+
+  it("passes the zero-indexed attempt number to fn and shouldRetry", async () => {
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("transient"))
+      .mockResolvedValue("ok");
+    const shouldRetry = vi.fn().mockReturnValue(true);
+
+    const promise = withRetry(fn, 3, 0, shouldRetry);
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(fn).toHaveBeenNthCalledWith(1, 0);
+    expect(fn).toHaveBeenNthCalledWith(2, 1);
+    expect(shouldRetry).toHaveBeenCalledWith(expect.any(Error), 0);
+  });
+
+  it("calls onRetry with the attempt, delay, and error before sleeping", async () => {
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("transient"))
+      .mockResolvedValue("ok");
+    const onRetry = vi.fn();
+
+    const promise = withRetry(fn, 3, 10, undefined, { onRetry });
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(onRetry).toHaveBeenCalledWith(0, 10, expect.any(Error));
+  });
+
+  it("uses the injected sleepFn instead of real timers", async () => {
+    vi.useRealTimers();
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("transient"))
+      .mockResolvedValue("ok");
+    const sleepFn = vi.fn().mockResolvedValue(undefined);
+
+    const result = await withRetry(fn, 3, 500, undefined, { sleepFn });
+
+    expect(result).toBe("ok");
+    expect(sleepFn).toHaveBeenCalledWith(500);
+    vi.useFakeTimers();
+  });
 });
 
 describe("withRaceTimeout", () => {

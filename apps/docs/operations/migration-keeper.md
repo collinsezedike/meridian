@@ -77,15 +77,19 @@ the only possible implementation.
 
 ## Schedule
 
-Vercel Cron calls `GET /api/v1/keepers/rebalance` hourly, as configured in
-`vercel.json`. Hourly, not every 15 minutes like the accrue keeper: a
-migration decision is not time-sensitive the way interest accrual staleness
-is, and unnecessary runs cost nothing while no candidate adapters are
-configured (or DeFindex hasn't accumulated a second snapshot yet, see
-above), but there is no reason to poll faster than the decision needs.
+A GitHub Actions workflow (`.github/workflows/keepers.yml`) calls
+`POST /api/v1/keepers/rebalance` hourly. Not Vercel Cron: the Hobby plan
+restricts Cron Jobs to once per day, which neither this nor the accrue
+keeper's 15-minute schedule could express, so scheduling lives in GitHub
+Actions instead (see #513 and `apps/docs/operations/accrual-keeper.md`).
+Hourly, not every 15 minutes like the accrue keeper: a migration decision is
+not time-sensitive the way interest accrual staleness is, and unnecessary
+runs cost nothing while no candidate adapters are configured (or DeFindex
+hasn't accumulated a second snapshot yet, see above), but there is no reason
+to poll faster than the decision needs.
 
-The cron is scheduled unconditionally, independent of whether the feature
-is actually ready (#514). If `MERIDIAN_MIGRATION_KEEPER_SECRET_KEY`
+The schedule runs unconditionally, independent of whether the feature is
+actually ready (#514). If `MERIDIAN_MIGRATION_KEEPER_SECRET_KEY`
 isn't set, the endpoint returns `200 { status: "disabled" }` rather than
 throwing, so an intentionally-unfinished feature doesn't produce an hourly
 false alarm.

@@ -15,7 +15,7 @@
     "@upstash/redis": "^1.38.2"
   },
   "devDependencies": {
-    "@vercel/node": "^5.9.5",
+    "@vercel/node": "^5.10.0",
     "vitest": "^4.1.10"
   }
 }

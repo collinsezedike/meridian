@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["vault", "blend-adapter", "defindex-adapter"]
+members = ["vault", "blend-adapter", "defindex-adapter", "adapter-common"]
 
 [profile.release]
 opt-level = "z"
