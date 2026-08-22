@@ -104,14 +104,25 @@ one skips the adapter for that run. The mechanism, its state machine, and
 this keeper uses exactly the same code path, deliberately, so both keepers'
 execution model is the same thing to reason about.
 
-The one difference is the fallback. Where the migration keeper refuses to run
-in production without a shared store, this keeper falls back to a
-per-invocation in-memory one (logging that dedup is inactive) and keeps
-running: a duplicate `accrue()` only refreshes a cached value from the
-adapter's live position and produces the same result no matter how many times
-it lands, so it costs at most one extra Soroban fee, not incorrect
-accounting. The migration keeper's duplicate costs real slippage twice, which
-is why only it fails closed.
+Two things differ, both following from what a duplicate `accrue()` actually
+costs: it re-syncs a cached value from the adapter's live position and
+produces the same result however many times it lands, so at most one extra
+Soroban fee, never incorrect accounting.
+
+- **Fallback.** Where the migration keeper refuses to run on a deployment
+  without a shared store, this keeper falls back to a per-invocation one and
+  keeps running. On a deployed environment that fallback is logged as a
+  warning, not an info line: it reinstates the duplicate-submission gap, and
+  that should be visible to whoever watches these logs.
+- **Store outages.** Where the migration keeper skips a vault it cannot
+  verify, this keeper proceeds and warns. Halting all accrual for the length
+  of a KV outage would leave every vault's TVL/APY stale in order to avoid a
+  duplicate that costs a fee. A record that is readable and says "still in
+  flight" is still respected; only an unreadable one is proceeded past.
+
+`deps.submitAccrual` is handed the lease's hooks; an injected submitter that
+ignores them loses cross-invocation dedup, and the run warns at startup when
+one is in use.
 
 ## Racing The Migration Keeper
 

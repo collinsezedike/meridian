@@ -44,12 +44,11 @@ import {
   type KeeperSubmissionHooks,
 } from "./keeper-tx";
 import {
-  clearSubmission,
   loadKeeperStateStore,
   parseSubmissionTtlMs,
-  recordSubmission,
   resolvePriorSubmission,
   submissionStateKey,
+  SubmissionLease,
   type KeeperStateStore,
 } from "./keeper-state";
 
@@ -187,10 +186,15 @@ export interface MigrationKeeperDeps {
   }>;
   rateSource?: RateSourceFn;
   resolveCandidatePool?: (adapterId: string) => Promise<string>;
+  // `hooks` carries this run's submission lease: an override that forwards
+  // it to submitKeeperOperation keeps cross-invocation dedup; one that
+  // ignores it falls back to the claim held for the duration of the run and
+  // the on-chain adapter re-check, and is warned about at run start.
   submitMigration?: (
     vault: DiscoveredVault,
     toAdapterId: string,
-    attempt: number
+    attempt: number,
+    hooks: KeeperSubmissionHooks
   ) => Promise<
     Omit<
       MigrationSuccess,
@@ -731,6 +735,12 @@ export async function runMigrationKeeper(
       requireShared: true,
       logger,
     });
+  if (deps.submitMigration) {
+    logger.warn(
+      "[migration-keeper] submitMigration is overridden; cross-invocation dedup depends on the injected submitter forwarding the provided hooks",
+      { vaultScope: "all" }
+    );
+  }
   const rateSource = deps.rateSource ?? defaultRateSource;
   const resolveCandidatePool =
     deps.resolveCandidatePool ??
@@ -795,19 +805,30 @@ export async function runMigrationKeeper(
       config.network.network,
       vault.vaultId
     );
+    const priorContext = { vaultId: vault.vaultId, keeper: "migration-keeper" };
     const prior = await resolvePriorSubmission({
       store: stateStore,
       key: stateKey,
       server,
       ttlMs: config.submissionTtlMs,
+      rpcTimeoutMs: config.rpcTimeoutMs,
       logger,
-      context: { vaultId: vault.vaultId, keeper: "migration-keeper" },
+      context: priorContext,
     });
-    if (prior.state === "in-flight" || prior.state === "unknown") {
+    // Every blocking state is fatal for this vault this run: unlike the
+    // accrue keeper, this one has no cheap-duplicate escape hatch, so an
+    // unverifiable store is a reason to stop, not to guess.
+    if (
+      prior.state === "in-flight" ||
+      prior.state === "claimed" ||
+      prior.state === "unknown"
+    ) {
       const reason =
         prior.state === "in-flight"
           ? "a prior migrate_adapter submission is still unconfirmed; skipped to avoid a duplicate migration"
-          : `prior submission state could not be verified (${prior.reason}); skipped rather than risk a duplicate migration`;
+          : prior.state === "claimed"
+            ? "another run is already preparing a migration for this vault; skipped to avoid a duplicate migration"
+            : `prior submission state could not be verified (${prior.reason}); skipped rather than risk a duplicate migration`;
       skipped.push({ vaultId: vault.vaultId, reason });
       logger.warn("[migration-keeper] migration skipped; prior submission", {
         vaultId: vault.vaultId,
@@ -897,29 +918,37 @@ export async function runMigrationKeeper(
       });
       continue;
     }
+    // Taken before anything is built: a plain "no record" read is not a
+    // claim on the vault, so two concurrent invocations could otherwise both
+    // pass the check above and both broadcast.
+    const acquired = await SubmissionLease.acquire({
+      store: stateStore,
+      key: stateKey,
+      submissionTtlMs: config.submissionTtlMs,
+      logger,
+      context: priorContext,
+    });
+    if ("error" in acquired) {
+      skipped.push({
+        vaultId: vault.vaultId,
+        reason: `could not take the submission lease (${acquired.error}); skipped rather than risk a duplicate migration`,
+      });
+      continue;
+    }
+    const lease = acquired.lease;
+    const submissionHooks = lease.hooks;
+
     let priorHash: string | undefined;
-    const submissionHooks: KeeperSubmissionHooks = {
-      onSubmitted: (hash) =>
-        recordSubmission(
-          stateStore,
-          stateKey,
-          hash,
-          config.submissionTtlMs,
-          logger,
-          { vaultId: vault.vaultId, keeper: "migration-keeper" }
-        ),
-      onResolved: (hash) =>
-        clearSubmission(stateStore, stateKey, logger, {
-          vaultId: vault.vaultId,
-          keeper: "migration-keeper",
-          hash,
-        }),
-    };
     try {
       const result = await withKeeperRetry(
         (attempt) =>
           deps.submitMigration
-            ? deps.submitMigration(vault, best.adapterId, attempt)
+            ? deps.submitMigration(
+                vault,
+                best.adapterId,
+                attempt,
+                submissionHooks
+              )
             : submitMigrationTransaction(
                 vault.vaultContractId,
                 vault.currentAdapterId,
@@ -1008,6 +1037,11 @@ export async function runMigrationKeeper(
       };
       failures.push(failure);
       logger.error("[migration-keeper] migrate_adapter failed", { ...failure });
+    } finally {
+      // A claim that never became a signed transaction (stale adapter, a
+      // simulation error, an exhausted deadline) must not keep the next run
+      // out for the claim's full window.
+      await lease.releaseIfUnsent();
     }
   }
 

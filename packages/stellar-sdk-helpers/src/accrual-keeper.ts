@@ -25,12 +25,11 @@ import {
   type KeeperSubmissionHooks,
 } from "./keeper-tx";
 import {
-  clearSubmission,
   loadKeeperStateStore,
   parseSubmissionTtlMs,
-  recordSubmission,
   resolvePriorSubmission,
   submissionStateKey,
+  SubmissionLease,
   type KeeperStateStore,
 } from "./keeper-state";
 
@@ -132,9 +131,14 @@ export interface BlendAccrualKeeperDeps {
     adapters: DiscoveredAdapter[];
     failures: KeeperFailure[];
   }>;
+  // `hooks` carries this run's submission lease: an override that forwards
+  // it to submitKeeperOperation keeps cross-invocation dedup; one that
+  // ignores it falls back to the claim held for the duration of the run, and
+  // is warned about at run start.
   submitAccrual?: (
     adapter: DiscoveredAdapter,
-    attempt: number
+    attempt: number,
+    hooks: KeeperSubmissionHooks
   ) => Promise<Omit<AccrualSuccess, "attempts" | "vaultId" | "adapterId">>;
   // Cross-invocation submission tracking (#515). Defaults to whatever the
   // environment provides (Upstash Redis when configured); injected in tests.
@@ -342,6 +346,11 @@ export async function runBlendAccrualKeeper(
       requireShared: false,
       logger,
     });
+  if (deps.submitAccrual) {
+    logger.warn(
+      "[accrual-keeper] submitAccrual is overridden; cross-invocation dedup depends on the injected submitter forwarding the provided hooks"
+    );
+  }
   const discovery = deps.discoverAdapters
     ? await deps.discoverAdapters()
     : await discoverLiveAdapters({
@@ -410,15 +419,20 @@ export async function runBlendAccrualKeeper(
       adapter.vaultId,
       adapter.adapterId
     );
+    const priorContext = {
+      vaultId: adapter.vaultId,
+      adapterId: adapter.adapterId,
+    };
     const prior = await resolvePriorSubmission({
       store: stateStore,
       key: stateKey,
       server,
       ttlMs: config.submissionTtlMs,
+      rpcTimeoutMs: config.rpcTimeoutMs,
       logger,
-      context: { vaultId: adapter.vaultId, adapterId: adapter.adapterId },
+      context: priorContext,
     });
-    if (prior.state === "in-flight" || prior.state === "unknown") {
+    if (prior.state === "in-flight" || prior.state === "claimed") {
       skipped.push({
         vaultId: adapter.vaultId,
         vaultContractId: adapter.vaultContractId,
@@ -427,7 +441,7 @@ export async function runBlendAccrualKeeper(
         reason:
           prior.state === "in-flight"
             ? "a prior accrue() submission is still unconfirmed; skipped to avoid a duplicate"
-            : `prior submission state could not be verified (${prior.reason}); skipped rather than risk a duplicate`,
+            : "another run is already preparing an accrue() for this adapter; skipped to avoid a duplicate",
       });
       logger.warn("[accrual-keeper] skipping adapter; prior submission", {
         vaultId: adapter.vaultId,
@@ -436,33 +450,50 @@ export async function runBlendAccrualKeeper(
       });
       continue;
     }
+    if (prior.state === "unknown") {
+      // Deliberately fail *open* here, unlike the migration keeper: halting
+      // all accrual for the length of a store outage would leave every
+      // vault's TVL/APY stale, which is worse than the duplicate it avoids.
+      // A duplicate accrue() re-syncs a cached value from live state and
+      // costs one Soroban fee. The migration keeper's duplicate costs
+      // slippage twice, which is why only it stops.
+      logger.warn(
+        "[accrual-keeper] proceeding without cross-invocation dedup; prior submission state unknown",
+        { ...priorContext, reason: prior.reason }
+      );
+    }
 
-    // In-run tracking (priorHash) still exists alongside the record above:
-    // it's what keeps a retry inside this same run rechecking one hash
-    // instead of re-reading the store on every attempt.
+    // Taken before anything is built, so two concurrent invocations can't
+    // both read "no record" and both broadcast.
+    const acquired = await SubmissionLease.acquire({
+      store: stateStore,
+      key: stateKey,
+      submissionTtlMs: config.submissionTtlMs,
+      logger,
+      context: priorContext,
+    });
+    if ("error" in acquired) {
+      skipped.push({
+        vaultId: adapter.vaultId,
+        vaultContractId: adapter.vaultContractId,
+        adapterId: adapter.adapterId,
+        protocol: adapter.protocol,
+        reason: `could not take the submission lease (${acquired.error}); skipped this run`,
+      });
+      continue;
+    }
+    const lease = acquired.lease;
+    const submissionHooks = lease.hooks;
+
+    // In-run tracking (priorHash) still exists alongside the lease: it's
+    // what keeps a retry inside this same run rechecking one hash instead of
+    // re-reading the store on every attempt.
     let priorHash: string | undefined;
-    const submissionHooks: KeeperSubmissionHooks = {
-      onSubmitted: (hash) =>
-        recordSubmission(
-          stateStore,
-          stateKey,
-          hash,
-          config.submissionTtlMs,
-          logger,
-          { vaultId: adapter.vaultId, adapterId: adapter.adapterId }
-        ),
-      onResolved: (hash) =>
-        clearSubmission(stateStore, stateKey, logger, {
-          vaultId: adapter.vaultId,
-          adapterId: adapter.adapterId,
-          hash,
-        }),
-    };
     try {
       const result = await withKeeperRetry(
         (attempt) =>
           deps.submitAccrual
-            ? deps.submitAccrual(adapter, attempt)
+            ? deps.submitAccrual(adapter, attempt, submissionHooks)
             : submitAccrualTransaction(
                 adapter,
                 config,
@@ -542,6 +573,11 @@ export async function runBlendAccrualKeeper(
       };
       failures.push(failure);
       logger.error("[accrual-keeper] accrue failed", { ...failure });
+    } finally {
+      // A claim that never became a signed transaction (a stale adapter, a
+      // simulation error) must not keep the next run out for the claim's
+      // full window.
+      await lease.releaseIfUnsent();
     }
   }
 

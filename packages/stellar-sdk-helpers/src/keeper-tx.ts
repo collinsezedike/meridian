@@ -21,6 +21,13 @@ import {
 import type { StellarNetwork } from "./types";
 import { errorMessage } from "./keeper-retry";
 
+// Transactions are built with this validity window (`setTimeout` below), so
+// it is also the point past which a submitted transaction can never land.
+// Exported because the submission-record TTL in keeper-state.ts is derived
+// from it: a record that expired sooner would clear while its transaction
+// could still be landing.
+export const TX_VALIDITY_WINDOW_MS = 300_000;
+
 // A real rpc.Server satisfies this directly (no cast needed); a narrower
 // Pick instead of the hand-written interface this used to be means the
 // signatures can never silently drift from the real SDK's.
@@ -174,17 +181,25 @@ export async function assertAdapterUnchanged(
   }
 }
 
-// Lifecycle hooks around the one moment that matters for cross-invocation
-// dedup: `onSubmitted` fires immediately after a transaction is broadcast
-// and a hash exists (never before, so a crash mid-build leaves no record
-// behind), `onResolved` once that hash's fate is known, success or a
-// definitive on-chain failure. Both are invoked defensively: a throwing hook
-// must never surface as a submission error, since the retry loop would
-// answer that by broadcasting a second transaction, exactly the duplicate
-// the hooks exist to prevent. Implementations are expected to log their own
-// failures (see keeper-state.ts).
+// Lifecycle hooks around the two moments that matter for cross-invocation
+// dedup:
+//
+// `onSigned` fires as soon as a transaction is signed and its hash is known,
+// *before* `sendTransaction`. Recording after the send returns would miss
+// the cases that matter most: a send that times out, or comes back
+// TRY_AGAIN_LATER, may already have put the transaction in the mempool with
+// no record of it anywhere.
+//
+// `onResolved` fires once that hash's fate is known: confirmed, definitively
+// failed on-chain, or rejected outright at submission.
+//
+// Both are invoked defensively: a throwing hook must never surface as a
+// submission error, since the retry loop would answer that by broadcasting a
+// second transaction, exactly the duplicate the hooks exist to prevent.
+// Implementations are expected to log their own failures (see
+// keeper-state.ts).
 export interface KeeperSubmissionHooks {
-  onSubmitted?: (hash: string) => Promise<void>;
+  onSigned?: (hash: string) => Promise<void>;
   onResolved?: (hash: string) => Promise<void>;
 }
 
@@ -253,7 +268,7 @@ export async function submitKeeperOperation(
     networkPassphrase: config.network.passphrase,
   })
     .addOperation(contract.call(method, ...args))
-    .setTimeout(300)
+    .setTimeout(TX_VALIDITY_WINDOW_MS / 1000)
     .build();
 
   const sim = await withRaceTimeout(
@@ -271,24 +286,44 @@ export async function submitKeeperOperation(
   const prepared = rpc.assembleTransaction(tx, sim).build();
   prepared.sign(keypair);
 
-  const sent = await withRaceTimeout(
-    () => server.sendTransaction(prepared),
-    config.rpcTimeoutMs,
-    "Soroban RPC"
-  );
+  // Known before the network is touched at all: from here on, every path
+  // out of this function has a hash to track, so no failure mode can leave a
+  // transaction in the mempool with nothing recorded against it.
+  const signedHash = prepared.hash().toString("hex");
+  await runHook(hooks?.onSigned, signedHash);
+
+  let sent: Awaited<ReturnType<KeeperRpcServer["sendTransaction"]>>;
+  try {
+    sent = await withRaceTimeout(
+      () => server.sendTransaction(prepared),
+      config.rpcTimeoutMs,
+      "Soroban RPC"
+    );
+  } catch (err) {
+    // The send may well have reached the network before this timed out.
+    // Never rebuild after this point: a fresh transaction would have a
+    // different hash and could land alongside this one. Tracking the same
+    // hash is what the retry path is for.
+    throw new SubmissionInFlightError(signedHash, err);
+  }
   if (sent.status === "ERROR") {
+    // Rejected outright: this transaction is not in flight and never will
+    // be, so release the record rather than blocking the target until it
+    // ages out.
+    await runHook(hooks?.onResolved, signedHash);
     throw new Error(
       `Transaction rejected at submission: ${describeSendError(sent)}`
     );
   }
   if (sent.status === "TRY_AGAIN_LATER") {
-    throw new Error("Transaction could not be submitted yet (try again later)");
+    // Explicitly *not* a clean "nothing happened": the node may already be
+    // processing this transaction. Same treatment as a timeout, recheck the
+    // hash instead of building a second transaction.
+    throw new SubmissionInFlightError(
+      signedHash,
+      new Error("Transaction could not be submitted yet (try again later)")
+    );
   }
-
-  // The transaction is out; from here on a second one would be a duplicate.
-  // Recorded before waiting for confirmation, not after, precisely because
-  // the wait is what times out.
-  await runHook(hooks?.onSubmitted, sent.hash);
 
   try {
     const confirmed = await waitForTransaction(server, sent.hash, {

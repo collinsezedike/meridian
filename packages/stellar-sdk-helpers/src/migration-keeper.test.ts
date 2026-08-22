@@ -105,7 +105,12 @@ import {
   type MigrationKeeperConfig,
 } from "./migration-keeper";
 import type { KeeperLogger } from "./keeper-retry";
-import { submissionStateKey, type SubmissionRecord } from "./keeper-state";
+import {
+  createInMemoryKeeperStateStore,
+  submissionStateKey,
+  type KeeperStateStore,
+  type SubmissionRecord,
+} from "./keeper-state";
 import type { KnownPoolMeta } from "./known-pools";
 
 const NETWORK = {
@@ -142,6 +147,9 @@ const DISCOVERED_VAULT: DiscoveredVault = {
   currentPoolId: "CBLENDPOOL",
 };
 
+// Hash of the signed transaction, known before submission.
+const SIGNED_HASH = "deadbeef";
+
 function logger(): KeeperLogger {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
@@ -167,7 +175,12 @@ beforeEach(() => {
   stellarMocks.isSimulationError.mockReturnValue(false);
   stellarMocks.isSimulationSuccess.mockReturnValue(true);
   stellarMocks.assembleTransaction.mockReturnValue({
-    build: () => ({ sign: stellarMocks.signPrepared }),
+    build: () => ({
+      sign: stellarMocks.signPrepared,
+      // The keeper records the signed transaction's own hash before it is
+      // ever sent, so the built transaction has to expose one.
+      hash: () => Buffer.from(SIGNED_HASH, "hex"),
+    }),
   });
 });
 
@@ -454,10 +467,16 @@ describe("runMigrationKeeper", () => {
       submitMigration,
     });
 
+    // The fourth argument is this run's submission-lease hooks: an injected
+    // submitter is expected to forward them to keep cross-invocation dedup.
     expect(submitMigration).toHaveBeenCalledWith(
       DISCOVERED_VAULT,
       "CDEFINDEXADAPTER",
-      1
+      1,
+      expect.objectContaining({
+        onSigned: expect.any(Function),
+        onResolved: expect.any(Function),
+      })
     );
     expect(result.migrations).toEqual([
       {
@@ -1178,28 +1197,32 @@ describe("runMigrationKeeper", () => {
 });
 
 describe("runMigrationKeeper cross-invocation dedup", () => {
-  function store(initial?: Record<string, SubmissionRecord>) {
-    const records = new Map<string, SubmissionRecord>(
-      Object.entries(initial ?? {})
-    );
-    return {
-      records,
-      get: vi.fn(async (key: string) => records.get(key) ?? null),
-      set: vi.fn(async (key: string, record: SubmissionRecord) => {
-        records.set(key, record);
-      }),
-      delete: vi.fn(async (key: string) => {
-        records.delete(key);
-      }),
-    };
-  }
-
   const KEY = submissionStateKey("migration", "testnet", "meridian-usdc");
+
+  async function store(seed?: SubmissionRecord) {
+    const inner = createInMemoryKeeperStateStore();
+    if (seed) await inner.claim(KEY, seed, 600_000);
+    return inner;
+  }
 
   const rateSource = () =>
     vi.fn(async ({ protocol }: { protocol: string }) =>
       protocol === "blend" ? 500 : 700
     );
+
+  function run(stateStore: KeeperStateStore, rates = rateSource()) {
+    return runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore,
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource: rates,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+    });
+  }
 
   it("does not send a second migrate_adapter while a prior one is still unconfirmed", async () => {
     // The whole point of #515: unlike accrue(), a duplicate here costs real
@@ -1213,19 +1236,10 @@ describe("runMigrationKeeper cross-invocation dedup", () => {
     );
     const rates = rateSource();
 
-    const result = await runMigrationKeeper(CONFIG, {
-      logger: logger(),
-      sleep: vi.fn(),
-      stateStore: store({
-        [KEY]: { hash: "INFLIGHT_HASH", submittedAtMs: Date.now() - 1_000 },
-      }),
-      discoverVaults: async () => ({
-        vaults: [DISCOVERED_VAULT],
-        failures: [],
-      }),
-      rateSource: rates,
-      resolveCandidatePool: async () => "CDEFINDEXPOOL",
-    });
+    const result = await run(
+      await store({ hash: "INFLIGHT_HASH", updatedAtMs: Date.now() - 1_000 }),
+      rates
+    );
 
     expect(server.sendTransaction).not.toHaveBeenCalled();
     // Blocked before evaluation, so the rate lookups (and the deadline
@@ -1238,6 +1252,25 @@ describe("runMigrationKeeper cross-invocation dedup", () => {
         vaultId: "meridian-usdc",
         reason: expect.stringContaining("still unconfirmed"),
       },
+    ]);
+  });
+
+  it("skips a vault another run has claimed but not yet signed for", async () => {
+    // A plain "no record" read is not a claim: two concurrent invocations
+    // could otherwise both pass the check and both broadcast.
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
+
+    const result = await run(
+      await store({ hash: null, updatedAtMs: Date.now() })
+    );
+
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(result.skipped).toMatchObject([
+      { reason: expect.stringContaining("already preparing") },
     ]);
   });
 
@@ -1254,24 +1287,15 @@ describe("runMigrationKeeper cross-invocation dedup", () => {
     stellarMocks.simulateView.mockResolvedValue(
       DISCOVERED_VAULT.currentAdapterId
     );
-    const stateStore = store({
-      [KEY]: { hash: "LANDED_HASH", submittedAtMs: Date.now() - 1_000 },
+    const stateStore = await store({
+      hash: "LANDED_HASH",
+      updatedAtMs: Date.now() - 1_000,
     });
 
-    const result = await runMigrationKeeper(CONFIG, {
-      logger: logger(),
-      sleep: vi.fn(),
-      stateStore,
-      discoverVaults: async () => ({
-        vaults: [DISCOVERED_VAULT],
-        failures: [],
-      }),
-      rateSource: rateSource(),
-      resolveCandidatePool: async () => "CDEFINDEXPOOL",
-    });
+    const result = await run(stateStore);
 
     expect(result.migrations).toMatchObject([{ hash: "SUBMITTED_HASH" }]);
-    expect(stateStore.records.get(KEY)).toBeUndefined();
+    expect(await stateStore.get(KEY)).toBeNull();
   });
 
   it("clears a record whose transaction is past its validity window instead of blocking on it", async () => {
@@ -1288,59 +1312,36 @@ describe("runMigrationKeeper cross-invocation dedup", () => {
       DISCOVERED_VAULT.currentAdapterId
     );
 
-    const result = await runMigrationKeeper(CONFIG, {
-      logger: logger(),
-      sleep: vi.fn(),
-      stateStore: store({
-        [KEY]: {
-          hash: "DEAD_HASH",
-          submittedAtMs: Date.now() - CONFIG.submissionTtlMs - 1,
-        },
-      }),
-      discoverVaults: async () => ({
-        vaults: [DISCOVERED_VAULT],
-        failures: [],
-      }),
-      rateSource: rateSource(),
-      resolveCandidatePool: async () => "CDEFINDEXPOOL",
-    });
+    const result = await run(
+      await store({
+        hash: "DEAD_HASH",
+        updatedAtMs: Date.now() - CONFIG.submissionTtlMs - 1,
+      })
+    );
 
     expect(result.migrations).toMatchObject([{ hash: "SUBMITTED_HASH" }]);
   });
 
-  it("records the hash the moment it is broadcast, so a killed run still blocks the next one", async () => {
-    let recordedWhilePending: SubmissionRecord | undefined;
+  it("records the signed hash before the transaction is sent, so a killed run still blocks the next one", async () => {
+    let recordedAtSend: string | null | undefined;
+    const stateStore = await store();
     const server = makeServer({
       getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
-      sendTransaction: vi.fn(async () => ({
-        hash: "SUBMITTED_HASH",
-        status: "PENDING",
-      })),
+      sendTransaction: vi.fn(async () => {
+        recordedAtSend = (await stateStore.get(KEY))?.record.hash;
+        return { hash: "SUBMITTED_HASH", status: "PENDING" };
+      }),
     });
     stellarMocks.getRpcServer.mockReturnValue(server);
     stellarMocks.simulateView.mockResolvedValue(
       DISCOVERED_VAULT.currentAdapterId
     );
-    const stateStore = store();
-    stellarMocks.waitForTransaction.mockImplementation(async () => {
-      recordedWhilePending = stateStore.records.get(KEY);
-      return { ledger: 321 };
-    });
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
 
-    await runMigrationKeeper(CONFIG, {
-      logger: logger(),
-      sleep: vi.fn(),
-      stateStore,
-      discoverVaults: async () => ({
-        vaults: [DISCOVERED_VAULT],
-        failures: [],
-      }),
-      rateSource: rateSource(),
-      resolveCandidatePool: async () => "CDEFINDEXPOOL",
-    });
+    await run(stateStore);
 
-    expect(recordedWhilePending).toMatchObject({ hash: "SUBMITTED_HASH" });
-    expect(stateStore.records.get(KEY)).toBeUndefined();
+    expect(recordedAtSend).toBe(SIGNED_HASH);
+    expect(await stateStore.get(KEY)).toBeNull();
   });
 
   it("skips the vault when the prior submission's status cannot be checked", async () => {
@@ -1353,24 +1354,30 @@ describe("runMigrationKeeper cross-invocation dedup", () => {
     });
     stellarMocks.getRpcServer.mockReturnValue(server);
 
-    const result = await runMigrationKeeper(CONFIG, {
-      logger: logger(),
-      sleep: vi.fn(),
-      stateStore: store({
-        [KEY]: { hash: "UNKNOWN_HASH", submittedAtMs: Date.now() },
-      }),
-      discoverVaults: async () => ({
-        vaults: [DISCOVERED_VAULT],
-        failures: [],
-      }),
-      rateSource: rateSource(),
-      resolveCandidatePool: async () => "CDEFINDEXPOOL",
-    });
+    const result = await run(
+      await store({ hash: "UNKNOWN_HASH", updatedAtMs: Date.now() })
+    );
 
     expect(server.sendTransaction).not.toHaveBeenCalled();
     expect(result.failures).toEqual([]);
     expect(result.skipped).toMatchObject([
       { reason: expect.stringContaining("could not be verified") },
     ]);
+  });
+
+  it("releases the claim when the migration is abandoned before anything is signed", async () => {
+    // The stale-adapter guard aborts before the transaction is built.
+    // Leaving the claim behind would lock the vault out of migrating for
+    // the claim's whole window over a transaction that never existed.
+    stellarMocks.simulateView.mockResolvedValue("CSOMEOTHERADAPTER");
+    const stateStore = await store();
+    stellarMocks.getRpcServer.mockReturnValue(makeServer());
+
+    const result = await run(stateStore);
+
+    expect(result.skipped).toMatchObject([
+      { reason: expect.stringContaining("adapter changed since discovery") },
+    ]);
+    expect(await stateStore.get(KEY)).toBeNull();
   });
 });
