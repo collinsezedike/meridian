@@ -12,13 +12,15 @@
 
 import { PoolV2, type Pool } from "@blend-capital/blend-sdk";
 import { nativeToScVal } from "@stellar/stellar-sdk";
-import { APP_ADDRESSES } from "@meridian/shared";
+import { APP_ADDRESSES, withRaceTimeout } from "@meridian/shared";
 import { getRpcServer, toBigInt } from "./internal";
 import { simulateView } from "./tx";
 import type { StellarNetwork } from "./types";
+import { consoleLogger, type KeeperLogger } from "./keeper-retry";
 import type { RateQuery, RateSourceFn } from "./migration-keeper";
 
 const BPS_SCALAR = 10_000;
+const BLEND_RPC_TIMEOUT_MS = 10_000;
 
 function toFiniteBps(rate: number): number | null {
   const bps = rate * BPS_SCALAR;
@@ -58,9 +60,14 @@ export function createBlendRateSource(
   const loadPool =
     options.loadPool ??
     ((network: StellarNetwork, poolId: string) =>
-      PoolV2.load(
-        { rpc: network.rpcUrl, passphrase: network.passphrase },
-        poolId
+      withRaceTimeout(
+        () =>
+          PoolV2.load(
+            { rpc: network.rpcUrl, passphrase: network.passphrase },
+            poolId
+          ),
+        BLEND_RPC_TIMEOUT_MS,
+        "Blend RPC"
       ));
 
   return async (query: RateQuery) => {
@@ -192,6 +199,16 @@ const REFERENCE_SHARES = 10_000_000n;
 // above this floor in normal operation.
 const MIN_SAMPLE_INTERVAL_MS = 10 * 60 * 1_000;
 
+// Even at the MIN_SAMPLE_INTERVAL_MS floor, extrapolating to a full year
+// means raising (1 + growth) to a power of roughly 52,000. A single large
+// deposit/withdrawal skewing get_asset_amounts_per_shares within one sample
+// window (not necessarily a DeFindex bug) is enough to produce a finite but
+// absurd APY that would otherwise win the migration comparison outright
+// against Blend's real rate (see PR #538 review). No real stablecoin yield
+// source approaches this, so treat anything above it as an untrustworthy
+// extrapolation rather than a real rate.
+const MAX_PLAUSIBLE_APY = 5; // 500% annualized
+
 function snapshotKey(poolId: string): string {
   return `migration-keeper:defindex-rate:${poolId}`;
 }
@@ -261,6 +278,7 @@ export function createDefindexRateSource(
       Number(priceStroops - prior.priceStroops) / Number(prior.priceStroops);
     const elapsedYears = elapsedMs / (SECONDS_PER_YEAR * 1000);
     const apy = Math.pow(1 + growth, 1 / elapsedYears) - 1;
+    if (!(Math.abs(apy) <= MAX_PLAUSIBLE_APY)) return null;
     return toFiniteBps(apy);
   };
 }
@@ -277,6 +295,7 @@ export interface DefaultRateSourceOptions {
   // elsewhere in this package follows the same explicit-env-object pattern
   // rather than reading process.env deep inside library code.
   env?: Record<string, string | undefined>;
+  logger?: KeeperLogger;
 }
 
 // UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN: the same variables
@@ -296,17 +315,23 @@ function upstashSnapshotStoreFromEnv(
 
 /**
  * The real RateSourceFn wired as runMigrationKeeper's default (see
- * migration-keeper.ts), replacing the always-null stub. Dispatches purely on
- * `query.protocol`; a protocol neither source recognizes still resolves
- * null, the same "current rate unavailable" / "no candidate rate was
- * available" outcome the keeper already handles for a rate source that
- * doesn't cover every candidate (see migration-keeper.ts's `isUsableRate`
- * and findBestCandidate's anyRateKnown handling).
+ * migration-keeper.ts), replacing the always-null stub. Dispatches via a
+ * protocol -> RateSourceFn registry rather than a switch, since adapter
+ * discovery itself is config-driven (scans MERIDIAN_ADAPTER_<PROTOCOL>_ID,
+ * see loadMigrationKeeperConfig) and can surface a protocol neither source
+ * here covers. That still resolves null — the same
+ * "current rate unavailable" outcome the keeper already handles for a rate
+ * source that doesn't cover every candidate (see migration-keeper.ts's
+ * `isUsableRate` and findBestCandidate's anyRateKnown handling) — but is
+ * logged, since silently and permanently returning null for a configured
+ * adapter is a config gap worth surfacing, not routine "no rate yet" noise.
  */
 export function createDefaultRateSource(
   network: StellarNetwork,
   options: DefaultRateSourceOptions = {}
 ): RateSourceFn {
+  const logger = options.logger ?? consoleLogger;
+
   const blend = createBlendRateSource({
     network,
     ...(options.assetId !== undefined && { assetId: options.assetId }),
@@ -322,14 +347,20 @@ export function createDefaultRateSource(
     ...(options.now !== undefined && { now: options.now }),
   });
 
+  const registry: Record<string, RateSourceFn> = {
+    blend,
+    defindex,
+  };
+
   return async (query: RateQuery) => {
-    switch (query.protocol) {
-      case "blend":
-        return blend(query);
-      case "defindex":
-        return defindex(query);
-      default:
-        return null;
+    const source = registry[query.protocol];
+    if (!source) {
+      logger.warn(
+        "[rate-sources] no rate source registered for protocol; rate will stay unknown",
+        { protocol: query.protocol, poolId: query.poolId }
+      );
+      return null;
     }
+    return source(query);
   };
 }

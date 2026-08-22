@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  PoolV2,
   ReserveConfigV2,
   ReserveData,
   ReserveV2,
@@ -139,6 +140,25 @@ describe("createBlendRateSource", () => {
     );
   });
 
+  it("times out the default pool loader instead of hanging indefinitely on a stuck Blend RPC call", async () => {
+    vi.useFakeTimers();
+    const loadSpy = vi
+      .spyOn(PoolV2, "load")
+      .mockReturnValue(new Promise<Pool>(() => {})); // never resolves
+    const rateSource = createBlendRateSource({
+      network: NETWORK,
+      assetId: ASSET_ID,
+    });
+
+    const pending = rateSource(blendQuery());
+    const assertion = expect(pending).rejects.toThrow(/Blend RPC timed out/);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await assertion;
+
+    loadSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
   it("computes the same supply APR as an independent reimplementation of Blend's three-slope curve, across all three utilization regimes", () => {
     const config = {
       rBase: 0.01,
@@ -181,7 +201,13 @@ describe("createBlendRateSource", () => {
 // the SDK, so the test above genuinely cross-checks the formula itself
 // rather than just confirming blend-sdk agrees with itself.
 function referenceBlendSupplyApr(
-  config: { rBase: number; rOne: number; rTwo: number; rThree: number; util: number },
+  config: {
+    rBase: number;
+    rOne: number;
+    rTwo: number;
+    rThree: number;
+    util: number;
+  },
   curUtil: number,
   irMod: number,
   backstopTakeRate: number
@@ -305,6 +331,28 @@ describe("createDefindexRateSource", () => {
     expect(rate).toBeNull();
   });
 
+  it("treats a share-price move extrapolated from the minimum sample interval as an untrustworthy blowout rather than a real rate", async () => {
+    // A 1% move over the shortest usable (10-minute) window compounds to an
+    // astronomical annualized figure ((1.01)^52560 - 1), not a real yield:
+    // this is the exact "single skewed sample" scenario the MAX_PLAUSIBLE_APY
+    // ceiling exists to catch, per PR #538 review.
+    const store = createInMemoryRateSnapshotStore();
+    await store.set(`migration-keeper:defindex-rate:${DEFINDEX_VAULT}`, {
+      timestampMs: 0,
+      priceStroops: 10_000_000n,
+    });
+    simulateViewMock.mockResolvedValueOnce([10_100_000n]); // +1%
+    const rateSource = createDefindexRateSource({
+      network: NETWORK,
+      store,
+      now: () => 10 * 60 * 1000, // exactly the MIN_SAMPLE_INTERVAL_MS floor
+    });
+
+    const rate = await rateSource(defindexQuery());
+
+    expect(rate).toBeNull();
+  });
+
   it("annualizes a 5% share-price gain over exactly one year to 500 bps", async () => {
     const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
     const store = createInMemoryRateSnapshotStore();
@@ -413,10 +461,9 @@ describe("createUpstashRateSnapshotStore", () => {
     const snapshot = await store.get("mykey");
 
     expect(snapshot).toEqual({ timestampMs: 1234, priceStroops: 5678n });
-    expect(fetchFn).toHaveBeenCalledWith(
-      "https://upstash.example/get/mykey",
-      { headers: { Authorization: "Bearer TOKEN" } }
-    );
+    expect(fetchFn).toHaveBeenCalledWith("https://upstash.example/get/mykey", {
+      headers: { Authorization: "Bearer TOKEN" },
+    });
   });
 
   it("returns null when Upstash reports no value for the key", async () => {
@@ -449,7 +496,10 @@ describe("createUpstashRateSnapshotStore", () => {
   });
 
   it("SETs the encoded value with a TTL and the bearer token", async () => {
-    const fetchFn = vi.fn(async () => ({ ok: true, json: async () => ({}) })) as unknown as typeof fetch;
+    const fetchFn = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({}),
+    })) as unknown as typeof fetch;
     const store = createUpstashRateSnapshotStore({
       restUrl: "https://upstash.example/",
       restToken: "TOKEN",
@@ -488,10 +538,12 @@ describe("createUpstashRateSnapshotStore", () => {
 // ---------------------------------------------------------------------------
 
 describe("createDefaultRateSource", () => {
-  it("resolves null for a protocol neither source recognizes, without querying either", async () => {
+  it("resolves null for a protocol neither source recognizes, without querying either, and logs a warning", async () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const rateSource = createDefaultRateSource(NETWORK, {
       env: {},
       snapshotStore: createInMemoryRateSnapshotStore(),
+      logger,
     });
 
     const rate = await rateSource({
@@ -502,6 +554,10 @@ describe("createDefaultRateSource", () => {
 
     expect(rate).toBeNull();
     expect(simulateViewMock).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("no rate source registered"),
+      expect.objectContaining({ protocol: "soroswap", poolId: "P" })
+    );
   });
 
   it("dispatches a defindex query through the real DeFindex rate source with the given snapshot store", async () => {
