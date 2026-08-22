@@ -1,0 +1,33 @@
+name: Keepers Schedule
+
+# Replaces vercel.json's crons array (#513): Vercel's Hobby plan only allows
+# daily cron jobs, so neither the accrual keeper's 15-minute schedule nor the
+# migration keeper's hourly one could actually run there. GitHub Actions'
+# schedule trigger has no such restriction.
+#
+# Two schedule entries fire two independent workflow runs on their own
+# cadence; each run only triggers the step matching its own schedule
+# (github.event.schedule), so a tick where both crons coincide (every hour,
+# on the hour) still calls both endpoints exactly once each, not one call
+# doing double duty.
+on:
+  schedule:
+    - cron: "*/15 * * * *" # accrual keeper
+    - cron: "0 * * * *" # migration keeper
+  workflow_dispatch: # manual trigger for debugging
+
+jobs:
+  trigger-keepers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger accrual keeper
+        if: github.event.schedule == '*/15 * * * *' || github.event_name == 'workflow_dispatch'
+        run: |
+          curl -sf -X POST "${{ vars.API_BASE_URL }}/api/v1/keepers/accrue" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+
+      - name: Trigger migration keeper
+        if: github.event.schedule == '0 * * * *' || github.event_name == 'workflow_dispatch'
+        run: |
+          curl -sf -X POST "${{ vars.API_BASE_URL }}/api/v1/keepers/rebalance" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"

@@ -7,8 +7,18 @@ state, so the production deployment runs a scheduled keeper.
 
 ## Schedule
 
-Vercel Cron calls `GET /api/v1/keepers/accrue` every 15 minutes, as configured
-in `vercel.json`.
+A GitHub Actions workflow (`.github/workflows/keepers.yml`) calls
+`POST /api/v1/keepers/accrue` every 15 minutes. Not Vercel Cron: the Hobby
+plan restricts Cron Jobs to once per day, which can't express a 15-minute
+interval, so scheduling lives in GitHub Actions instead, authenticating with
+the same `CRON_SECRET` bearer token Vercel Cron would have used. See #513.
+
+GitHub disables scheduled workflows after 60 days of repository inactivity
+(no pushes); an active repo keeps this running indefinitely, but a long-quiet
+fork or mirror would need the workflow manually re-enabled. Scheduled-workflow
+timing is also best-effort, not exact-to-the-minute, acceptable for a
+15-minute interval but worth knowing if staleness ever looks slightly off
+from the nominal window below.
 
 With successful runs, the expected maximum TVL/APY staleness window for
 Blend-backed Meridian vaults is one keeper interval: 15 minutes. Dashboard HTTP
@@ -35,12 +45,19 @@ it to source control.
 The legacy fallback name `KEEPER_SECRET_KEY` is also accepted, but new
 deployments should use `MERIDIAN_KEEPER_SECRET_KEY`.
 
-Set `CRON_SECRET` as a separate secret. Scheduled calls must include
-`Authorization: Bearer $CRON_SECRET`; both production and preview deployments
-fail closed when `CRON_SECRET` is missing, only true local dev (no
-`VERCEL_ENV` at all) is permissive. Unlike simple rate-limit relaxation
-elsewhere, this endpoint triggers real signed transactions off the keeper's
-funded account, so an unauthenticated preview URL is a real gas-drain risk.
+Set `CRON_SECRET` as a separate secret, in both Vercel's environment
+variables (what the endpoint itself checks) and as a GitHub Actions
+repository secret of the same name and value (what `keepers.yml` sends).
+Scheduled calls must include `Authorization: Bearer $CRON_SECRET`; both
+production and preview deployments fail closed when `CRON_SECRET` is
+missing, only true local dev (no `VERCEL_ENV` at all) is permissive. Unlike
+simple rate-limit relaxation elsewhere, this endpoint triggers real signed
+transactions off the keeper's funded account, so an unauthenticated preview
+URL is a real gas-drain risk.
+
+Also set `API_BASE_URL` as a GitHub Actions repository **variable** (not a
+secret, it's just the deployment's public URL) to the production domain
+`keepers.yml` should call.
 
 ## Discovery
 
