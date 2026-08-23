@@ -11,16 +11,15 @@
 // transient failures. Swallowing them here would silently bypass that.
 
 import { PoolV2, type Pool } from "@blend-capital/blend-sdk";
-import { nativeToScVal } from "@stellar/stellar-sdk";
-import { APP_ADDRESSES, withRaceTimeout } from "@meridian/shared";
-import { getRpcServer, toBigInt } from "./internal";
-import { simulateView } from "./tx";
+import { CONTRACT_ADDRESSES } from "@meridian/shared";
+import { getRpcServer } from "./internal";
+import { withBlendTimeout } from "./blend";
+import { getDefindexAssetAmountPerShares } from "./defindex";
 import type { StellarNetwork } from "./types";
 import { consoleLogger, type KeeperLogger } from "./keeper-retry";
 import type { RateQuery, RateSourceFn } from "./migration-keeper";
 
 const BPS_SCALAR = 10_000;
-const BLEND_RPC_TIMEOUT_MS = 10_000;
 
 function toFiniteBps(rate: number): number | null {
   const bps = rate * BPS_SCALAR;
@@ -56,18 +55,20 @@ export interface BlendRateSourceOptions {
 export function createBlendRateSource(
   options: BlendRateSourceOptions
 ): RateSourceFn {
-  const assetId = options.assetId ?? APP_ADDRESSES.usdc;
+  // Mirrors tx.ts's allowedContractIds: CONTRACT_ADDRESSES only has
+  // testnet/mainnet entries, futurenet (used for local/CI RPC pointed at a
+  // futurenet node) falls back to testnet's addresses.
+  const addressKey =
+    options.network.network === "mainnet" ? "mainnet" : "testnet";
+  const assetId = options.assetId ?? CONTRACT_ADDRESSES[addressKey].usdc;
   const loadPool =
     options.loadPool ??
     ((network: StellarNetwork, poolId: string) =>
-      withRaceTimeout(
-        () =>
-          PoolV2.load(
-            { rpc: network.rpcUrl, passphrase: network.passphrase },
-            poolId
-          ),
-        BLEND_RPC_TIMEOUT_MS,
-        "Blend RPC"
+      withBlendTimeout(() =>
+        PoolV2.load(
+          { rpc: network.rpcUrl, passphrase: network.passphrase },
+          poolId
+        )
       ));
 
   return async (query: RateQuery) => {
@@ -243,21 +244,22 @@ export function createDefindexRateSource(
     if (query.protocol !== "defindex") return null;
 
     const server = getRpcServer(options.network.rpcUrl, 10_000);
-    const amounts = (await simulateView(
-      server,
-      query.poolId,
-      options.network.passphrase,
-      "get_asset_amounts_per_shares",
-      nativeToScVal(REFERENCE_SHARES, { type: "i128" })
-    )) as Array<bigint | number> | null;
-    const priceStroops =
-      Array.isArray(amounts) && amounts.length > 0
-        ? toBigInt(amounts[0])
-        : null;
+    const key = snapshotKey(query.poolId);
+    // Independent reads (the live quote and the persisted prior snapshot),
+    // run concurrently rather than sequentially: this is on
+    // findBestCandidate's deadline-budget-constrained hot path (see
+    // migration-keeper.ts), so their latencies shouldn't just add up.
+    const [priceStroops, prior] = await Promise.all([
+      getDefindexAssetAmountPerShares(
+        server,
+        query.poolId,
+        options.network.passphrase,
+        REFERENCE_SHARES
+      ),
+      options.store.get(key),
+    ]);
     const timestampMs = now();
 
-    const key = snapshotKey(query.poolId);
-    const prior = await options.store.get(key);
     if (priceStroops !== null && priceStroops > 0n) {
       await options.store.set(key, { timestampMs, priceStroops });
     }

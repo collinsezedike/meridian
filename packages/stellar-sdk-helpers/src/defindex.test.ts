@@ -4,8 +4,9 @@ import {
   buildDefindexWithdrawTx,
   stroopsToUnits,
   fetchDefindexPosition,
+  getDefindexAssetAmountPerShares,
 } from "./defindex";
-import { clearRpcServerCache } from "./internal";
+import { clearRpcServerCache, getRpcServer } from "./internal";
 import { Address, Contract, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import type { StellarNetwork } from "./types";
 
@@ -287,6 +288,68 @@ describe("fetchDefindexPosition", () => {
       PUBKEY
     );
     expect(pos.deposited).toBe(0);
+  });
+});
+
+// Shared by buildDefindexWithdrawTx, fetchDefindexPosition (covered above via
+// their own null/empty-array edge cases), and rate-sources.ts's DeFindex
+// share-price probe — this exercises it directly as the single place that
+// response-parsing logic now lives.
+describe("getDefindexAssetAmountPerShares", () => {
+  const VAULT_ID = "CVAULT000000000000000000000000000000000000000000000000000";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearRpcServerCache();
+  });
+
+  it("calls get_asset_amounts_per_shares with the given shares and returns the first amount", async () => {
+    vi.mocked(simulateView).mockResolvedValueOnce([12_345_678n]);
+    const server = getRpcServer(network.rpcUrl, 5_000);
+
+    const amount = await getDefindexAssetAmountPerShares(
+      server,
+      VAULT_ID,
+      network.passphrase,
+      10_000_000n
+    );
+
+    expect(amount).toBe(12_345_678n);
+    expect(simulateView).toHaveBeenCalledWith(
+      server,
+      VAULT_ID,
+      network.passphrase,
+      "get_asset_amounts_per_shares",
+      expect.anything()
+    );
+  });
+
+  it("returns null when the response is null", async () => {
+    vi.mocked(simulateView).mockResolvedValueOnce(null);
+    const server = getRpcServer(network.rpcUrl, 5_000);
+
+    expect(
+      await getDefindexAssetAmountPerShares(
+        server,
+        VAULT_ID,
+        network.passphrase,
+        10_000_000n
+      )
+    ).toBeNull();
+  });
+
+  it("returns null when the response array is empty", async () => {
+    vi.mocked(simulateView).mockResolvedValueOnce([]);
+    const server = getRpcServer(network.rpcUrl, 5_000);
+
+    expect(
+      await getDefindexAssetAmountPerShares(
+        server,
+        VAULT_ID,
+        network.passphrase,
+        10_000_000n
+      )
+    ).toBeNull();
   });
 });
 

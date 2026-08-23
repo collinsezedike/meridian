@@ -6,6 +6,7 @@ import {
   ReserveV2,
   type Pool,
 } from "@blend-capital/blend-sdk";
+import { CONTRACT_ADDRESSES } from "@meridian/shared";
 import type { StellarNetwork } from "./types";
 import type { RateQuery } from "./migration-keeper";
 
@@ -21,6 +22,7 @@ import {
   createDefaultRateSource,
   createInMemoryRateSnapshotStore,
   createUpstashRateSnapshotStore,
+  type RateSnapshotStore,
 } from "./rate-sources";
 
 const simulateViewMock = vi.mocked(simulateView);
@@ -123,6 +125,39 @@ describe("createBlendRateSource", () => {
     const rate = await rateSource(blendQuery());
 
     expect(rate).toBe(Math.round(reserve.estSupplyApy * 10_000));
+  });
+
+  it("defaults assetId from the given network's own USDC address, not a fixed constant", async () => {
+    // Regression for PR #538 review: assetId used to default from the
+    // process-wide APP_ADDRESSES singleton regardless of the `network` this
+    // function actually received. A mainnet call must resolve mainnet's USDC
+    // SAC, not whatever process.env.STELLAR_NETWORK happens to be.
+    const mainnetReserve = makeReserveV2({
+      rBase: 0.01,
+      rOne: 0.04,
+      rTwo: 0.5,
+      rThree: 1.5,
+      util: 0.8,
+      curUtil: 0.7,
+    });
+    mainnetReserve.setRates(1_000_000n);
+    const loadPool = vi.fn(
+      async () =>
+        ({
+          reserves: new Map([
+            [CONTRACT_ADDRESSES.mainnet.usdc, mainnetReserve],
+          ]),
+        }) as unknown as Pool
+    );
+    const mainnetNetwork: StellarNetwork = { ...NETWORK, network: "mainnet" };
+    const rateSource = createBlendRateSource({
+      network: mainnetNetwork,
+      loadPool,
+    });
+
+    const rate = await rateSource(blendQuery());
+
+    expect(rate).toBe(Math.round(mainnetReserve.estSupplyApy * 10_000));
   });
 
   it("lets a pool-load failure propagate rather than swallowing it into null", async () => {
@@ -294,6 +329,35 @@ describe("createDefindexRateSource", () => {
 
     expect(rate).toBeNull();
     expect(simulateViewMock).not.toHaveBeenCalled();
+  });
+
+  it("runs the live quote and the snapshot-store read concurrently, not sequentially", async () => {
+    // Regression for PR #538 review: this is on findBestCandidate's
+    // deadline-budget-constrained hot path, so the two independent reads
+    // shouldn't add their latencies together. Prove it by leaving the quote
+    // pending and asserting the store read still fires rather than waiting
+    // for it — a sequential `await simulateView(...)` before `store.get(...)`
+    // would never call store.get while the quote is still unresolved.
+    let resolveQuote!: (amounts: bigint[]) => void;
+    simulateViewMock.mockImplementationOnce(
+      () => new Promise((resolve) => (resolveQuote = resolve))
+    );
+    const storeGet = vi.fn(async () => null);
+    const store: RateSnapshotStore = { get: storeGet, set: vi.fn() };
+    const rateSource = createDefindexRateSource({
+      network: NETWORK,
+      store,
+      now: () => 1_000,
+    });
+
+    const pending = rateSource(defindexQuery());
+    await Promise.resolve(); // flush one microtask so Promise.all's members start
+    await Promise.resolve();
+
+    expect(storeGet).toHaveBeenCalled();
+
+    resolveQuote([10_000_000n]);
+    await pending;
   });
 
   it("returns null on the first sample for a pool, but persists a snapshot for next time", async () => {
