@@ -14,11 +14,15 @@ export const USDC_ISSUER: Record<string, string> = {
   mainnet: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
 };
 
-// mUSDC is the vault's share token. Issuer = the musdc-issuer key used during
-// deployment (see scripts/deploy-testnet.sh's ADMIN, which becomes the mUSDC
-// asset's issuer before admin control is handed to the vault contract).
+// mUSDC is the vault's share token. Issuer = the DEPLOYER address used for
+// that deployment's `scripts/deploy-testnet.sh` run (the script mints mUSDC
+// as `MUSDC:$DEPLOYER_ADDRESS`, then hands admin control of the asset to the
+// vault contract via set_admin). Frozen at mint time: unlike the vault's own
+// admin, a classic Stellar asset's issuer can't be rotated after the fact,
+// so this changes only when mUSDC itself is redeployed (i.e. together with
+// CONTRACT_ADDRESSES.testnet.{vault,musdc} on a vault redeployment).
 export const MUSDC_ISSUER: Record<string, string> = {
-  testnet: "GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD",
+  testnet: "GBLYQ5EHXMMULOA7KA4KK2S5Q5GTTWYFVSC3FKLXRLH34EJX35BIAL35",
   mainnet: "",
 };
 
@@ -40,8 +44,13 @@ export const CONTRACT_ADDRESSES = {
     usdc: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
     // Stellar Asset Contract for Circle's testnet EURC (issuer: GB3Q6QDZYTHWT7...).
     eurc: "CCUUDM434BMZMYWYDITHFXHDMIVTGGD6T2I5UKNX5BSLXLW7HVR4MCGZ",
-    musdc: "CBC5G4HXTOOZHTBCJQACZB3NJ636JHA5NEBQX5Q265QZN6XEG4LVZ5SB",
-    vault: "CBQYEHWIRJWIPWCJFQZAOP3VAZHRWFGAUS5GZHWFDDYKMFHJ5S3YS2Q5",
+    musdc: "CCSYXC4SDCPTGENHM6CSQY4HMSZOPOY5TJW4QYYLE5RDBUBJX4N7ZHV5",
+    // Redeployed for #514: the previous vault (CBQYEHWIRJWIPWCJFQZAOP3VAZHRWFGAUS5GZHWFDDYKMFHJ5S3YS2Q5)
+    // predates `migrate_adapter` and was never redeployed since #464/#507
+    // added it. See apps/docs/operations/testnet-deployment.md's "Vault
+    // migration history" for the old address, why it's stale, and the
+    // pre-cutover withdrawal window for anyone still holding a position there.
+    vault: "CBOE7JPROCMUKQ4NJWPKCLBBQGHLTGV4X3463DHK4D7KX6KWXGZETAJL",
   },
   mainnet: {
     blend: {

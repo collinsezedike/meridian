@@ -18,7 +18,9 @@ Neither script requires manual `stellar contract invoke` steps — read them bef
 
 Both scripts require a `DEPLOYER` secret key, funded via [Friendbot](https://friendbot.stellar.org/). `DEPLOYER` only pays transaction fees and signs the setup calls — it does **not** need to be kept around afterward, and can be thrown away once the script finishes.
 
-`deploy-testnet.sh` additionally accepts an optional `ADMIN` **public key**. This becomes the deployed vault's permanent admin, the only address that can ever call `set_admin`, `set_paused`, `set_adapter`, or `migrate_adapter` on it. `ADMIN` is deliberately independent of `DEPLOYER`: whoever calls `initialize()` can pass in any address as the admin, since it's just a parameter, not tied to who signed the deploy transaction. If you don't set `ADMIN`, the script defaults it to `DEPLOYER`'s own address and prints a warning — fine for a quick throwaway test, but you should always set `ADMIN` explicitly to a separate, durable key for anything you intend to keep testing against, and it **must** be set explicitly ahead of any mainnet deployment.
+`deploy-testnet.sh` additionally accepts an optional `ADMIN` **public key**. This becomes the deployed vault's permanent admin, the only address that can ever call `set_admin`, `set_paused`, `set_adapter`, or `migrate_adapter` on it. `ADMIN` is deliberately independent of `DEPLOYER` as an identity — but not as a _signer_: the vault's `initialize()` calls `admin.require_auth()`, so the deployed-with-`ADMIN`-set-separately case still needs a signature from `ADMIN` itself, not just from `DEPLOYER`. So when `ADMIN` differs from `DEPLOYER`, pass the `ADMIN` signing key as `ADMIN_KEY` (a secret key, or a `stellar keys` alias) alongside it, and the script signs and submits `initialize()` itself in the same run. `ADMIN_KEY` is validated up front: if it resolves to an address other than `ADMIN`, the script exits before building anything. If you don't set `ADMIN`, the script defaults it to `DEPLOYER`'s own address and prints a warning — fine for a quick throwaway test (and the one case where the script _can_ fully automate `initialize()`, since `DEPLOYER`'s own signature already covers it), but you should always set `ADMIN` explicitly to a separate, durable key for anything you intend to keep testing against, and it **must** be set explicitly ahead of any mainnet deployment.
+
+**Set `ADMIN_KEY` whenever the key is on the machine running the script.** `initialize()` is callable by any address and only checks that the admin it is handed authorizes the call, so a vault that is deployed but not yet initialized can be claimed by whoever calls `initialize()` first, with themselves as admin. They would then control `set_admin`, `set_paused`, and `set_adapter` on it, and the real `ADMIN`'s later call would fail with `AlreadyInitialized`. If `ADMIN_KEY` is genuinely not available where the script runs, it falls back to printing the `initialize()` command for the key holder to run, and warns that the vault is claimable until they do. Run it immediately in that case, then confirm the vault is yours with `get_admin` before funding it.
 
 Save the `ADMIN` secret key somewhere durable (a password manager, not a plaintext file) the moment you deploy with it — there is no recovery path if it's lost. `set_admin`/`set_paused`/`set_adapter` become permanently inaccessible, and since adapters have no in-place upgrade path, that also means the vault can never be pointed at fixed adapter code again.
 
@@ -33,13 +35,15 @@ DEPLOYER_ADDR=$(stellar keys address my-deployer)
 stellar keys generate my-admin --fund --network testnet
 ADMIN_ADDR=$(stellar keys address my-admin)
 
-DEPLOYER=my-deployer ADMIN=$ADMIN_ADDR bash scripts/deploy-testnet.sh
+# ADMIN_KEY lets the script sign initialize() in the same run, so the vault is
+# never left deployed-but-uninitialized and claimable by a third party.
+DEPLOYER=my-deployer ADMIN=$ADMIN_ADDR ADMIN_KEY=my-admin bash scripts/deploy-testnet.sh
 ```
 
 This builds all three contract crates (`vault`, `blend-adapter`, `defindex-adapter`), uploads and deploys the vault and a `BlendAdapter`, deploys a fresh mUSDC Stellar Asset Contract, and wires everything together:
 
 1. Initializes the `BlendAdapter` with the vault address, Blend's testnet pool, and USDC.
-2. Initializes the vault with `admin`, `usdc`, `musdc`, and `adapter` (the just-deployed `BlendAdapter`).
+2. Initializes the vault with `admin`, `usdc`, `musdc`, and `adapter` (the just-deployed `BlendAdapter`), signed by `DEPLOYER` when `ADMIN` defaulted to it, or by `ADMIN_KEY` when `ADMIN` is a separate address. Without `ADMIN_KEY` this step is printed for the `ADMIN` key holder to run instead, leaving the vault claimable until they do (see "The `DEPLOYER` / `ADMIN` split" above).
 3. Sets the vault as mUSDC's admin, so it can mint/burn shares autonomously.
 
 It prints the three contract IDs you need at the end:
@@ -115,6 +119,49 @@ This last step is deliberately manual. `set_adapter` resets the vault's adapter-
 ## Getting testnet USDC
 
 Blend's testnet pool uses USDC issued by Blend's own controlled test key, not Circle's testnet USDC — the two are different Stellar assets that happen to share an asset code. Fund a testnet wallet from [Blend's public faucet](https://testnet.blend.capital) or via its API endpoint (`fundFromBlendFaucet()` in `apps/web/src/hooks/useVaultActions.ts` calls this automatically when a depositing wallet has no USDC balance). In practice the default faucet call reliably grants BLND/wETH/wBTC but has not reliably granted USDC in testing — if a deposit fails with a missing-trustline or insufficient-balance error, you may need to fund the wallet directly through Blend's own faucet UI.
+
+## Vault migration history
+
+Adapter and vault contracts have no in-place upgrade path (see "Pushing new adapter code to a live vault" above for adapters; the vault itself is the same story). Shipping a vault-level change — new functionality, a bugfix — means a full cutover: deploy a new vault (+ new mUSDC), point `CONTRACT_ADDRESSES`/`KNOWN_POOLS` at it, and leave the old vault contract running, untouched, but unreachable through the app/docs from then on. This section is the durable record of each cutover: what the old address was, why it was superseded, and whether it still holds anything.
+
+### 2026-08-20 — redeployed for `migrate_adapter` (#514)
+
+The live testnet vault predated `migrate_adapter` (added in #464/#507, never on the live contract since — see #514 for the full writeup, including how `.github/workflows/verify-contract-addresses.yml`'s bytecode check caught it).
+
+**Pre-cutover status, at the time this PR was opened:** the old vault below held `get_total_assets() = 200000000000` (20,000 USDC) in outstanding testnet deposits. If you hold a position there, **withdraw before this PR merges** — once merged, the app and `KNOWN_POOLS`/`CONTRACT_ADDRESSES` point at the new vault, and the old one is no longer reachable through the UI (though it keeps working, see below).
+
+**Old vault (superseded):**
+
+| Field               | Value                                                      |
+| ------------------- | ---------------------------------------------------------- |
+| Vault contract      | `CBQYEHWIRJWIPWCJFQZAOP3VAZHRWFGAUS5GZHWFDDYKMFHJ5S3YS2Q5` |
+| mUSDC (share token) | `CBC5G4HXTOOZHTBCJQACZB3NJ636JHA5NEBQX5Q265QZN6XEG4LVZ5SB` |
+| mUSDC issuer        | `GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD` |
+| Admin               | `GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD` |
+
+This contract is not deleted or disabled — Soroban has no such operation, it keeps running exactly as deployed. `withdraw()` still works on it for anyone who already holds shares there:
+
+```bash
+stellar contract invoke --network testnet --source <your-key> \
+  --id CBQYEHWIRJWIPWCJFQZAOP3VAZHRWFGAUS5GZHWFDDYKMFHJ5S3YS2Q5 \
+  -- withdraw --caller <your-address> --shares <amount>
+```
+
+There is no automatic migration or sweep of old positions into the new vault — moving a position across a cutover is a manual withdraw-then-redeposit, not something the vault or its keepers do for you.
+
+**New vault (current):**
+
+| Field               | Value                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Vault contract      | `CBOE7JPROCMUKQ4NJWPKCLBBQGHLTGV4X3463DHK4D7KX6KWXGZETAJL`                                                                                                                                                                                                                                                                                                 |
+| Blend adapter       | `CDFIDKNA2ZTB37I7RN32WH7VU5AP2PAOXLGFWMTW6T2RSUM23AJIV2YM`                                                                                                                                                                                                                                                                                                 |
+| mUSDC (share token) | `CCSYXC4SDCPTGENHM6CSQY4HMSZOPOY5TJW4QYYLE5RDBUBJX4N7ZHV5`                                                                                                                                                                                                                                                                                                 |
+| mUSDC issuer        | `GBLYQ5EHXMMULOA7KA4KK2S5Q5GTTWYFVSC3FKLXRLH34EJX35BIAL35`                                                                                                                                                                                                                                                                                                 |
+| Admin               | `GB74ZDVMBYMPKWBBVJ7TAN2QK2EAKQQ5OZO6ETYAMPN5VQVNLZSQUYHH` — a fresh, separate key generated for this deployment (not the deploying key), per "The `DEPLOYER` / `ADMIN` split" above. Its secret is currently held by this PR's author; rotate it via `set_admin` (no redeploy required) if maintainers want a different durable key in control long-term. |
+
+Verified against #514's acceptance criteria before opening this PR: `migrate_adapter` is present in the deployed vault's function list (`stellar contract invoke ... -- --help`), `vault.get_adapter()` resolves to the Blend adapter above, and that adapter's `get_pool()`/`get_protocol()` resolve correctly — the same chain "Verifying the deployment" above walks through. Also confirmed the deployed vault's on-chain bytecode hash byte-for-byte against a from-source rebuild done on GitHub Actions itself (not a local machine — see the note below on why that distinction matters), matching what `.github/workflows/verify-contract-addresses.yml`'s "Verify On-Chain Bytecode" job independently rebuilds and checks.
+
+**A note on reproducible builds:** `stellar contract build`'s WASM output is not guaranteed byte-identical across different `stellar-cli`/Rust toolchain versions, even from identical source — a newer `stellar-cli` can apply a different (or newly-default) optimization pass and pull in different `soroban-sdk` transitive versions, changing the compiled bytecode. `.github/workflows/verify-contract-addresses.yml` always rebuilds with whatever `stellar-cli` version `cargo install --locked stellar-cli` resolves to _at CI run time_, not a pinned version. If your local `stellar-cli` has drifted behind that (check with `stellar --version` against the [latest release](https://github.com/stellar/stellar-cli/releases)), a contract you deploy locally can genuinely mismatch what CI rebuilds and compares it against, independent of whether your source is correct. If in doubt, verify the WASM you're about to deploy was built with a `stellar-cli` at least as new as CI's, or build it in a CI job of your own (e.g. a throwaway `workflow_dispatch` job that uploads the built `.wasm` as an artifact) and deploy that exact artifact instead of a locally-built one.
 
 ## Run the signing flow end-to-end
 
