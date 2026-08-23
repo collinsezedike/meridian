@@ -152,8 +152,33 @@ pub struct MeridianBlendAdapter;
 
 #[contractimpl]
 impl MeridianBlendAdapter {
-    /// Called once after deployment. Links the adapter to its vault, Blend pool,
-    /// and USDC token.
+    /// Links the adapter to its vault, Blend pool, and USDC token.
+    ///
+    /// Runs inside the `CreateContract` host operation that deploys this
+    /// adapter, in the same transaction, so the adapter is never observable
+    /// on-ledger in an uninitialized state.
+    ///
+    /// This is what closes the front-running window in #505. `initialize()`
+    /// below has no authorization check by design (there is no deployer
+    /// identity in storage yet to check against), so for as long as deploy
+    /// and initialize were two separate transactions, anyone watching the
+    /// ledger could land `initialize()` first with their own address as
+    /// `vault`, becoming the only party able to move funds through the
+    /// adapter. Adding an auth check to `initialize()` would not have helped:
+    /// it would only prove the racer controls the address they chose to pass
+    /// in. Removing the intervening ledger is the fix.
+    pub fn __constructor(env: Env, vault: Address, pool: Address, usdc: Address) {
+        Self::init_state(&env, &vault, &pool, &usdc);
+    }
+
+    /// Retained so the ABI of adapters already deployed from earlier WASM is
+    /// unchanged, and so an old adapter can still be initialized by hand.
+    ///
+    /// On any adapter deployed from this WASM it is unreachable:
+    /// `__constructor` has already set `VAULT_KEY`, so every call returns
+    /// `AlreadyInitialized`. That is the intended behaviour, not a leftover.
+    /// An attacker calling this against a freshly deployed adapter is
+    /// rejected instead of served.
     pub fn initialize(
         env: Env,
         vault: Address,
@@ -161,10 +186,17 @@ impl MeridianBlendAdapter {
         usdc: Address,
     ) -> Result<(), ContractError> {
         require_not_initialized(&env)?;
-        store_vault_and_usdc(&env, &vault, &usdc);
-        env.storage().instance().set(&POOL_KEY, &pool);
-        env.storage().instance().set(&TOTAL_KEY, &0_i128);
+        Self::init_state(&env, &vault, &pool, &usdc);
         Ok(())
+    }
+
+    /// The write half of initialization, shared by `__constructor` and
+    /// `initialize` so the two can never set up different state. Not exported
+    /// (no `pub`), so it is not callable from outside the contract.
+    fn init_state(env: &Env, vault: &Address, pool: &Address, usdc: &Address) {
+        store_vault_and_usdc(env, vault, usdc);
+        env.storage().instance().set(&POOL_KEY, pool);
+        env.storage().instance().set(&TOTAL_KEY, &0_i128);
     }
 
     /// Called by the vault after transferring `amount` USDC to this adapter.
@@ -501,9 +533,14 @@ mod tests {
         let pool = MockBlendPoolClient::new(&env, &pool_id);
         pool.initialize(&SCALAR, &RESERVE_INDEX);
 
-        let adapter_id = env.register(MeridianBlendAdapter, ());
+        // Registered with constructor arguments, which is how every real
+        // deployment of this contract is now wired: there is no
+        // deploy-then-initialize path left to exercise.
+        let adapter_id = env.register(
+            MeridianBlendAdapter,
+            (vault.clone(), pool_id.clone(), usdc_id.clone()),
+        );
         let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
-        adapter.initialize(&vault, &pool_id, &usdc_id);
 
         // Fund the vault (the caller of deposit) with USDC, then act as the
         // vault transferring into the adapter, matching real vault behaviour.
@@ -675,6 +712,44 @@ mod tests {
     }
 
     #[test]
+    fn constructor_sets_vault_pool_and_usdc() {
+        let (env, vault, usdc_id, adapter, pool) = setup();
+
+        // No initialize() call happened in setup(): every one of these was
+        // written by __constructor during registration.
+        assert_eq!(adapter.get_pool(), pool.address);
+        assert_eq!(
+            env.as_contract(&adapter.address, || adapter_common::get_vault(&env)),
+            Some(vault)
+        );
+        assert_eq!(
+            env.as_contract(&adapter.address, || adapter_common::get_usdc(&env)),
+            usdc_id
+        );
+        assert_eq!(adapter.total_assets(), 0);
+    }
+
+    #[test]
+    fn initialize_cannot_hijack_a_constructor_deployed_adapter() {
+        // The #505 front-run, run against the fixed contract. An attacker
+        // watching the ledger calls initialize() with their own address as
+        // vault, hoping to land before the deployer's own call. There is no
+        // longer a window to land in: __constructor already ran inside the
+        // deploying transaction, so the attempt is rejected and the adapter
+        // stays bound to the real vault.
+        let (env, vault, usdc_id, adapter, pool) = setup();
+        let attacker = Address::generate(&env);
+
+        let result = adapter.try_initialize(&attacker, &pool.address, &usdc_id);
+        assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
+
+        assert_eq!(
+            env.as_contract(&adapter.address, || adapter_common::get_vault(&env)),
+            Some(vault)
+        );
+    }
+
+    #[test]
     #[should_panic]
     fn deposit_requires_vault_auth() {
         // No mock_all_auths here: vault.require_auth() inside deposit() must
@@ -687,9 +762,11 @@ mod tests {
             .address();
         let pool_id = env.register(MockBlendPool, ());
         MockBlendPoolClient::new(&env, &pool_id).initialize(&SCALAR, &RESERVE_INDEX);
-        let adapter_id = env.register(MeridianBlendAdapter, ());
+        let adapter_id = env.register(
+            MeridianBlendAdapter,
+            (vault.clone(), pool_id.clone(), usdc_id.clone()),
+        );
         let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
-        adapter.initialize(&vault, &pool_id, &usdc_id);
 
         adapter.deposit(&100_0000000_i128);
     }
@@ -705,9 +782,11 @@ mod tests {
             .address();
         let pool_id = env.register(MockBlendPool, ());
         MockBlendPoolClient::new(&env, &pool_id).initialize(&SCALAR, &RESERVE_INDEX);
-        let adapter_id = env.register(MeridianBlendAdapter, ());
+        let adapter_id = env.register(
+            MeridianBlendAdapter,
+            (vault.clone(), pool_id.clone(), usdc_id.clone()),
+        );
         let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
-        adapter.initialize(&vault, &pool_id, &usdc_id);
 
         let recipient = Address::generate(&env);
         adapter.withdraw(&100_0000000_i128, &recipient);
