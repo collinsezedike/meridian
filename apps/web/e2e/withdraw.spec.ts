@@ -21,8 +21,15 @@ test.describe("withdraw", () => {
     // positions read is stubbed to seed one (see FAKE_POSITION above).
     // Everything downstream is real: the withdraw tab, amount validation,
     // and the POST /api/v1/tx/withdraw build against the real testnet vault
-    // contract, which correctly rejects it (InsufficientShares, the account
-    // holds no real shares) before signing is ever requested.
+    // contract, which correctly rejects it before signing is ever requested.
+    // Which contract error comes back depends on whether *anyone* has ever
+    // deposited into the live vault: InsufficientShares (#7) if the vault
+    // has other depositors and only this account holds none, or
+    // NoSharesOutstanding (#6) if the vault is empty of deposits entirely
+    // (see MeridianVault::withdraw's total_shares <= 0 check, which runs
+    // before the per-caller check). Either is the correct "nothing to
+    // withdraw" rejection this test cares about, so accept both rather than
+    // pin to whichever the live vault's deposit history happens to produce.
     await page.route(`**/api/v1/positions/${TEST_ADDRESS}`, (route) =>
       route.fulfill({ json: { positions: [FAKE_POSITION] } })
     );
@@ -43,7 +50,7 @@ test.describe("withdraw", () => {
     await page.getByTestId("vault-withdraw-submit").click();
 
     await expect(
-      page.getByText("Simulation failed: HostError: Error(Contract, #7)")
+      page.getByText(/Simulation failed: HostError: Error\(Contract, #[67]\)/)
     ).toBeVisible({ timeout: 20_000 });
 
     expect(await getSignedXdrs(page)).toHaveLength(0);

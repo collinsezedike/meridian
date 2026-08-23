@@ -99,13 +99,14 @@ vi.mock("react-i18next", () => {
 
 import { api } from "../../lib/api";
 import { wallet } from "../../lib/wallet";
+import { USDC_ISSUER, MUSDC_ISSUER } from "@meridian/shared";
 
 const KEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-// Matches USDC_ISSUER.testnet / MUSDC_ISSUER.testnet in @meridian/shared.
-const BLEND_TESTNET_USDC_ISSUER =
-  "GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56";
-const MUSDC_TESTNET_ISSUER =
-  "GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD";
+// Pulled from the source of truth rather than hardcoded, so these fixtures
+// don't drift out of sync the next time the vault (and its mUSDC issuer) is
+// redeployed, as happened with the previous hardcoded value in #514.
+const BLEND_TESTNET_USDC_ISSUER = USDC_ISSUER.testnet;
+const MUSDC_TESTNET_ISSUER = MUSDC_ISSUER.testnet;
 
 function bothTrustlinesHorizonResponse() {
   return new Response(
