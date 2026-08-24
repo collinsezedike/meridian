@@ -4,8 +4,8 @@ use adapter_common::{
     get_usdc, require_not_initialized, require_vault_auth, store_vault_and_usdc, AdapterError,
 };
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, symbol_short, token::TokenClient, vec,
-    Address, Env, Symbol, Val, Vec,
+    contract, contractclient, contracterror, contractimpl, panic_with_error, symbol_short,
+    token::TokenClient, vec, Address, Env, Symbol, Val, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -52,6 +52,12 @@ pub trait DefindexVaultInterface {
 pub enum ContractError {
     /// `initialize` was called on an adapter that already has a vault set.
     AlreadyInitialized = 1,
+    /// `get_asset_amounts_per_shares` returned a vector without a value at
+    /// index 0 for a held position. The adapter refuses to manufacture a zero
+    /// price out of a failed or malformed protocol read, because a zero
+    /// valuation on the share-pricing path would collapse the vault's
+    /// denominator and dilute every existing depositor.
+    MalformedProtocolResponse = 2,
 }
 
 impl From<AdapterError> for ContractError {
@@ -168,8 +174,15 @@ impl MeridianDefindexAdapter {
             return 0;
         }
 
-        let amounts = client.get_asset_amounts_per_shares(&shares);
-        amounts.get(0).unwrap_or(0)
+        // A held position that cannot be valued is an error, not a zero price.
+        // `get_asset_amounts_per_shares` returning a vector without an element
+        // at index 0 (a DeFindex-side shape change or misbehaviour) must fail
+        // the call, rather than silently manufacture a zero that collapses the
+        // vault's share-pricing denominator and dilutes existing holders.
+        match client.get_asset_amounts_per_shares(&shares).get(0) {
+            Some(value) => value,
+            None => panic_with_error!(&env, ContractError::MalformedProtocolResponse),
+        }
     }
 
     /// No-op: DeFindex's total_assets() already prices live on every call
@@ -212,6 +225,7 @@ mod tests {
     const MDV_USDC: Symbol = symbol_short!("MDV_USDC");
     const MDV_SH: Symbol = symbol_short!("MDV_SH");
     const MDV_WAMT: Symbol = symbol_short!("MDV_WAMT");
+    const MDV_AAMT: Symbol = symbol_short!("MDV_AAMT");
 
     #[contract]
     pub struct MockDefindexVault;
@@ -227,6 +241,13 @@ mod tests {
         // differently-shaped (e.g. empty) response from DeFindex.
         pub fn set_withdraw_amounts(env: Env, amounts: Vec<i128>) {
             env.storage().instance().set(&MDV_WAMT, &amounts);
+        }
+
+        // Overrides what get_asset_amounts_per_shares() returns, to simulate a
+        // differently-shaped (e.g. empty) response from DeFindex on the pricing
+        // path.
+        pub fn set_asset_amounts(env: Env, amounts: Vec<i128>) {
+            env.storage().instance().set(&MDV_AAMT, &amounts);
         }
 
         pub fn deposit(
@@ -280,7 +301,12 @@ mod tests {
 
         pub fn get_asset_amounts_per_shares(env: Env, desired_shares: i128) -> Vec<i128> {
             // 1:1 valuation, matching the deposit/withdraw rate used above.
-            vec![&env, desired_shares]
+            // Overridable via set_asset_amounts so tests can simulate a
+            // differently-shaped (e.g. empty) response on the pricing path.
+            env.storage()
+                .instance()
+                .get(&MDV_AAMT)
+                .unwrap_or_else(|| vec![&env, desired_shares])
         }
     }
 
@@ -395,6 +421,27 @@ mod tests {
         // deposited even though it's routed through get_asset_amounts_per_shares
         // rather than a self-tracked total.
         assert_eq!(adapter.total_assets(), amount);
+    }
+
+    #[test]
+    #[should_panic]
+    fn total_assets_errors_on_malformed_protocol_response() {
+        // A held position that cannot be valued must fail the call, not return
+        // a manufactured zero. #555: the identical unwrap_or(0) pattern was
+        // previously the pricing-path denominator, so a malformed response
+        // collapsed it to OFFSET and diluted every existing depositor.
+        let (env, vault, usdc_id, adapter, dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        // Simulate a shape mismatch: DeFindex returns an empty vector instead
+        // of the expected [usdc_amount]. total_assets() must panic with
+        // MalformedProtocolResponse rather than report zero.
+        dfx.set_asset_amounts(&Vec::new(&env));
+
+        adapter.total_assets();
     }
 
     #[test]

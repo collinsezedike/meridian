@@ -113,6 +113,11 @@ pub enum ContractError {
     NoAdapterPosition = 13,
     /// `migrate_adapter` was called with `max_slippage_bps > 10_000`.
     InvalidSlippageBps = 14,
+    /// The active adapter reported zero (or negative) total assets while the
+    /// vault still has shares outstanding. Shares outstanding against zero
+    /// reported assets is not a price, it is a broken adapter; minting on top
+    /// of it would dilute every existing holder. (#555)
+    AdapterReportedNoAssets = 16,
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +180,14 @@ impl MeridianVault {
 
         // Share price is based on the adapter's total assets (includes yield).
         let total_assets = AdapterClient::new(&env, &adapter_addr).total_assets();
+
+        // Shares outstanding against zero reported assets is not a price, it is
+        // a broken adapter. The virtual offset alone cannot bound a denominator
+        // that has failed to zero: minting here would issue a share count that
+        // dwarfs the existing supply and dilute every prior depositor (#555).
+        if total_shares > 0 && total_assets <= 0 {
+            return Err(ContractError::AdapterReportedNoAssets);
+        }
 
         // shares_to_mint = amount * (total_shares + OFFSET) / (total_assets + OFFSET)
         // The virtual offset makes the first-deposit price 1 share = 1 stroop while
@@ -743,6 +756,54 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // ZeroAssetsMockAdapter: simulates a broken adapter whose total_assets()
+    // reports zero even though it holds a real position (shares outstanding).
+    // Exercises the vault's AdapterReportedNoAssets backstop: with shares
+    // outstanding, a deposit priced against a zero denominator would mint a
+    // share count that dwarfs the existing supply, so the vault must reject it.
+    // -----------------------------------------------------------------------
+    mod zero_assets_mock {
+        use super::*;
+
+        const ZA_USDC: Symbol = symbol_short!("ZA_USDC");
+        const ZA_SH: Symbol = symbol_short!("ZA_SH");
+
+        #[contract]
+        pub struct ZeroAssetsMockAdapter;
+
+        #[contractimpl]
+        impl ZeroAssetsMockAdapter {
+            pub fn initialize(env: Env, usdc: Address) {
+                env.storage().instance().set(&ZA_USDC, &usdc);
+                env.storage().instance().set(&ZA_SH, &0_i128);
+            }
+
+            pub fn deposit(env: Env, amount: i128) -> i128 {
+                let prev: i128 = env.storage().instance().get(&ZA_SH).unwrap_or(0);
+                env.storage().instance().set(&ZA_SH, &(prev + amount));
+                amount
+            }
+
+            pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
+                let usdc: Address = env.storage().instance().get(&ZA_USDC).unwrap();
+                mock_proportional_withdraw(&env, &usdc, &ZA_SH, shares, &recipient)
+            }
+
+            pub fn total_assets(_env: Env) -> i128 {
+                // Broken adapter: reports no assets regardless of its actual
+                // holdings, matching the #555 failure mode where a malformed
+                // protocol read silently collapses the valuation to zero.
+                0
+            }
+
+            pub fn refresh(_env: Env) {
+                // No-op, but total_assets() still reports zero: the point is
+                // that the adapter cannot be trusted to value its position.
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // CachedMockAdapter: mimics BlendAdapter's caching behavior. total_assets()
     // returns a cached value that only updates on refresh(), letting these
     // tests prove the vault's refresh() call -- not just live pricing -- is
@@ -904,6 +965,49 @@ mod tests {
         assert_eq!(shares, amount);
         assert_eq!(vault.get_position(&user), amount);
         assert_eq!(vault.get_total_shares(), amount);
+    }
+
+    #[test]
+    fn deposit_rejected_when_adapter_reports_zero_assets_with_shares_outstanding() {
+        use zero_assets_mock::{ZeroAssetsMockAdapter, ZeroAssetsMockAdapterClient};
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let musdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        let adapter_id = env.register(ZeroAssetsMockAdapter, ());
+        ZeroAssetsMockAdapterClient::new(&env, &adapter_id).initialize(&usdc_id);
+
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        vault.initialize(&admin, &usdc_id, &musdc_id, &adapter_id);
+
+        StellarAssetClient::new(&env, &musdc_id).set_admin(&vault_id);
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &10_000_000_000_i128);
+
+        // First deposit: no shares outstanding yet, so zero reported assets is
+        // the honest "empty vault" price and the deposit is allowed.
+        let first = 100_0000000_i128;
+        let shares = vault.deposit(&user, &first);
+        assert!(shares > 0);
+
+        // The adapter holds a real position but reports zero assets. A second
+        // deposit must be rejected before minting shares against a zero
+        // denominator, rather than dilute the existing holder.
+        let result = vault.try_deposit(&user, &first);
+        assert_eq!(result, Err(Ok(ContractError::AdapterReportedNoAssets)));
+
+        // The rejected deposit must not have moved any state.
+        assert_eq!(vault.get_total_shares(), shares);
     }
 
     #[test]
