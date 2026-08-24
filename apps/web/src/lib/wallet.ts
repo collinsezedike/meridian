@@ -185,5 +185,103 @@ export class LobstrWallet implements WalletAdapter {
   }
 }
 
-// Freighter is the only supported wallet today.
+// xBull injects `window.xBullSDK` (https://github.com/Creit-Tech/xBull-Wallet).
+// Like LOBSTR it offers no passive site-permission query, so we mirror the
+// LOBSTR signal pattern: a successful connect() stores the public key in
+// sessionStorage and isAuthorized() treats "installed + stored key" as
+// authorized.
+const XBULL_PUBLIC_KEY_STORAGE_KEY = "meridian-xbull-public-key";
+
+/** Shape of the API injected by the xBull browser extension. */
+interface XBullSdk {
+  connect(permissions: {
+    canRequestPublicKey: boolean;
+    canRequestSign: boolean;
+  }): Promise<unknown>;
+  getPublicKey(): Promise<string>;
+  signXDR(
+    xdr: string,
+    opts?: { network?: string; publicKey?: string }
+  ): Promise<string>;
+}
+
+declare global {
+  interface Window {
+    xBullSDK?: XBullSdk;
+  }
+}
+
+function xbullSdk(): XBullSdk | undefined {
+  return typeof window !== "undefined" ? window.xBullSDK : undefined;
+}
+
+function readStoredXbullPublicKey(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.sessionStorage.getItem(XBULL_PUBLIC_KEY_STORAGE_KEY);
+}
+
+function storeXbullPublicKey(publicKey: string): void {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.setItem(XBULL_PUBLIC_KEY_STORAGE_KEY, publicKey);
+}
+
+/**
+ * xBull is a mobile-first Stellar wallet, unlike Freighter which is
+ * desktop-only. The extension's SDK lives at window.xBullSDK, and connect()
+ * resolves only after the user approves the pairing from the xBull app.
+ */
+export class XBullWallet implements WalletAdapter {
+  async isInstalled(): Promise<boolean> {
+    return withMockWallet(
+      (mock) => mock.installed,
+      async () => xbullSdk() !== undefined
+    );
+  }
+
+  // xBull's SDK has no passive "is site authorized" signal (no isAllowed
+  // equivalent — the only grant flow is connect(), which prompts). Use the same
+  // stored-key heuristic as LobstrWallet: installed + a public key stored by a
+  // prior connect() means authorized.
+  async isAuthorized(): Promise<boolean> {
+    return withMockWallet(
+      (mock) => mock.installed && mock.authorized,
+      async () => {
+        const installed = await this.isInstalled();
+        if (!installed) return false;
+        return readStoredXbullPublicKey() !== null;
+      }
+    );
+  }
+
+  async connect(): Promise<string> {
+    return withMockWallet(
+      (mock) => mock.address,
+      async () => {
+        const sdk = xbullSdk();
+        if (!sdk) throw new Error("xBull wallet not found");
+        await sdk.connect({ canRequestPublicKey: true, canRequestSign: true });
+        const publicKey = await sdk.getPublicKey();
+        if (!publicKey) throw new Error("xBull wallet returned no public key");
+        storeXbullPublicKey(publicKey);
+        return publicKey;
+      }
+    );
+  }
+
+  async sign(xdr: string, networkPassphrase: string): Promise<string> {
+    return withMockWallet(
+      (mock) => mock.sign(xdr, networkPassphrase),
+      async () => {
+        const sdk = xbullSdk();
+        if (!sdk) throw new Error("xBull wallet not found");
+        const signedXdr = await sdk.signXDR(xdr, { network: networkPassphrase });
+        if (!signedXdr) throw new Error("Signing cancelled");
+        return signedXdr;
+      }
+    );
+  }
+}
+
+// Freighter is the only supported wallet today. XBullWallet is exported for
+// the upcoming wallet-picker work (see #488); it is not wired into the UI yet.
 export const wallet: WalletAdapter = new FreighterWallet();
