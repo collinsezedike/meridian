@@ -2,8 +2,7 @@ import { Address, Contract, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import { prepareSorobanTx, simulateView } from "./tx";
 import { getRpcServer, toBigInt } from "./internal";
 import type { StellarNetwork } from "./types";
-import type { PositionInfo } from "./positions";
-import { stroopsToUnits } from "./defindex";
+import { computePosition, type PositionInfo } from "./positions";
 
 export interface CoordinatorConfig {
   contractId: string;
@@ -66,7 +65,11 @@ export async function buildCoordinatorWithdrawTx(
  *
  * `shares` is the mUSDC balance. `deposited` is the live USDC value of those
  * shares (shares * total_assets / total_shares). `earned` is derived from the
- * stored cost basis (current value minus principal).
+ * stored cost basis (current value minus principal) via `computePosition`,
+ * which is what guards against a transferred-in holder's zero basis being
+ * read as zero cost rather than "no basis recorded" (see its `hasBasis`
+ * comment) — a mUSDC transfer-in looks identical here to a genuine deposit
+ * with a zero principal, and the two must not be confused.
  */
 export async function fetchCoordinatorPosition(
   config: CoordinatorConfig,
@@ -109,25 +112,11 @@ export async function fetchCoordinatorPosition(
       ),
     ]);
 
-  const totalAssets = toBigInt(totalAssetsRaw);
-  const totalShares = toBigInt(totalSharesRaw);
-  const principal = toBigInt(principalRaw);
-  const entryTime = Number(toBigInt(entryTimeRaw));
-
-  const deposited =
-    totalShares > 0n
-      ? stroopsToUnits((sharesRaw * totalAssets) / totalShares)
-      : 0;
-  const principalUnits = stroopsToUnits(principal);
-  const earned = Math.max(0, deposited - principalUnits);
-
-  return [
-    {
-      vaultId,
-      shares: stroopsToUnits(sharesRaw),
-      deposited,
-      earned,
-      entryTime,
-    },
-  ];
+  return computePosition(vaultId, {
+    shares: sharesRaw,
+    totalShares: toBigInt(totalSharesRaw),
+    totalAssets: toBigInt(totalAssetsRaw),
+    principal: toBigInt(principalRaw),
+    entryTime: toBigInt(entryTimeRaw),
+  });
 }

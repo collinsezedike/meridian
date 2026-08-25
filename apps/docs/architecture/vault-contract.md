@@ -11,6 +11,8 @@ The `MeridianVault` contract is a Soroban smart contract written in Rust, locate
 
 Both are standard Stellar assets managed via the `TokenClient`/`StellarAssetClient` interfaces. The vault must be set as the admin of the mUSDC asset to mint and burn autonomously (the deploy scripts do this automatically — see [Testnet Deployment](../operations/testnet-deployment.md)).
 
+mUSDC is a **freely transferable** share token, and the vault treats it as one: share ownership is read from the token on every call that depends on it, never from a vault-side balance map. See [Transferable shares](#transferable-shares) for what that does and does not carry with a transfer.
+
 ## Interface
 
 ### `initialize(admin, usdc, musdc, adapter) -> Result<(), ContractError>`
@@ -29,30 +31,32 @@ shares_minted = amount * (total_shares + OFFSET) / (adapter_total_assets + OFFSE
 
 There is no `route_to` or protocol-selection parameter on `deposit`. Which protocol the funds actually reach is determined entirely by whichever adapter the vault currently has set (see `get_adapter`/`set_adapter`), not by anything the caller passes in.
 
-Stamps `Entry(caller)` with the current ledger timestamp on the caller's first deposit. Top-ups do not reset the original entry time. Accumulates `Principal(caller)` with `amount` on every deposit.
+Stamps `Entry(caller)` with the current ledger timestamp on the caller's first deposit. Top-ups do not reset the original entry time. Whether a deposit is a first deposit is decided by whether an `Entry(caller)` record exists, not by the caller's share balance: an address holding mUSDC it was transferred has never deposited, so its first deposit is a real entry. Accumulates `Principal(caller)` with `amount` on every deposit.
 
 ### `withdraw(caller, shares) -> Result<i128, ContractError>`
 
 Burns `shares` mUSDC from the caller, redeems the proportional adapter position, and returns the resulting USDC. Fails with `ZeroAmount` if `shares <= 0`, `NoSharesOutstanding` if the vault has no shares outstanding at all, `InsufficientShares` if the caller doesn't hold enough mUSDC, or `WithdrawalTooSmall` if the redemption rounds down to zero USDC.
+
+The `InsufficientShares` check reads the caller's live mUSDC balance, the same balance the burn operates on, so the two can never disagree. The check is kept rather than left to the burn's own failure so callers get the typed error instead of a panic.
 
 ```
 adapter_shares_to_burn = shares * total_adapter_shares / total_shares
 usdc_out = <whatever the adapter's withdraw() returns for that many adapter shares>
 ```
 
-Reduces `Principal(caller)` proportionally. A full exit clears both `Entry(caller)` and `Principal(caller)`. Withdrawals are never blocked by `set_paused` — see [Authorization and safety rails](#authorization-and-safety-rails).
+Reduces `Principal(caller)` proportionally to the caller's live balance, so a holder who transferred part of their position away still retires exactly the basis for the shares they burn. A full exit clears both `Entry(caller)` and `Principal(caller)`. Withdrawals are never blocked by `set_paused` — see [Authorization and safety rails](#authorization-and-safety-rails).
 
 ### `get_position(address) -> i128`
 
-Returns the mUSDC balance recorded for `address` in persistent contract storage.
+Returns the address's mUSDC balance, read from the share token itself. mUSDC received by transfer counts immediately and withdraws normally, exactly like minted shares. Returns `0` before `initialize` rather than erroring, since "no position" is the truthful answer for a vault that holds nothing yet.
 
 ### `get_entry_time(address) -> u64`
 
-Returns the ledger timestamp of the address's current deposit, or `0` if it holds no position. Cleared on a full withdrawal so a later re-deposit starts a fresh clock.
+Returns the ledger timestamp of the address's deposit, or `0` if it holds no position. Cleared on a full withdrawal so a later re-deposit starts a fresh clock, and reported as `0` for any address that currently holds no mUSDC, so a record left behind by a transfer-out is never shown as a live position.
 
 ### `get_principal(address) -> i128`
 
-Returns the address's cost basis: the net USDC it has deposited and not yet withdrawn. Yield earned off-chain is computed as `current_share_value - principal`.
+Returns the address's cost basis: the net USDC it has deposited and not yet withdrawn. Yield earned off-chain is computed as `current_share_value - principal`. Reported as `0` for an address holding no mUSDC, and for an address whose shares arrived by transfer (see [Transferable shares](#transferable-shares)).
 
 ### `get_total_assets() -> i128`
 
@@ -76,7 +80,7 @@ Moves the vault's entire position from the current adapter to `new_adapter` in o
 
 Fails up front with `InvalidSlippageBps` if `max_slippage_bps > 10_000`, or `SameAdapter` if `new_adapter` is the vault's current adapter, or `NoAdapterPosition` if the current adapter has no position (`ADPT_SH <= 0`) — distinct from `NoSharesOutstanding`, which checks `TOTAL_SH` (vault mUSDC shares) instead, and the two can desync.
 
-Refreshes and reads the old adapter's `total_assets()` as the pre-migration value (an independent measurement taken before extraction, so it can catch loss on the withdrawal leg itself, not just the deposit leg), withdraws the vault's entire adapter-share position into the vault itself, deposits it into `new_adapter`, and requires the new adapter to report a positive share count (`DepositTooSmall` otherwise, this is what stops the vault's own bookkeeping from ever being pointed at zero adapter shares while `TOTAL_SH` is still positive) and a post-migration `total_assets()` no lower than `(10_000 - max_slippage_bps) / 10_000` of the pre-migration value (`MigrationValueDrift` otherwise). `10_000` itself is a valid, if extreme, choice of `max_slippage_bps`, an admin explicitly accepting no value-preservation protection, e.g. when recovering from an old adapter already known to be broken. Since Soroban transactions are atomic, a failed check leaves no partial state, nothing moves. On success, `ADAPTER` and `ADPT_SH` are updated; `TOTAL_SH` and every depositor's `Balance`/`Principal`/`Entry` are untouched, since they're denominated in vault mUSDC shares, not adapter shares.
+Refreshes and reads the old adapter's `total_assets()` as the pre-migration value (an independent measurement taken before extraction, so it can catch loss on the withdrawal leg itself, not just the deposit leg), withdraws the vault's entire adapter-share position into the vault itself, deposits it into `new_adapter`, and requires the new adapter to report a positive share count (`DepositTooSmall` otherwise, this is what stops the vault's own bookkeeping from ever being pointed at zero adapter shares while `TOTAL_SH` is still positive) and a post-migration `total_assets()` no lower than `(10_000 - max_slippage_bps) / 10_000` of the pre-migration value (`MigrationValueDrift` otherwise). `10_000` itself is a valid, if extreme, choice of `max_slippage_bps`, an admin explicitly accepting no value-preservation protection, e.g. when recovering from an old adapter already known to be broken. Since Soroban transactions are atomic, a failed check leaves no partial state, nothing moves. On success, `ADAPTER` and `ADPT_SH` are updated; `TOTAL_SH`, every holder's mUSDC balance, and every depositor's `Principal`/`Entry` are untouched, since they're denominated in vault mUSDC shares, not adapter shares.
 
 **This does not protect against a malicious or compromised admin key.** The admin chooses `new_adapter`, and a fake adapter could report whatever `total_assets()` it likes to pass the slippage check and then keep the funds. The invariant guards against accidental value loss (slippage, a buggy new adapter), not against the admin key itself, that's a key-custody problem (see the shared testnet admin/deployer/mUSDC-issuer key warning in the deploy scripts), not something this function can close on its own.
 
@@ -97,6 +101,30 @@ Rotates the admin key. Lets a compromised or retired admin key be replaced witho
 ### `get_admin() -> Address`
 
 Returns the current admin address.
+
+## Transferable shares
+
+mUSDC is an ordinary transferable token, and a transfer is a legitimate thing for a holder to do: the shares are tradeable and usable as collateral elsewhere. The vault therefore keeps **one** source of truth for who owns what, the token itself.
+
+The vault used to keep its own `Balance(address)` map alongside the token. Because a plain `transfer()` moves the real balance without touching that map, the two drifted apart and permanently stranded the position (#504): the recipient's `withdraw` failed the share check against a map that still said zero, while the sender's passed the same check and then reverted inside `burn`, because the tokens were no longer theirs. Reading ownership from the token removes the second source of truth rather than trying to keep two in step.
+
+What a transfer carries:
+
+|                                     | Follows the token | Why                                       |
+| ----------------------------------- | ----------------- | ----------------------------------------- |
+| Share ownership / withdrawal rights | **Yes**           | Read from the mUSDC balance on every call |
+| Cost basis (`Principal`)            | No                | See below                                 |
+| Entry timestamp (`Entry`)           | No                | Belongs to a depositor, not to the shares |
+
+Cost basis and entry time are _history_, what was paid and when, not a current holding, so unlike the balance they cannot be derived after the fact from a snapshot. Moving them with a transfer means observing the transfer as it happens, and mUSDC is a Stellar Asset Contract: its `transfer` is the built-in implementation, with no hook and no source the vault could add one to. The vault is the SAC's _admin_ (it can mint and burn), which is not the same as controlling its code.
+
+The consequences are confined to reporting, and never to fund safety:
+
+- An address that received mUSDC by transfer reports a basis of `0`, meaning "nothing recorded", so its displayed yield is its full share value. It can withdraw the full position.
+- An address that transferred its position away reports `0` for both basis and entry time, because it holds nothing. `get_principal`/`get_entry_time` clear the stale `Entry`/`Principal` records the first time either is called with the address at zero, rather than leaving them to resurface if the address's balance later becomes nonzero again from an unrelated deposit or transfer-in; `deposit()` does the same check on its own, so a re-deposit is never mixed with a stale basis from a position the caller already gave up, even if nothing read the address's position in between.
+- A partial transfer leaves the sender's remaining basis attached to their remaining shares, and retires it proportionally as they withdraw.
+
+Closing this properly means a share token whose code the vault controls, i.e. replacing the mUSDC SAC with a custom SEP-41 token that calls back into the vault on transfer so basis can be split pro-rata and entry time merged as a principal-weighted average. That is a new contract plus a redeployment and migration of the live share token, not a change to this one, and it is tracked separately rather than folded in here.
 
 ## Adapter contracts
 
@@ -190,6 +218,5 @@ Deposits, but never withdrawals, can be paused via `set_paused(true)` — this i
 | `TOTAL_SH`           | Instance     | Total mUSDC shares outstanding (`i128`)                                                                                                      |
 | `ADPT_SH`            | Instance     | Total adapter shares outstanding. Reset to `0` on `set_adapter`; set to the new adapter's reported share count on `migrate_adapter` (`i128`) |
 | `PAUSED`             | Instance     | Deposit pause flag (`bool`)                                                                                                                  |
-| `Balance(address)`   | Persistent   | Per-address mUSDC share balance (`i128`)                                                                                                     |
 | `Entry(address)`     | Persistent   | Per-address deposit entry timestamp (`u64`)                                                                                                  |
 | `Principal(address)` | Persistent   | Per-address net USDC deposited, not yet withdrawn (`i128`)                                                                                   |

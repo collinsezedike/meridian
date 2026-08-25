@@ -90,11 +90,51 @@ HTTP 500 so the scheduled run is observable instead of silently passing.
 
 If a submitted `accrue()` transaction is still unconfirmed when a retry
 attempt times out, the keeper re-checks that same transaction hash instead of
-sending a new one, within a single run. This tracking does not persist across
-separate keeper invocations: if a run exhausts its retries while a submission
-is still unconfirmed, the next scheduled run has no memory of it and may send
-a fresh `accrue()` transaction for the same adapter. This is an accepted,
-bounded gap rather than a fund-safety issue: `accrue()` only refreshes a
-cached value from the adapter's live position and produces the same result no
-matter how many times it lands, so a duplicate costs at most one extra
-Soroban fee, not incorrect accounting.
+sending a new one, within a single run.
+
+That tracking also persists **across** invocations (#515). The submitted
+hash is recorded in the shared store (Upstash Redis, keyed
+`meridian:keeper:accrual:<network>:<vaultId>:<adapterId>`) as soon as the
+transaction is broadcast, and every run resolves an existing record against
+the network before submitting anything: landed, failed, or aged out past the
+transaction's validity window clears it, and only a genuinely still-in-flight
+one skips the adapter for that run. The mechanism, its state machine, and
+`MERIDIAN_KEEPER_SUBMISSION_TTL_MS` are documented in full in
+[Migration Keeper](./migration-keeper.md#cross-invocation-duplicate-protection);
+this keeper uses exactly the same code path, deliberately, so both keepers'
+execution model is the same thing to reason about.
+
+Two things differ, both following from what a duplicate `accrue()` actually
+costs: it re-syncs a cached value from the adapter's live position and
+produces the same result however many times it lands, so at most one extra
+Soroban fee, never incorrect accounting.
+
+- **Fallback.** Where the migration keeper refuses to run on a deployment
+  without a shared store, this keeper falls back to a per-invocation one and
+  keeps running. On a deployed environment that fallback is logged as a
+  warning, not an info line: it reinstates the duplicate-submission gap, and
+  that should be visible to whoever watches these logs.
+- **Store outages.** Where the migration keeper skips a vault it cannot
+  verify, this keeper proceeds and warns. Halting all accrual for the length
+  of a KV outage would leave every vault's TVL/APY stale in order to avoid a
+  duplicate that costs a fee. A record that is readable and says "still in
+  flight" is still respected; only an unreadable one is proceeded past.
+
+`deps.submitAccrual` is handed the lease's hooks; an injected submitter that
+ignores them loses cross-invocation dedup, and the run warns at startup when
+one is in use.
+
+## Racing The Migration Keeper
+
+Both keepers act on the same vault's adapter independently. This keeper can
+read `get_adapter()` at discovery, have the migration keeper switch the vault
+to a different adapter before this submission lands, and then call `accrue()`
+on the now-detached adapter, which succeeds and does nothing useful (a
+detached adapter is still a valid contract, so nothing errors) while the
+yield it would have accrued never reaches the vault.
+
+Before building a new `accrue()` transaction, the keeper therefore re-reads
+the vault's live `get_adapter()` and skips the adapter if the vault has
+already moved on. The next run's discovery picks up the new adapter. The skip
+is reported in `skipped[]`, not `failures[]`: it is a benign race, and the
+new adapter is accrued on the following tick.
