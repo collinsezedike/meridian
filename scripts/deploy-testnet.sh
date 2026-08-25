@@ -79,8 +79,12 @@ WASM_BLEND_ADAPTER="$WASM_DIR/meridian_blend_adapter.wasm"
 upload() {
   stellar contract upload --network "$NETWORK" --source "$DEPLOYER" --wasm "$1"
 }
+# Any arguments after the wasm hash are forwarded to `stellar contract deploy`,
+# which is how constructor arguments are passed: `deploy "$hash" -- --a 1`.
 deploy() {
-  stellar contract deploy --network "$NETWORK" --source "$DEPLOYER" --wasm-hash "$1"
+  local hash="$1"
+  shift
+  stellar contract deploy --network "$NETWORK" --source "$DEPLOYER" --wasm-hash "$hash" "$@"
 }
 
 echo "Uploading vault WASM..."
@@ -92,8 +96,12 @@ echo "Deploying vault..."
 VAULT_ID=$(deploy "$VAULT_HASH")
 echo "vault contract ID: $VAULT_ID"
 
-echo "Deploying blend-adapter..."
-BLEND_ADAPTER_ID=$(deploy "$BLEND_ADAPTER_HASH")
+# The adapter's vault/pool/USDC wiring is passed as constructor arguments, so
+# it is set inside this same CreateContract operation. There is deliberately no
+# separate initialize() step: that gap was front-runnable (#505).
+echo "Deploying blend-adapter (vault=$VAULT_ID, pool=$BLEND_POOL_ID, usdc=$USDC_ID)..."
+BLEND_ADAPTER_ID=$(deploy "$BLEND_ADAPTER_HASH" \
+  -- --vault "$VAULT_ID" --pool "$BLEND_POOL_ID" --usdc "$USDC_ID")
 echo "blend-adapter contract ID: $BLEND_ADAPTER_ID"
 
 echo "Deploying mUSDC share token (Stellar Asset Contract)..."
@@ -102,11 +110,6 @@ MUSDC_ID=$(stellar contract asset deploy \
   --source "$DEPLOYER" \
   --asset "MUSDC:$DEPLOYER_ADDRESS")
 echo "mUSDC contract ID: $MUSDC_ID"
-
-echo "Initializing blend-adapter (pool=$BLEND_POOL_ID, usdc=$USDC_ID)..."
-stellar contract invoke \
-  --network "$NETWORK" --source "$DEPLOYER" --id "$BLEND_ADAPTER_ID" \
-  -- initialize --vault "$VAULT_ID" --pool "$BLEND_POOL_ID" --usdc "$USDC_ID"
 
 # Whichever key signs initialize(), it has to be the one that controls
 # ADMIN_ADDRESS: initialize() calls admin.require_auth() on the address it is

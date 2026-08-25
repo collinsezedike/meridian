@@ -18,17 +18,20 @@ set -euo pipefail
 # depositors yet (e.g. right after a fresh deploy, before any real funds
 # are at risk).
 #
-# Usage: bash scripts/redeploy-blend-adapter.sh
+# Usage: VAULT_ID=<live vault> DEPLOYER=<key> bash scripts/redeploy-blend-adapter.sh
 
 NETWORK="testnet"
 
 # DEPLOYER must be funded via friendbot. It does not need to be the vault's
-# admin to deploy and initialize the new adapter (initialize() has no auth
-# check), but it DOES need to be the vault's admin to run the set_adapter
-# command this script prints at the end.
+# admin to deploy the new adapter, but it DOES need to be the vault's admin to
+# run the set_adapter/migrate_adapter command this script prints at the end.
 : "${DEPLOYER:?DEPLOYER env var required (Stellar secret key)}"
 
-VAULT_ID="${VAULT_ID:-CBK5RI4BCA7TLSD2S5Q5TH2LUQAT55GF34OBTWPFUKWZ5O6YXSQDAWOJ}"
+# VAULT_ID is required, with no default. The vault address is a constructor
+# argument now, so it is written into the adapter by the deploying transaction
+# and cannot be changed afterwards. A stale default here would permanently bind
+# a fresh adapter to the wrong vault, with a redeploy as the only way out.
+: "${VAULT_ID:?VAULT_ID env var required (the live vault this adapter serves)}"
 BLEND_POOL_ID="${BLEND_POOL_ID:-CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF}"
 USDC_ID="${USDC_ID:-CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU}"
 
@@ -46,25 +49,22 @@ ADAPTER_HASH=$(stellar contract upload \
   --wasm "$WASM_ADAPTER")
 echo "blend-adapter WASM hash: $ADAPTER_HASH"
 
-echo "Deploying new adapter..."
+# vault/pool/USDC are constructor arguments, so they are set inside this same
+# CreateContract operation. There is deliberately no separate initialize()
+# step: that gap was front-runnable (#505).
+echo "Deploying new adapter (vault=$VAULT_ID, pool=$BLEND_POOL_ID, usdc=$USDC_ID)..."
 ADAPTER_ID=$(stellar contract deploy \
   --network "$NETWORK" \
   --source "$DEPLOYER" \
-  --wasm-hash "$ADAPTER_HASH")
-echo "new adapter contract ID: $ADAPTER_ID"
-
-echo "Initializing adapter (vault=$VAULT_ID, pool=$BLEND_POOL_ID, usdc=$USDC_ID)..."
-stellar contract invoke \
-  --network "$NETWORK" \
-  --source "$DEPLOYER" \
-  --id "$ADAPTER_ID" \
-  -- initialize \
+  --wasm-hash "$ADAPTER_HASH" \
+  -- \
   --vault "$VAULT_ID" \
   --pool "$BLEND_POOL_ID" \
-  --usdc "$USDC_ID"
+  --usdc "$USDC_ID")
+echo "new adapter contract ID: $ADAPTER_ID"
 
 echo ""
-echo "New adapter deployed and initialized at: $ADAPTER_ID"
+echo "New adapter deployed and wired at: $ADAPTER_ID"
 echo "It is NOT yet live. The vault ($VAULT_ID) still points at its old adapter."
 echo ""
 echo "Check whether the vault has real depositors (query vault.get_total_shares)."

@@ -116,6 +116,19 @@ pub trait YieldAdapterInterface {
 
 Two adapters exist today, at `packages/contracts/blend-adapter/src/lib.rs` and `packages/contracts/defindex-adapter/src/lib.rs`.
 
+### Adapter deployment and initialization
+
+Both adapters set their vault, protocol, and USDC addresses in a `__constructor`, which the host runs inside the `CreateContract` operation that deploys the contract. Pass the arguments to `stellar contract deploy` after a `--` separator:
+
+```bash
+stellar contract deploy --network testnet --source $DEPLOYER --wasm-hash $HASH \
+  -- --vault $VAULT_ID --pool $BLEND_POOL_ID --usdc $USDC_ID
+```
+
+There is no separate initialization transaction, deliberately. An adapter's `initialize()` cannot authenticate its caller (there is no deployer identity in storage yet to check against), so while deploy and initialize were two transactions, anyone watching the ledger could land `initialize()` first with their own address as `vault` and become the only party able to move funds through that adapter (#505). Adding `require_auth()` to `initialize()` would not have closed this, since it would only prove the racer controls the address they passed in. A constructor removes the intervening ledger, so there is nothing to race.
+
+`initialize()` still exists on both adapters, so the ABI of adapters deployed from earlier WASM is unchanged and they can still be initialized by hand. On anything deployed from current WASM it always returns `AlreadyInitialized`, because the constructor has already written `VAULT_KEY`.
+
 ### BlendAdapter
 
 Supplies USDC into a Blend lending pool as collateral. `deposit()` calls the pool's `submit()` with a `REQUEST_SUPPLY` request; `withdraw()` calls `submit()` with a `REQUEST_WITHDRAW` request and has Blend deliver USDC straight to the recipient.

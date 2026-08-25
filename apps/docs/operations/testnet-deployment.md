@@ -42,7 +42,7 @@ DEPLOYER=my-deployer ADMIN=$ADMIN_ADDR ADMIN_KEY=my-admin bash scripts/deploy-te
 
 This builds all three contract crates (`vault`, `blend-adapter`, `defindex-adapter`), uploads and deploys the vault and a `BlendAdapter`, deploys a fresh mUSDC Stellar Asset Contract, and wires everything together:
 
-1. Initializes the `BlendAdapter` with the vault address, Blend's testnet pool, and USDC.
+1. Deploys the `BlendAdapter` with the vault address, Blend's testnet pool, and USDC passed as **constructor arguments**, so the adapter is wired inside the transaction that creates it. There is no separate adapter `initialize()` step: that gap was front-runnable (#505). See "Adapter deployment and initialization" in [`architecture/vault-contract.md`](../architecture/vault-contract.md).
 2. Initializes the vault with `admin`, `usdc`, `musdc`, and `adapter` (the just-deployed `BlendAdapter`), signed by `DEPLOYER` when `ADMIN` defaulted to it, or by `ADMIN_KEY` when `ADMIN` is a separate address. Without `ADMIN_KEY` this step is printed for the `ADMIN` key holder to run instead, leaving the vault claimable until they do (see "The `DEPLOYER` / `ADMIN` split" above).
 3. Sets the vault as mUSDC's admin, so it can mint/burn shares autonomously.
 
@@ -101,10 +101,12 @@ This is exactly the call chain the frontend uses to discover live APY (`vault.ge
 Adapter contracts have no in-place upgrade path. To get new adapter code (a bug fix, a new feature) onto an already-live vault, deploy a fresh adapter and swap the vault onto it:
 
 ```bash
+# VAULT_ID is required: the vault address is a constructor argument, baked into
+# the adapter permanently by the deploying transaction.
 VAULT_ID=$VAULT_CONTRACT_ID DEPLOYER=my-deployer bash scripts/redeploy-blend-adapter.sh
 ```
 
-This builds and deploys a new `BlendAdapter`, initializes it against the same vault/pool/USDC, and then **prints, but does not run**, the final `set_adapter` command:
+This builds and deploys a new `BlendAdapter`, wired to the same vault/pool/USDC through its constructor arguments, and then **prints, but does not run**, the final `set_adapter` command:
 
 ```bash
 stellar contract invoke --network testnet --source $ADMIN \
