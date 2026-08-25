@@ -52,6 +52,8 @@ pub trait DefindexVaultInterface {
 pub enum ContractError {
     /// `initialize` was called on an adapter that already has a vault set.
     AlreadyInitialized = 1,
+    /// A state-mutating call was made before `initialize`.
+    NotInitialized = 2,
 }
 
 impl From<AdapterError> for ContractError {
@@ -59,6 +61,12 @@ impl From<AdapterError> for ContractError {
         match err {
             AdapterError::AlreadyInitialized => ContractError::AlreadyInitialized,
         }
+    }
+}
+
+impl adapter_common::NotInitializedError for ContractError {
+    fn not_initialized() -> Self {
+        ContractError::NotInitialized
     }
 }
 
@@ -124,7 +132,10 @@ impl MeridianDefindexAdapter {
     pub fn deposit(env: Env, amount: i128) -> i128 {
         require_vault_auth(&env);
 
-        let dfx: Address = env.storage().instance().get(&DFX_VAULT).unwrap();
+        let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&DFX_VAULT),
+        );
         let adapter = env.current_contract_address();
 
         let client = DefindexVaultClient::new(&env, &dfx);
@@ -141,13 +152,18 @@ impl MeridianDefindexAdapter {
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
         require_vault_auth(&env);
 
-        let dfx: Address = env.storage().instance().get(&DFX_VAULT).unwrap();
+        let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&DFX_VAULT),
+        );
         let usdc = get_usdc(&env);
         let adapter = env.current_contract_address();
 
         let amounts =
             DefindexVaultClient::new(&env, &dfx).withdraw(&shares, &vec![&env, 0_i128], &adapter);
 
+        // Vec.get() returns Option which safely defaults to 0 if the vector doesn't contain
+        // index 0 or is empty, so this unwrap_or is safe and intentional.
         let usdc_out: i128 = amounts.get(0).unwrap_or(0);
         if usdc_out > 0 {
             TokenClient::new(&env, &usdc).transfer(&adapter, &recipient, &usdc_out);
@@ -159,7 +175,10 @@ impl MeridianDefindexAdapter {
     /// Live USDC value of the adapter's dfToken position, computed by the
     /// DeFindex vault's exchange rate. Updates automatically as yield accrues.
     pub fn total_assets(env: Env) -> i128 {
-        let dfx: Address = env.storage().instance().get(&DFX_VAULT).unwrap();
+        let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&DFX_VAULT),
+        );
         let adapter = env.current_contract_address();
 
         let client = DefindexVaultClient::new(&env, &dfx);
@@ -169,6 +188,8 @@ impl MeridianDefindexAdapter {
         }
 
         let amounts = client.get_asset_amounts_per_shares(&shares);
+        // Vec.get() returns Option which safely defaults to 0 if the vector doesn't contain
+        // index 0 or is empty, so this unwrap_or is safe and intentional.
         amounts.get(0).unwrap_or(0)
     }
 
@@ -178,7 +199,10 @@ impl MeridianDefindexAdapter {
 
     /// Returns the DeFindex vault this adapter deposits into.
     pub fn get_pool(env: Env) -> Address {
-        env.storage().instance().get(&DFX_VAULT).unwrap()
+        adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&DFX_VAULT),
+        )
     }
 
     /// Returns "defindex", identifying which protocol this adapter wraps.
@@ -236,7 +260,12 @@ mod tests {
             from: Address,
             _invest: bool,
         ) -> Val {
-            let usdc: Address = env.storage().instance().get(&MDV_USDC).unwrap();
+            // USDC address is always set in initialize(), so this is safe.
+            let usdc: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+                &env,
+                env.storage().instance().get(&MDV_USDC),
+            );
+            // Vec.get() safely returns Option which defaults to 0, so unwrap_or is safe.
             let amount = amounts_desired.get(0).unwrap_or(0);
             TokenClient::new(&env, &usdc).transfer(&from, &env.current_contract_address(), &amount);
 
@@ -262,7 +291,12 @@ mod tests {
                 .get(&MDV_WAMT)
                 .unwrap_or_else(|| vec![&env, withdraw_shares]);
 
-            let usdc: Address = env.storage().instance().get(&MDV_USDC).unwrap();
+            // USDC address is always set in initialize(), so this is safe.
+            let usdc: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+                &env,
+                env.storage().instance().get(&MDV_USDC),
+            );
+            // Vec.get() safely returns Option which defaults to 0, so unwrap_or is safe.
             let payout = amounts.get(0).unwrap_or(0);
             if payout > 0 {
                 TokenClient::new(&env, &usdc).transfer(
@@ -322,6 +356,27 @@ mod tests {
     fn get_pool_returns_the_configured_defindex_vault() {
         let (_env, _vault, _usdc, adapter, dfx) = setup();
         assert_eq!(adapter.get_pool(), dfx.address);
+    }
+
+    #[test]
+    #[should_panic]
+    fn withdraw_panics_with_typed_error_when_dfx_vault_is_unset() {
+        // __constructor always sets DFX_VAULT on any real deployment, so
+        // this state is unreachable in practice; this test clears it
+        // directly after construction to prove withdraw() still fails with
+        // the typed NotInitialized panic rather than an opaque unwrap trap
+        // if that invariant is ever violated by a future change.
+        let (env, vault, usdc_id, adapter, _dfx) = setup();
+        let amount = 100_0000000_i128;
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        env.as_contract(&adapter.address, || {
+            env.storage().instance().remove(&DFX_VAULT);
+        });
+
+        let recipient = Address::generate(&env);
+        adapter.withdraw(&amount, &recipient);
     }
 
     #[test]

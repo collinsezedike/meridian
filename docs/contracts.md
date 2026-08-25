@@ -42,6 +42,32 @@ For the full entry-point reference, error codes, and storage layout, see
 [`apps/docs/architecture/vault-contract.md`](../apps/docs/architecture/vault-contract.md),
 that page is the canonical, detailed reference.
 
+## Contract immutability
+
+None of Meridian's contracts — vault or adapters — expose an
+`update_current_contract_wasm` (or any other upgrade) entry point. This is a
+deliberate security property, not an omission: **once deployed, no one,
+including Meridian, can rewrite the contract logic.** For a savings product,
+users must be able to trust the code itself rather than its maintainers, and an
+immutable contract is the strongest way to offer that guarantee.
+
+An admin-gated `upgrade()` was considered and rejected. The admin key already
+concentrates meaningful authority (`set_adapter`, `migrate_adapter`, pause);
+adding code-upgrade power on top of it would compound the exact risk that the
+migration keeper's admin-authority analysis flags, in exchange for solving a
+problem that working tooling already handles:
+
+- Fixing a bug or shipping a feature means building and deploying a fresh
+  contract (`scripts/deploy-testnet.sh`), then pointing configuration at the
+  new deployment.
+- Moving live positions to the new contract does not require a manual
+  withdraw-then-deposit cycle per user: `migrate_adapter` moves the vault's
+  entire aggregate position to a new adapter atomically in one
+  slippage-bounded transaction.
+
+The cost of immutability is redeployment friction; the benefit is that no key
+holder can ever change what deployed user funds are governed by.
+
 ## Building and deploying
 
 ```bash
