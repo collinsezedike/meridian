@@ -4,8 +4,8 @@ use adapter_common::{
     get_usdc, require_not_initialized, require_vault_auth, store_vault_and_usdc, AdapterError,
 };
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, symbol_short, token::TokenClient, vec,
-    Address, Env, Symbol, Val, Vec,
+    contract, contractclient, contracterror, contractimpl, panic_with_error, symbol_short,
+    token::TokenClient, vec, Address, Env, Symbol, Val, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -54,6 +54,10 @@ pub enum ContractError {
     AlreadyInitialized = 1,
     /// A state-mutating call was made before `initialize`.
     NotInitialized = 2,
+    /// The DeFindex vault returned a response that cannot be interpreted as
+    /// a valid asset valuation (e.g. empty vector or missing element at
+    /// index 0).
+    MalformedProtocolResponse = 3,
 }
 
 impl From<AdapterError> for ContractError {
@@ -162,9 +166,10 @@ impl MeridianDefindexAdapter {
         let amounts =
             DefindexVaultClient::new(&env, &dfx).withdraw(&shares, &vec![&env, 0_i128], &adapter);
 
-        // Vec.get() returns Option which safely defaults to 0 if the vector doesn't contain
-        // index 0 or is empty, so this unwrap_or is safe and intentional.
-        let usdc_out: i128 = amounts.get(0).unwrap_or(0);
+        let usdc_out: i128 = match amounts.get(0) {
+            Some(value) => value,
+            None => panic_with_error!(&env, ContractError::MalformedProtocolResponse),
+        };
         if usdc_out > 0 {
             TokenClient::new(&env, &usdc).transfer(&adapter, &recipient, &usdc_out);
         }
@@ -188,9 +193,10 @@ impl MeridianDefindexAdapter {
         }
 
         let amounts = client.get_asset_amounts_per_shares(&shares);
-        // Vec.get() returns Option which safely defaults to 0 if the vector doesn't contain
-        // index 0 or is empty, so this unwrap_or is safe and intentional.
-        amounts.get(0).unwrap_or(0)
+        match amounts.get(0) {
+            Some(value) => value,
+            None => panic_with_error!(&env, ContractError::MalformedProtocolResponse),
+        }
     }
 
     /// No-op: DeFindex's total_assets() already prices live on every call
@@ -229,13 +235,14 @@ mod tests {
     // MockDefindexVault: a minimal DeFindex vault double. Tracks the adapter's
     // dfToken balance 1:1 with USDC deposited/withdrawn. `set_withdraw_amounts`
     // lets tests configure exactly what `withdraw` returns, so the
-    // `amounts.get(0).unwrap_or(0)` edge case in the real adapter (a
+    // MalformedProtocolResponse edge case in the real adapter (a
     // differently-shaped or empty return vector) can be exercised directly.
     // -----------------------------------------------------------------------
 
     const MDV_USDC: Symbol = symbol_short!("MDV_USDC");
     const MDV_SH: Symbol = symbol_short!("MDV_SH");
     const MDV_WAMT: Symbol = symbol_short!("MDV_WAMT");
+    const MDV_AAMT: Symbol = symbol_short!("MDV_AAMT");
 
     #[contract]
     pub struct MockDefindexVault;
@@ -251,6 +258,12 @@ mod tests {
         // differently-shaped (e.g. empty) response from DeFindex.
         pub fn set_withdraw_amounts(env: Env, amounts: Vec<i128>) {
             env.storage().instance().set(&MDV_WAMT, &amounts);
+        }
+
+        // Overrides what the next get_asset_amounts_per_shares() call returns,
+        // to simulate a malformed DeFindex response.
+        pub fn set_asset_amounts_per_shares(env: Env, amounts: Vec<i128>) {
+            env.storage().instance().set(&MDV_AAMT, &amounts);
         }
 
         pub fn deposit(
@@ -313,8 +326,11 @@ mod tests {
         }
 
         pub fn get_asset_amounts_per_shares(env: Env, desired_shares: i128) -> Vec<i128> {
-            // 1:1 valuation, matching the deposit/withdraw rate used above.
-            vec![&env, desired_shares]
+            let amounts_override: Option<Vec<i128>> = env.storage().instance().get(&MDV_AAMT);
+            match amounts_override {
+                Some(amounts) => amounts,
+                None => vec![&env, desired_shares],
+            }
         }
     }
 
@@ -413,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn withdraw_returns_zero_when_defindex_returns_no_amounts() {
+    fn withdraw_errs_on_malformed_defindex_response() {
         let (env, vault, usdc_id, adapter, dfx) = setup();
         let amount = 100_0000000_i128;
 
@@ -421,15 +437,13 @@ mod tests {
         adapter.deposit(&amount);
 
         // Simulate a shape mismatch: DeFindex returns an empty vector instead
-        // of the expected [usdc_amount] — amounts.get(0).unwrap_or(0) must not
-        // panic, and no USDC should move.
+        // of the expected [usdc_amount] — withdraw() must fail loudly with
+        // MalformedProtocolResponse, not silently return zero.
         dfx.set_withdraw_amounts(&Vec::new(&env));
 
         let recipient = Address::generate(&env);
-        let usdc_out = adapter.withdraw(&amount, &recipient);
-
-        assert_eq!(usdc_out, 0);
-        assert_eq!(TokenClient::new(&env, &usdc_id).balance(&recipient), 0);
+        let result = adapter.try_withdraw(&amount, &recipient);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -450,6 +464,23 @@ mod tests {
         // deposited even though it's routed through get_asset_amounts_per_shares
         // rather than a self-tracked total.
         assert_eq!(adapter.total_assets(), amount);
+    }
+
+    #[test]
+    fn total_assets_errs_on_malformed_defindex_response() {
+        let (env, vault, usdc_id, adapter, dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        // Simulate a shape mismatch: DeFindex returns an empty vector instead
+        // of the expected [usdc_amount] — total_assets() must not silently
+        // return zero, which would cause massive share dilution on deposit.
+        dfx.set_asset_amounts_per_shares(&Vec::new(&env));
+
+        let result = adapter.try_total_assets();
+        assert!(result.is_err());
     }
 
     #[test]

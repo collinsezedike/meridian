@@ -136,6 +136,11 @@ pub enum ContractError {
     /// `transfer_admin` call has happened, or a previous nomination was
     /// already accepted).
     NoPendingAdmin = 16,
+    /// The adapter reported zero or negative total assets while the vault
+    /// still has shares outstanding, indicating a broken adapter or
+    /// malformed protocol response. Depositing would dilute all existing
+    /// holders.
+    AdapterReportedNoAssets = 17,
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +203,12 @@ impl MeridianVault {
 
         // Share price is based on the adapter's total assets (includes yield).
         let total_assets = AdapterClient::new(&env, &adapter_addr).total_assets();
+
+        // A held position that cannot be valued is an error, not a zero price.
+        // Minting here would dilute every existing holder.
+        if total_shares > 0 && total_assets <= 0 {
+            return Err(ContractError::AdapterReportedNoAssets);
+        }
 
         // shares_to_mint = amount * (total_shares + OFFSET) / (total_assets + OFFSET)
         // The virtual offset makes the first-deposit price 1 share = 1 stroop while
@@ -1915,6 +1926,27 @@ mod tests {
         // Burning just 2 vault shares now rounds down to 0 USDC out.
         let result = vault.try_withdraw(&user, &2_i128, &0_i128);
         assert_eq!(result, Err(Ok(ContractError::WithdrawalTooSmall)));
+    }
+
+    #[test]
+    fn deposit_fails_when_adapter_reports_zero_assets_with_shares_outstanding() {
+        // If the adapter reports zero total_assets while the vault has shares
+        // outstanding, the vault must reject the deposit rather than minting
+        // massively inflated shares (which would dilute all existing holders).
+        let (env, _admin, user, usdc_id, _musdc, adapter_id, vault) = setup();
+
+        let amount = 100_0000000_i128;
+        vault.deposit(&user, &amount);
+
+        // Drain the adapter's USDC balance to zero so total_assets() returns 0,
+        // simulating a malformed DeFindex response.
+        let drain_sink = Address::generate(&env);
+        TokenClient::new(&env, &usdc_id).transfer(&adapter_id, &drain_sink, &amount);
+
+        let user2 = Address::generate(&env);
+        StellarAssetClient::new(&env, &usdc_id).mint(&user2, &100_0000000_i128);
+        let result = vault.try_deposit(&user2, &100_0000000_i128);
+        assert_eq!(result, Err(Ok(ContractError::AdapterReportedNoAssets)));
     }
 
     // Acceptance-criteria tests for the refresh() cache mechanism -----------
