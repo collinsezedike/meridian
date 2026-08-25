@@ -200,6 +200,18 @@ impl MeridianVault {
             return Err(ContractError::DepositTooSmall);
         }
 
+        // A caller who currently holds no shares but still has Entry/Principal
+        // records is one who fully transferred a prior position away: the
+        // vault has no hook on mUSDC's built-in `transfer`, so those records
+        // were never cleared the way a full `withdraw()` clears them (see
+        // `get_principal`). Left in place, this deposit would be treated as a
+        // top-up onto a stale basis and entry time that belong to shares this
+        // caller no longer holds. Clearing them first makes this the fresh
+        // entry it actually is.
+        if TokenClient::new(&env, &musdc).balance(&caller) == 0 {
+            Self::clear_position_records(&env, &caller);
+        }
+
         // Pull USDC from caller directly to the adapter.
         // The adapter address is known at this point, and the intermediate
         // vault-owned balance is never used.
@@ -326,10 +338,7 @@ impl MeridianVault {
         // A full exit clears the entry time and cost basis so a later re-deposit
         // starts fresh.
         if remaining == 0 {
-            env.storage()
-                .persistent()
-                .remove(&DataKey::Entry(caller.clone()));
-            env.storage().persistent().remove(&principal_key);
+            Self::clear_position_records(&env, &caller);
         }
 
         Ok(usdc_out)
@@ -359,8 +368,17 @@ impl MeridianVault {
     /// if it deposited earlier and later transferred everything away, so a
     /// record left behind by a transfer-out is never reported as a live
     /// position.
+    ///
+    /// A zero-position holder with a leftover record here means the vault
+    /// never got to observe the transfer that emptied it (only `withdraw()`
+    /// clears eagerly; a plain `transfer()` gives the vault no hook at all).
+    /// This call is the first chance to notice, so it clears the record
+    /// before returning 0, rather than leaving it to resurface as a stale
+    /// basis/entry time if this address's balance later becomes nonzero
+    /// again through an unrelated deposit or transfer-in.
     pub fn get_entry_time(env: Env, address: Address) -> u64 {
         if Self::get_position(env.clone(), address.clone()) == 0 {
+            Self::clear_position_records(&env, &address);
             return 0;
         }
         let key = DataKey::Entry(address);
@@ -386,8 +404,14 @@ impl MeridianVault {
     ///
     /// Making basis follow a transfer needs a share token the vault controls
     /// the code of; see `apps/docs/architecture/vault.md`.
+    ///
+    /// Like `get_entry_time`, a zero-position holder found with a leftover
+    /// record here has one only because a plain `transfer()` emptied them
+    /// with no hook for the vault to clear it eagerly. Clears it now so a
+    /// later unrelated deposit or transfer-in can't inherit a stale basis.
     pub fn get_principal(env: Env, address: Address) -> i128 {
         if Self::get_position(env.clone(), address.clone()) == 0 {
+            Self::clear_position_records(&env, &address);
             return 0;
         }
         let key = DataKey::Principal(address);
@@ -592,6 +616,20 @@ impl MeridianVault {
             .instance()
             .get(&MUSDC)
             .ok_or(ContractError::NotInitialized)
+    }
+
+    /// Clears a holder's Entry/Principal records. The two are always
+    /// written and read together, so every caller of this helper clears
+    /// both rather than leaving one to go stale on its own (see
+    /// `get_principal`, `get_entry_time`, `deposit`, and `withdraw`'s
+    /// full-exit branch).
+    fn clear_position_records(env: &Env, address: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Entry(address.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Principal(address.clone()));
     }
 }
 
@@ -1280,6 +1318,59 @@ mod tests {
 
         assert_eq!(vault.get_entry_time(&user), 0);
         assert_eq!(vault.get_principal(&user), 0);
+    }
+
+    #[test]
+    fn a_full_transfer_out_lets_a_later_deposit_start_fresh() {
+        // The plain-transfer-out mirror of `a_full_exit_lets_a_later_deposit_
+        // start_fresh` (#504 follow-up review): unlike a full `withdraw()`,
+        // a plain `transfer()` gives the vault no hook to clear Entry/
+        // Principal at the moment it happens. Without deposit() checking the
+        // caller's balance itself, this re-deposit would mix its principal on
+        // top of the 100 USDC basis left behind by the transfer, and report
+        // the original entry time instead of its own.
+        let (env, _admin, user, _usdc, musdc_id, _adapter, vault) = setup();
+        let bob = Address::generate(&env);
+
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        vault.deposit(&user, &100_0000000_i128);
+        let shares = vault.get_position(&user);
+        TokenClient::new(&env, &musdc_id).transfer(&user, &bob, &shares);
+
+        env.ledger().with_mut(|li| li.timestamp = 2_000);
+        vault.deposit(&user, &50_0000000_i128);
+
+        assert_eq!(vault.get_entry_time(&user), 2_000);
+        assert_eq!(vault.get_principal(&user), 50_0000000_i128);
+    }
+
+    #[test]
+    fn a_transfer_in_after_a_cleared_transfer_out_reports_no_stale_basis() {
+        // A read while the holder was at zero (get_principal/get_entry_time,
+        // as any position fetch would trigger) heals the stale record left
+        // behind by the transfer-out. A later, unrelated transfer-in must
+        // then find nothing left to inherit, not the basis/entry time of the
+        // position this address held and gave up earlier.
+        let (env, _admin, user, _usdc, musdc_id, _adapter, vault) = setup();
+        let bob = Address::generate(&env);
+
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        vault.deposit(&user, &100_0000000_i128);
+        let shares = vault.get_position(&user);
+        TokenClient::new(&env, &musdc_id).transfer(&user, &bob, &shares);
+
+        // Any read while the position is at zero heals the stale record.
+        assert_eq!(vault.get_principal(&user), 0);
+        assert_eq!(vault.get_entry_time(&user), 0);
+
+        // bob transfers the same shares straight back to `user`, unrelated
+        // to the position `user` held and gave up earlier.
+        env.ledger().with_mut(|li| li.timestamp = 2_000);
+        TokenClient::new(&env, &musdc_id).transfer(&bob, &user, &shares);
+
+        assert_eq!(vault.get_position(&user), shares);
+        assert_eq!(vault.get_principal(&user), 0);
+        assert_eq!(vault.get_entry_time(&user), 0);
     }
 
     #[test]

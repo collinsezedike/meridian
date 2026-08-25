@@ -121,7 +121,7 @@ Cost basis and entry time are _history_, what was paid and when, not a current h
 The consequences are confined to reporting, and never to fund safety:
 
 - An address that received mUSDC by transfer reports a basis of `0`, meaning "nothing recorded", so its displayed yield is its full share value. It can withdraw the full position.
-- An address that transferred its position away reports `0` for both basis and entry time, because it holds nothing. The stale records stay in storage but are never reported.
+- An address that transferred its position away reports `0` for both basis and entry time, because it holds nothing. `get_principal`/`get_entry_time` clear the stale `Entry`/`Principal` records the first time either is called with the address at zero, rather than leaving them to resurface if the address's balance later becomes nonzero again from an unrelated deposit or transfer-in; `deposit()` does the same check on its own, so a re-deposit is never mixed with a stale basis from a position the caller already gave up, even if nothing read the address's position in between.
 - A partial transfer leaves the sender's remaining basis attached to their remaining shares, and retires it proportionally as they withdraw.
 
 Closing this properly means a share token whose code the vault controls, i.e. replacing the mUSDC SAC with a custom SEP-41 token that calls back into the vault on transfer so basis can be split pro-rata and entry time merged as a principal-weighted average. That is a new contract plus a redeployment and migration of the live share token, not a change to this one, and it is tracked separately rather than folded in here.
