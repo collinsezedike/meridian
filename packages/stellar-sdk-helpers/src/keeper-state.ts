@@ -33,7 +33,7 @@
 // an assumption. See apps/docs/operations/migration-keeper.md for the state
 // machine.
 
-import { withRaceTimeout } from "@meridian/shared";
+import { withRaceTimeout, withRetry } from "@meridian/shared";
 import {
   errorMessage,
   parsePositiveInt,
@@ -57,6 +57,15 @@ export const DEFAULT_CLAIM_TTL_MS = 60_000;
 // past the platform's maxDuration, and the worst moment for that is right
 // after a transaction was broadcast.
 export const DEFAULT_STORE_TIMEOUT_MS = 5_000;
+
+// Recording a signed transaction's hash (SubmissionLease.write) is retried
+// on a transient store failure rather than swallowed on the first error: a
+// swallowed failure here leaves the claim (short TTL, no hash) as the only
+// record of a transaction that is actually in flight, aging out on the
+// claim window instead of the transaction's real validity window and
+// letting a concurrent run rebroadcast it.
+const WRITE_RETRY_ATTEMPTS = 3;
+const WRITE_RETRY_BASE_DELAY_MS = 200;
 
 export interface SubmissionRecord {
   // null while a run has claimed the target but has not signed a
@@ -357,12 +366,18 @@ export class SubmissionLease {
    */
   private async write(hash: string, now = Date.now()): Promise<void> {
     if (!this.held) return;
+    const revision = this.held.revision;
     try {
-      const next = await this.store.replace(
-        this.key,
-        { hash, updatedAtMs: now },
-        this.submissionTtlMs,
-        this.held.revision
+      const next = await withRetry(
+        () =>
+          this.store.replace(
+            this.key,
+            { hash, updatedAtMs: now },
+            this.submissionTtlMs,
+            revision
+          ),
+        WRITE_RETRY_ATTEMPTS,
+        WRITE_RETRY_BASE_DELAY_MS
       );
       if (!next) {
         // Lost the lease (claim expired and someone else took it). Stop
@@ -376,11 +391,19 @@ export class SubmissionLease {
       }
       this.held = next;
     } catch (err) {
-      this.logger.warn("[keeper-state] could not record submission", {
-        ...this.context,
-        hash,
-        error: errorMessage(err),
-      });
+      // Every retry failed: the claim (short TTL, no hash) is still what's
+      // stored, so this signed, in-flight transaction is only covered until
+      // the much shorter claim window ages out, not its real validity
+      // window. Logged loudly since a concurrent run that outlives the
+      // claim TTL will read "expired" and rebroadcast.
+      this.logger.warn(
+        "[keeper-state] could not record submission after retries; the claim covering it will age out early",
+        {
+          ...this.context,
+          hash,
+          error: errorMessage(err),
+        }
+      );
     }
   }
 

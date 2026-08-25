@@ -416,6 +416,31 @@ describe("SubmissionLease", () => {
     ).resolves.toBeUndefined();
     expect(log.warn).toHaveBeenCalledTimes(2);
   });
+
+  it("retries recording the signed hash instead of giving up on the first transient failure", async () => {
+    // A swallowed one-shot failure here would leave the claim (short TTL, no
+    // hash) as the only record of an actually in-flight transaction, aging
+    // out well before the transaction itself could no longer land.
+    const log = logger();
+    const inner = await seeded();
+    let attempts = 0;
+    const store: KeeperStateStore = {
+      ...inner,
+      replace: async (...args) => {
+        attempts += 1;
+        if (attempts < 3) throw new Error("KV write failed");
+        return inner.replace(...args);
+      },
+    };
+    const acquired = await acquire(store, log);
+    if (!("lease" in acquired)) throw new Error("expected a lease");
+
+    await acquired.lease.hooks.onSigned?.("SIGNED");
+
+    expect(attempts).toBe(3);
+    expect((await store.get(KEY))?.record.hash).toBe("SIGNED");
+    expect(log.warn).not.toHaveBeenCalled();
+  });
 });
 
 describe("createInMemoryKeeperStateStore", () => {
