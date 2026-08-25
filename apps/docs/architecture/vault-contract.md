@@ -31,6 +31,8 @@ There is no `route_to` or protocol-selection parameter on `deposit`. Which proto
 
 Stamps `Entry(caller)` with the current ledger timestamp on the caller's first deposit. Top-ups do not reset the original entry time. Accumulates `Principal(caller)` with `amount` on every deposit.
 
+**Known constraint — dust-position entry-time gaming:** "first deposit" here means `Balance(caller)` was `0` going in, not "no history." A partial withdrawal that leaves a non-zero dust balance (e.g. 1 stroop) does not clear `Entry(caller)` — only a full exit does (see `withdraw()` below) — so a much later, much larger top-up on that dust position is not a first deposit and inherits the original entry timestamp instead of getting a fresh one. This has no effect today: no entry point reads `Entry`/`get_entry_time` for anything but display. It becomes directly exploitable the moment any duration-gated feature (a fee discount, a loyalty multiplier, vesting) is built against raw `entry_time`. Do not build such a feature against the raw value without first switching the write path to a size-weighted average timestamp on top-up, so a large late deposit meaningfully pulls `entry_time` forward rather than inheriting the original stamp wholesale.
+
 ### `withdraw(caller, shares) -> Result<i128, ContractError>`
 
 Burns `shares` mUSDC from the caller, redeems the proportional adapter position, and returns the resulting USDC. Fails with `ZeroAmount` if `shares <= 0`, `NoSharesOutstanding` if the vault has no shares outstanding at all, `InsufficientShares` if the caller doesn't hold enough mUSDC, or `WithdrawalTooSmall` if the redemption rounds down to zero USDC.
@@ -48,7 +50,7 @@ Returns the mUSDC balance recorded for `address` in persistent contract storage.
 
 ### `get_entry_time(address) -> u64`
 
-Returns the ledger timestamp of the address's current deposit, or `0` if it holds no position. Cleared on a full withdrawal so a later re-deposit starts a fresh clock.
+Returns the ledger timestamp of the address's current deposit, or `0` if it holds no position. Cleared on a full withdrawal so a later re-deposit starts a fresh clock — but *not* on a partial withdrawal that leaves dust; see the constraint noted under `deposit()` above. Currently read only for display; nothing on-chain or off-chain conditions behavior on it.
 
 ### `get_principal(address) -> i128`
 
