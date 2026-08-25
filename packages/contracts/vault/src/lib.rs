@@ -1,8 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
-    symbol_short,
+    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short,
     token::{self, TokenClient},
     Address, Env, Symbol,
 };
@@ -556,11 +555,20 @@ impl MeridianVault {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        contract, contractimpl, symbol_short,
+        contract, contractimpl, panic_with_error, symbol_short,
         testutils::{Address as _, Ledger as _},
         token::{StellarAssetClient, TokenClient},
         Address, Env, Symbol,
     };
+
+    // Reads an instance-storage value, panicking with the typed
+    // NotInitialized error instead of an opaque unwrap trap if it's unset.
+    // Collapses what was previously a repeated 6-line
+    // `unwrap_or_else(|| { panic_with_error!(...) })` block, used across
+    // these mock adapters, into one call site per use.
+    fn get_or_not_initialized<T>(env: &Env, value: Option<T>) -> T {
+        value.unwrap_or_else(|| panic_with_error!(env, ContractError::NotInitialized))
+    }
 
     // -----------------------------------------------------------------------
     // Shared logic for the proportional, live-priced mock adapters below
@@ -629,25 +637,15 @@ mod tests {
 
         pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
             // USDC address is always set in initialize(), so this is safe.
-            let usdc: Address = env
-                .storage()
-                .instance()
-                .get(&MA_USDC)
-                .unwrap_or_else(|| {
-                    panic_with_error!(&env, ContractError::NotInitialized);
-                });
+            let usdc: Address =
+                get_or_not_initialized(&env, env.storage().instance().get(&MA_USDC));
             mock_proportional_withdraw(&env, &usdc, &MA_SH, shares, &recipient)
         }
 
         pub fn total_assets(env: Env) -> i128 {
             // USDC address is always set in initialize(), so this is safe.
-            let usdc: Address = env
-                .storage()
-                .instance()
-                .get(&MA_USDC)
-                .unwrap_or_else(|| {
-                    panic_with_error!(&env, ContractError::NotInitialized);
-                });
+            let usdc: Address =
+                get_or_not_initialized(&env, env.storage().instance().get(&MA_USDC));
             mock_total_assets(&env, &usdc)
         }
 
@@ -682,13 +680,8 @@ mod tests {
 
             pub fn deposit(env: Env, amount: i128) -> i128 {
                 // USDC address is always set in initialize(), so this is safe.
-                let usdc: Address = env
-                    .storage()
-                    .instance()
-                    .get(&LA_USDC)
-                    .unwrap_or_else(|| {
-                        panic_with_error!(&env, ContractError::NotInitialized);
-                    });
+                let usdc: Address =
+                    get_or_not_initialized(&env, env.storage().instance().get(&LA_USDC));
                 let half = amount / 2;
                 let sink = Address::generate(&env);
                 TokenClient::new(&env, &usdc).transfer(
@@ -703,25 +696,15 @@ mod tests {
 
             pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
                 // USDC address is always set in initialize(), so this is safe.
-                let usdc: Address = env
-                    .storage()
-                    .instance()
-                    .get(&LA_USDC)
-                    .unwrap_or_else(|| {
-                        panic_with_error!(&env, ContractError::NotInitialized);
-                    });
+                let usdc: Address =
+                    get_or_not_initialized(&env, env.storage().instance().get(&LA_USDC));
                 mock_proportional_withdraw(&env, &usdc, &LA_SH, shares, &recipient)
             }
 
             pub fn total_assets(env: Env) -> i128 {
                 // USDC address is always set in initialize(), so this is safe.
-                let usdc: Address = env
-                    .storage()
-                    .instance()
-                    .get(&LA_USDC)
-                    .unwrap_or_else(|| {
-                        panic_with_error!(&env, ContractError::NotInitialized);
-                    });
+                let usdc: Address =
+                    get_or_not_initialized(&env, env.storage().instance().get(&LA_USDC));
                 mock_total_assets(&env, &usdc)
             }
 
@@ -764,25 +747,15 @@ mod tests {
 
             pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
                 // USDC address is always set in initialize(), so this is safe.
-                let usdc: Address = env
-                    .storage()
-                    .instance()
-                    .get(&ZS_USDC)
-                    .unwrap_or_else(|| {
-                        panic_with_error!(&env, ContractError::NotInitialized);
-                    });
+                let usdc: Address =
+                    get_or_not_initialized(&env, env.storage().instance().get(&ZS_USDC));
                 mock_proportional_withdraw(&env, &usdc, &ZS_SH, shares, &recipient)
             }
 
             pub fn total_assets(env: Env) -> i128 {
                 // USDC address is always set in initialize(), so this is safe.
-                let usdc: Address = env
-                    .storage()
-                    .instance()
-                    .get(&ZS_USDC)
-                    .unwrap_or_else(|| {
-                        panic_with_error!(&env, ContractError::NotInitialized);
-                    });
+                let usdc: Address =
+                    get_or_not_initialized(&env, env.storage().instance().get(&ZS_USDC));
                 mock_total_assets(&env, &usdc)
             }
 
@@ -831,13 +804,8 @@ mod tests {
                 // intentionally uses live pricing so the test below can
                 // isolate what refresh() itself does or doesn't affect.
                 // USDC address is always set in initialize(), so this is safe.
-                let usdc: Address = env
-                    .storage()
-                    .instance()
-                    .get(&CM_USDC)
-                    .unwrap_or_else(|| {
-                        panic_with_error!(&env, ContractError::NotInitialized);
-                    });
+                let usdc: Address =
+                    get_or_not_initialized(&env, env.storage().instance().get(&CM_USDC));
                 let total_sh: i128 = env.storage().instance().get(&CM_SH).unwrap_or(0);
                 let balance =
                     TokenClient::new(&env, &usdc).balance(&env.current_contract_address());
@@ -868,13 +836,8 @@ mod tests {
 
             pub fn refresh(env: Env) {
                 // USDC address is always set in initialize(), so this is safe.
-                let usdc: Address = env
-                    .storage()
-                    .instance()
-                    .get(&CM_USDC)
-                    .unwrap_or_else(|| {
-                        panic_with_error!(&env, ContractError::NotInitialized);
-                    });
+                let usdc: Address =
+                    get_or_not_initialized(&env, env.storage().instance().get(&CM_USDC));
                 let balance =
                     TokenClient::new(&env, &usdc).balance(&env.current_contract_address());
                 env.storage().instance().set(&CM_TOTAL, &balance);

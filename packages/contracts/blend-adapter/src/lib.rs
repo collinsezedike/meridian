@@ -45,6 +45,18 @@ fn b_tokens_to_usdc(b_tokens: i128, b_rate: i128) -> Result<i128, ContractError>
         .ok_or(ContractError::Overflow)
 }
 
+// Reads an instance-storage value, panicking with the typed NotInitialized
+// error instead of an opaque unwrap trap if it's unset. In practice this
+// branch is unreachable on any contract deployed via __constructor (see its
+// doc comment), since POOL_KEY is always set before any other method is
+// reachable; this exists as a defensive, correctly-typed fallback rather
+// than a path expected to actually fire. Collapses what was previously a
+// repeated 6-line `unwrap_or_else(|| { panic_with_error!(...) })` block into
+// one call site per use.
+fn get_or_not_initialized<T>(env: &Env, value: Option<T>) -> T {
+    value.unwrap_or_else(|| panic_with_error!(env, ContractError::NotInitialized))
+}
+
 // ---------------------------------------------------------------------------
 // Blend pool interface types
 // ---------------------------------------------------------------------------
@@ -209,7 +221,7 @@ impl MeridianBlendAdapter {
     pub fn deposit(env: Env, amount: i128) -> i128 {
         require_vault_auth(&env);
 
-        let pool: Address = env.storage().instance().get(&POOL_KEY).unwrap();
+        let pool: Address = get_or_not_initialized(&env, env.storage().instance().get(&POOL_KEY));
         let usdc = get_usdc(&env);
 
         let adapter = env.current_contract_address();
@@ -279,7 +291,7 @@ impl MeridianBlendAdapter {
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
         require_vault_auth(&env);
 
-        let pool: Address = env.storage().instance().get(&POOL_KEY).unwrap();
+        let pool: Address = get_or_not_initialized(&env, env.storage().instance().get(&POOL_KEY));
         let usdc = get_usdc(&env);
 
         let adapter = env.current_contract_address();
@@ -336,7 +348,11 @@ impl MeridianBlendAdapter {
     /// (`get_positions`) rather than self-tracking it, so there is no risk of
     /// drift between the stored total and Blend's actual accounting.
     pub fn accrue(env: Env) -> Result<(), ContractError> {
-        let pool: Address = env.storage().instance().get(&POOL_KEY).unwrap();
+        let pool: Address = env
+            .storage()
+            .instance()
+            .get(&POOL_KEY)
+            .ok_or(ContractError::NotInitialized)?;
         let usdc = get_usdc(&env);
         let adapter = env.current_contract_address();
 
@@ -356,6 +372,17 @@ impl MeridianBlendAdapter {
     /// last call, satisfying the shared YieldAdapterInterface contract.
     /// Currently just calls accrue(), which remains a public,
     /// permissionless entry point in its own right.
+    ///
+    /// Discards accrue()'s Result rather than propagating it: the shared
+    /// adapter interface's refresh() has no error return, so surfacing a
+    /// failure here would mean changing that interface's ABI across both
+    /// adapters and the vault's calls into it. In practice the only error
+    /// accrue() can return here, NotInitialized, is unreachable on any
+    /// contract deployed via __constructor (see its doc comment), so nothing
+    /// is being silently lost on a real deployment; Overflow is the one
+    /// error that could genuinely fire, and a caller relying on refresh()
+    /// alone would not see it. Call accrue() directly instead of refresh()
+    /// where the Result matters.
     #[allow(unused_must_use)]
     pub fn refresh(env: Env) {
         Self::accrue(env);
@@ -373,12 +400,7 @@ impl MeridianBlendAdapter {
 
     /// Returns the Blend pool this adapter supplies to.
     pub fn get_pool(env: Env) -> Address {
-        env.storage()
-            .instance()
-            .get(&POOL_KEY)
-            .unwrap_or_else(|| {
-                panic_with_error!(&env, ContractError::NotInitialized);
-            })
+        get_or_not_initialized(&env, env.storage().instance().get(&POOL_KEY))
     }
 
     /// Returns "blend", identifying which protocol this adapter wraps.
@@ -447,20 +469,9 @@ mod tests {
             requests: Vec<Request>,
         ) -> Val {
             // Scalar and rate are always set in initialize(), so these are safe.
-            let scalar: i128 = env
-                .storage()
-                .instance()
-                .get(&M_SCALAR)
-                .unwrap_or_else(|| {
-                    panic_with_error!(&env, ContractError::NotInitialized);
-                });
-            let rate: i128 = env
-                .storage()
-                .instance()
-                .get(&M_RATE)
-                .unwrap_or_else(|| {
-                    panic_with_error!(&env, ContractError::NotInitialized);
-                });
+            let scalar: i128 =
+                get_or_not_initialized(&env, env.storage().instance().get(&M_SCALAR));
+            let rate: i128 = get_or_not_initialized(&env, env.storage().instance().get(&M_RATE));
             let mut collateral: i128 = env.storage().instance().get(&M_COLLAT).unwrap_or(0);
 
             for req in requests.iter() {
@@ -486,32 +497,15 @@ mod tests {
 
         pub fn get_reserve(env: Env, asset: Address) -> Reserve {
             // Scalar and rate are always set in initialize(), so these are safe.
-            let internal_scalar: i128 = env
-                .storage()
-                .instance()
-                .get(&M_SCALAR)
-                .unwrap_or_else(|| {
-                    panic_with_error!(&env, ContractError::NotInitialized);
-                });
+            let internal_scalar: i128 =
+                get_or_not_initialized(&env, env.storage().instance().get(&M_SCALAR));
             let scalar: i128 = env
                 .storage()
                 .instance()
                 .get(&M_REP_SCL)
                 .unwrap_or(internal_scalar);
-            let rate: i128 = env
-                .storage()
-                .instance()
-                .get(&M_RATE)
-                .unwrap_or_else(|| {
-                    panic_with_error!(&env, ContractError::NotInitialized);
-                });
-            let index: u32 = env
-                .storage()
-                .instance()
-                .get(&M_INDEX)
-                .unwrap_or_else(|| {
-                    panic_with_error!(&env, ContractError::NotInitialized);
-                });
+            let rate: i128 = get_or_not_initialized(&env, env.storage().instance().get(&M_RATE));
+            let index: u32 = get_or_not_initialized(&env, env.storage().instance().get(&M_INDEX));
             Reserve {
                 asset,
                 config: ReserveConfig {
@@ -544,13 +538,7 @@ mod tests {
 
         pub fn get_positions(env: Env, _address: Address) -> Positions {
             // Index is always set in initialize(), so this is safe.
-            let index: u32 = env
-                .storage()
-                .instance()
-                .get(&M_INDEX)
-                .unwrap_or_else(|| {
-                    panic_with_error!(&env, ContractError::NotInitialized);
-                });
+            let index: u32 = get_or_not_initialized(&env, env.storage().instance().get(&M_INDEX));
             // Collateral safely defaults to 0 if not set yet, which is correct for a fresh adapter.
             let collateral: i128 = env.storage().instance().get(&M_COLLAT).unwrap_or(0);
             let mut collateral_map = Map::new(&env);

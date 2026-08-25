@@ -14,6 +14,18 @@ use soroban_sdk::{
 
 const DFX_VAULT: Symbol = symbol_short!("DFXVAULT");
 
+// Reads an instance-storage value, panicking with the typed NotInitialized
+// error instead of an opaque unwrap trap if it's unset. In practice this
+// branch is unreachable on any contract deployed via __constructor (see its
+// doc comment), since DFX_VAULT is always set before any other method is
+// reachable; this exists as a defensive, correctly-typed fallback rather
+// than a path expected to actually fire. Collapses what was previously a
+// repeated 6-line `unwrap_or_else(|| { panic_with_error!(...) })` block into
+// one call site per use.
+fn get_or_not_initialized<T>(env: &Env, value: Option<T>) -> T {
+    value.unwrap_or_else(|| panic_with_error!(env, ContractError::NotInitialized))
+}
+
 // ---------------------------------------------------------------------------
 // DeFindex vault interface
 // ---------------------------------------------------------------------------
@@ -126,13 +138,7 @@ impl MeridianDefindexAdapter {
     pub fn deposit(env: Env, amount: i128) -> i128 {
         require_vault_auth(&env);
 
-        let dfx: Address = env
-            .storage()
-            .instance()
-            .get(&DFX_VAULT)
-            .unwrap_or_else(|| {
-                panic_with_error!(&env, ContractError::NotInitialized);
-            });
+        let dfx: Address = get_or_not_initialized(&env, env.storage().instance().get(&DFX_VAULT));
         let adapter = env.current_contract_address();
 
         let client = DefindexVaultClient::new(&env, &dfx);
@@ -149,7 +155,7 @@ impl MeridianDefindexAdapter {
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
         require_vault_auth(&env);
 
-        let dfx: Address = env.storage().instance().get(&DFX_VAULT).unwrap();
+        let dfx: Address = get_or_not_initialized(&env, env.storage().instance().get(&DFX_VAULT));
         let usdc = get_usdc(&env);
         let adapter = env.current_contract_address();
 
@@ -169,13 +175,7 @@ impl MeridianDefindexAdapter {
     /// Live USDC value of the adapter's dfToken position, computed by the
     /// DeFindex vault's exchange rate. Updates automatically as yield accrues.
     pub fn total_assets(env: Env) -> i128 {
-        let dfx: Address = env
-            .storage()
-            .instance()
-            .get(&DFX_VAULT)
-            .unwrap_or_else(|| {
-                panic_with_error!(&env, ContractError::NotInitialized);
-            });
+        let dfx: Address = get_or_not_initialized(&env, env.storage().instance().get(&DFX_VAULT));
         let adapter = env.current_contract_address();
 
         let client = DefindexVaultClient::new(&env, &dfx);
@@ -196,12 +196,7 @@ impl MeridianDefindexAdapter {
 
     /// Returns the DeFindex vault this adapter deposits into.
     pub fn get_pool(env: Env) -> Address {
-        env.storage()
-            .instance()
-            .get(&DFX_VAULT)
-            .unwrap_or_else(|| {
-                panic_with_error!(&env, ContractError::NotInitialized);
-            })
+        get_or_not_initialized(&env, env.storage().instance().get(&DFX_VAULT))
     }
 
     /// Returns "defindex", identifying which protocol this adapter wraps.
@@ -260,13 +255,8 @@ mod tests {
             _invest: bool,
         ) -> Val {
             // USDC address is always set in initialize(), so this is safe.
-            let usdc: Address = env
-                .storage()
-                .instance()
-                .get(&MDV_USDC)
-                .unwrap_or_else(|| {
-                    panic_with_error!(&env, ContractError::NotInitialized);
-                });
+            let usdc: Address =
+                get_or_not_initialized(&env, env.storage().instance().get(&MDV_USDC));
             // Vec.get() safely returns Option which defaults to 0, so unwrap_or is safe.
             let amount = amounts_desired.get(0).unwrap_or(0);
             TokenClient::new(&env, &usdc).transfer(&from, &env.current_contract_address(), &amount);
@@ -294,13 +284,8 @@ mod tests {
                 .unwrap_or_else(|| vec![&env, withdraw_shares]);
 
             // USDC address is always set in initialize(), so this is safe.
-            let usdc: Address = env
-                .storage()
-                .instance()
-                .get(&MDV_USDC)
-                .unwrap_or_else(|| {
-                    panic_with_error!(&env, ContractError::NotInitialized);
-                });
+            let usdc: Address =
+                get_or_not_initialized(&env, env.storage().instance().get(&MDV_USDC));
             // Vec.get() safely returns Option which defaults to 0, so unwrap_or is safe.
             let payout = amounts.get(0).unwrap_or(0);
             if payout > 0 {
