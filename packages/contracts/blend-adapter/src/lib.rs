@@ -45,18 +45,6 @@ fn b_tokens_to_usdc(b_tokens: i128, b_rate: i128) -> Result<i128, ContractError>
         .ok_or(ContractError::Overflow)
 }
 
-// Reads an instance-storage value, panicking with the typed NotInitialized
-// error instead of an opaque unwrap trap if it's unset. In practice this
-// branch is unreachable on any contract deployed via __constructor (see its
-// doc comment), since POOL_KEY is always set before any other method is
-// reachable; this exists as a defensive, correctly-typed fallback rather
-// than a path expected to actually fire. Collapses what was previously a
-// repeated 6-line `unwrap_or_else(|| { panic_with_error!(...) })` block into
-// one call site per use.
-fn get_or_not_initialized<T>(env: &Env, value: Option<T>) -> T {
-    value.unwrap_or_else(|| panic_with_error!(env, ContractError::NotInitialized))
-}
-
 // ---------------------------------------------------------------------------
 // Blend pool interface types
 // ---------------------------------------------------------------------------
@@ -157,6 +145,12 @@ impl From<AdapterError> for ContractError {
     }
 }
 
+impl adapter_common::NotInitializedError for ContractError {
+    fn not_initialized() -> Self {
+        ContractError::NotInitialized
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
@@ -221,7 +215,10 @@ impl MeridianBlendAdapter {
     pub fn deposit(env: Env, amount: i128) -> i128 {
         require_vault_auth(&env);
 
-        let pool: Address = get_or_not_initialized(&env, env.storage().instance().get(&POOL_KEY));
+        let pool: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&POOL_KEY),
+        );
         let usdc = get_usdc(&env);
 
         let adapter = env.current_contract_address();
@@ -291,7 +288,10 @@ impl MeridianBlendAdapter {
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
         require_vault_auth(&env);
 
-        let pool: Address = get_or_not_initialized(&env, env.storage().instance().get(&POOL_KEY));
+        let pool: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&POOL_KEY),
+        );
         let usdc = get_usdc(&env);
 
         let adapter = env.current_contract_address();
@@ -373,19 +373,18 @@ impl MeridianBlendAdapter {
     /// Currently just calls accrue(), which remains a public,
     /// permissionless entry point in its own right.
     ///
-    /// Discards accrue()'s Result rather than propagating it: the shared
-    /// adapter interface's refresh() has no error return, so surfacing a
-    /// failure here would mean changing that interface's ABI across both
-    /// adapters and the vault's calls into it. In practice the only error
-    /// accrue() can return here, NotInitialized, is unreachable on any
-    /// contract deployed via __constructor (see its doc comment), so nothing
-    /// is being silently lost on a real deployment; Overflow is the one
-    /// error that could genuinely fire, and a caller relying on refresh()
-    /// alone would not see it. Call accrue() directly instead of refresh()
-    /// where the Result matters.
-    #[allow(unused_must_use)]
+    /// Panics on failure rather than returning a Result: the shared adapter
+    /// interface's refresh() has no error return, so propagating accrue()'s
+    /// Result would mean changing that interface's ABI across both adapters
+    /// and the vault's calls into them. Panicking here instead of silently
+    /// discarding the error preserves this function's pre-existing
+    /// fail-loud behaviour (accrue()'s storage read used to be a bare
+    /// unwrap(), which panicked directly) rather than downgrading a real
+    /// failure into a silent no-op success.
     pub fn refresh(env: Env) {
-        Self::accrue(env);
+        if let Err(err) = Self::accrue(env.clone()) {
+            panic_with_error!(&env, err);
+        }
     }
 
     /// Returns the cached USDC value of the adapter's Blend position. Reflects
@@ -400,7 +399,10 @@ impl MeridianBlendAdapter {
 
     /// Returns the Blend pool this adapter supplies to.
     pub fn get_pool(env: Env) -> Address {
-        get_or_not_initialized(&env, env.storage().instance().get(&POOL_KEY))
+        adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&POOL_KEY),
+        )
     }
 
     /// Returns "blend", identifying which protocol this adapter wraps.
@@ -469,9 +471,14 @@ mod tests {
             requests: Vec<Request>,
         ) -> Val {
             // Scalar and rate are always set in initialize(), so these are safe.
-            let scalar: i128 =
-                get_or_not_initialized(&env, env.storage().instance().get(&M_SCALAR));
-            let rate: i128 = get_or_not_initialized(&env, env.storage().instance().get(&M_RATE));
+            let scalar: i128 = adapter_common::get_or_not_initialized::<_, ContractError>(
+                &env,
+                env.storage().instance().get(&M_SCALAR),
+            );
+            let rate: i128 = adapter_common::get_or_not_initialized::<_, ContractError>(
+                &env,
+                env.storage().instance().get(&M_RATE),
+            );
             let mut collateral: i128 = env.storage().instance().get(&M_COLLAT).unwrap_or(0);
 
             for req in requests.iter() {
@@ -497,15 +504,23 @@ mod tests {
 
         pub fn get_reserve(env: Env, asset: Address) -> Reserve {
             // Scalar and rate are always set in initialize(), so these are safe.
-            let internal_scalar: i128 =
-                get_or_not_initialized(&env, env.storage().instance().get(&M_SCALAR));
+            let internal_scalar: i128 = adapter_common::get_or_not_initialized::<_, ContractError>(
+                &env,
+                env.storage().instance().get(&M_SCALAR),
+            );
             let scalar: i128 = env
                 .storage()
                 .instance()
                 .get(&M_REP_SCL)
                 .unwrap_or(internal_scalar);
-            let rate: i128 = get_or_not_initialized(&env, env.storage().instance().get(&M_RATE));
-            let index: u32 = get_or_not_initialized(&env, env.storage().instance().get(&M_INDEX));
+            let rate: i128 = adapter_common::get_or_not_initialized::<_, ContractError>(
+                &env,
+                env.storage().instance().get(&M_RATE),
+            );
+            let index: u32 = adapter_common::get_or_not_initialized::<_, ContractError>(
+                &env,
+                env.storage().instance().get(&M_INDEX),
+            );
             Reserve {
                 asset,
                 config: ReserveConfig {
@@ -538,7 +553,10 @@ mod tests {
 
         pub fn get_positions(env: Env, _address: Address) -> Positions {
             // Index is always set in initialize(), so this is safe.
-            let index: u32 = get_or_not_initialized(&env, env.storage().instance().get(&M_INDEX));
+            let index: u32 = adapter_common::get_or_not_initialized::<_, ContractError>(
+                &env,
+                env.storage().instance().get(&M_INDEX),
+            );
             // Collateral safely defaults to 0 if not set yet, which is correct for a fresh adapter.
             let collateral: i128 = env.storage().instance().get(&M_COLLAT).unwrap_or(0);
             let mut collateral_map = Map::new(&env);
@@ -638,6 +656,34 @@ mod tests {
 
         assert_eq!(adapter.try_accrue(), Ok(Ok(())));
         assert_eq!(adapter.total_assets(), amount + amount / 10);
+    }
+
+    #[test]
+    fn accrue_returns_typed_error_when_pool_key_is_unset() {
+        // __constructor always sets POOL_KEY on any real deployment, so this
+        // state is unreachable in practice; this test clears it directly
+        // after construction to prove accrue() still fails with a typed
+        // error rather than an opaque unwrap panic if that invariant is ever
+        // violated by a future change.
+        let (env, _vault, _usdc, adapter, _pool) = setup();
+        env.as_contract(&adapter.address, || {
+            env.storage().instance().remove(&POOL_KEY);
+        });
+
+        assert_eq!(adapter.try_accrue(), Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
+    #[should_panic]
+    fn refresh_panics_when_pool_key_is_unset() {
+        // refresh() has no error return (shared adapter interface), so it
+        // must panic rather than silently no-op when accrue() fails.
+        let (env, _vault, _usdc, adapter, _pool) = setup();
+        env.as_contract(&adapter.address, || {
+            env.storage().instance().remove(&POOL_KEY);
+        });
+
+        adapter.refresh();
     }
 
     #[test]

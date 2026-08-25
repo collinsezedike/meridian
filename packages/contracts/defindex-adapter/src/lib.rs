@@ -4,8 +4,8 @@ use adapter_common::{
     get_usdc, require_not_initialized, require_vault_auth, store_vault_and_usdc, AdapterError,
 };
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, panic_with_error, symbol_short,
-    token::TokenClient, vec, Address, Env, Symbol, Val, Vec,
+    contract, contractclient, contracterror, contractimpl, symbol_short, token::TokenClient, vec,
+    Address, Env, Symbol, Val, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -13,18 +13,6 @@ use soroban_sdk::{
 // ---------------------------------------------------------------------------
 
 const DFX_VAULT: Symbol = symbol_short!("DFXVAULT");
-
-// Reads an instance-storage value, panicking with the typed NotInitialized
-// error instead of an opaque unwrap trap if it's unset. In practice this
-// branch is unreachable on any contract deployed via __constructor (see its
-// doc comment), since DFX_VAULT is always set before any other method is
-// reachable; this exists as a defensive, correctly-typed fallback rather
-// than a path expected to actually fire. Collapses what was previously a
-// repeated 6-line `unwrap_or_else(|| { panic_with_error!(...) })` block into
-// one call site per use.
-fn get_or_not_initialized<T>(env: &Env, value: Option<T>) -> T {
-    value.unwrap_or_else(|| panic_with_error!(env, ContractError::NotInitialized))
-}
 
 // ---------------------------------------------------------------------------
 // DeFindex vault interface
@@ -73,6 +61,12 @@ impl From<AdapterError> for ContractError {
         match err {
             AdapterError::AlreadyInitialized => ContractError::AlreadyInitialized,
         }
+    }
+}
+
+impl adapter_common::NotInitializedError for ContractError {
+    fn not_initialized() -> Self {
+        ContractError::NotInitialized
     }
 }
 
@@ -138,7 +132,10 @@ impl MeridianDefindexAdapter {
     pub fn deposit(env: Env, amount: i128) -> i128 {
         require_vault_auth(&env);
 
-        let dfx: Address = get_or_not_initialized(&env, env.storage().instance().get(&DFX_VAULT));
+        let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&DFX_VAULT),
+        );
         let adapter = env.current_contract_address();
 
         let client = DefindexVaultClient::new(&env, &dfx);
@@ -155,7 +152,10 @@ impl MeridianDefindexAdapter {
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
         require_vault_auth(&env);
 
-        let dfx: Address = get_or_not_initialized(&env, env.storage().instance().get(&DFX_VAULT));
+        let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&DFX_VAULT),
+        );
         let usdc = get_usdc(&env);
         let adapter = env.current_contract_address();
 
@@ -175,7 +175,10 @@ impl MeridianDefindexAdapter {
     /// Live USDC value of the adapter's dfToken position, computed by the
     /// DeFindex vault's exchange rate. Updates automatically as yield accrues.
     pub fn total_assets(env: Env) -> i128 {
-        let dfx: Address = get_or_not_initialized(&env, env.storage().instance().get(&DFX_VAULT));
+        let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&DFX_VAULT),
+        );
         let adapter = env.current_contract_address();
 
         let client = DefindexVaultClient::new(&env, &dfx);
@@ -196,7 +199,10 @@ impl MeridianDefindexAdapter {
 
     /// Returns the DeFindex vault this adapter deposits into.
     pub fn get_pool(env: Env) -> Address {
-        get_or_not_initialized(&env, env.storage().instance().get(&DFX_VAULT))
+        adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&DFX_VAULT),
+        )
     }
 
     /// Returns "defindex", identifying which protocol this adapter wraps.
@@ -255,8 +261,10 @@ mod tests {
             _invest: bool,
         ) -> Val {
             // USDC address is always set in initialize(), so this is safe.
-            let usdc: Address =
-                get_or_not_initialized(&env, env.storage().instance().get(&MDV_USDC));
+            let usdc: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+                &env,
+                env.storage().instance().get(&MDV_USDC),
+            );
             // Vec.get() safely returns Option which defaults to 0, so unwrap_or is safe.
             let amount = amounts_desired.get(0).unwrap_or(0);
             TokenClient::new(&env, &usdc).transfer(&from, &env.current_contract_address(), &amount);
@@ -284,8 +292,10 @@ mod tests {
                 .unwrap_or_else(|| vec![&env, withdraw_shares]);
 
             // USDC address is always set in initialize(), so this is safe.
-            let usdc: Address =
-                get_or_not_initialized(&env, env.storage().instance().get(&MDV_USDC));
+            let usdc: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+                &env,
+                env.storage().instance().get(&MDV_USDC),
+            );
             // Vec.get() safely returns Option which defaults to 0, so unwrap_or is safe.
             let payout = amounts.get(0).unwrap_or(0);
             if payout > 0 {
@@ -346,6 +356,27 @@ mod tests {
     fn get_pool_returns_the_configured_defindex_vault() {
         let (_env, _vault, _usdc, adapter, dfx) = setup();
         assert_eq!(adapter.get_pool(), dfx.address);
+    }
+
+    #[test]
+    #[should_panic]
+    fn withdraw_panics_with_typed_error_when_dfx_vault_is_unset() {
+        // __constructor always sets DFX_VAULT on any real deployment, so
+        // this state is unreachable in practice; this test clears it
+        // directly after construction to prove withdraw() still fails with
+        // the typed NotInitialized panic rather than an opaque unwrap trap
+        // if that invariant is ever violated by a future change.
+        let (env, vault, usdc_id, adapter, _dfx) = setup();
+        let amount = 100_0000000_i128;
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        env.as_contract(&adapter.address, || {
+            env.storage().instance().remove(&DFX_VAULT);
+        });
+
+        let recipient = Address::generate(&env);
+        adapter.withdraw(&amount, &recipient);
     }
 
     #[test]
