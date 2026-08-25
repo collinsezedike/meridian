@@ -213,4 +213,27 @@ describe("fetchCoordinatorPosition", () => {
 
     expect(positions[0]!.deposited).toBe(0);
   });
+
+  it("reports zero earned, not the full balance, for a holder with no recorded basis", async () => {
+    // mUSDC received by transfer (rather than deposit) carries no cost
+    // basis: get_principal returns 0 for it, same as this suite's other
+    // cases default to. Without the hasBasis guard, earned = deposited - 0
+    // reports the holder's entire position as yield.
+    mockPositionCalls({
+      shares: 100n,
+      totalAssets: 11_000_0000000n,
+      totalShares: 1_000_0000000n,
+      // principal omitted: defaults to 0n, i.e. "no basis recorded".
+      entryTime: 0n,
+    });
+
+    const positions = await fetchCoordinatorPosition(
+      { contractId: CONTRACT_ID, network },
+      "meridian-usdc",
+      WALLET
+    );
+
+    expect(positions[0]!.deposited).toBeGreaterThan(0);
+    expect(positions[0]!.earned).toBe(0);
+  });
 });
