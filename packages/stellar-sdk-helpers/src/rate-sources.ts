@@ -139,7 +139,7 @@ const DEFAULT_SNAPSHOT_TTL_SECONDS = 7 * 24 * 60 * 60;
  * @upstash/redis SDK: this package has no Redis dependency today, and the
  * two commands needed (GET/SET) don't need one. Reuses the same
  * UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN credentials
- * apps/api/_lib/middleware.ts already requires in production for its rate
+ * api/_lib/middleware.ts already requires in production for its rate
  * limiter, so wiring this up needs no new infrastructure, just an existing
  * Upstash instance.
  */
@@ -276,6 +276,9 @@ export function createDefindexRateSource(
     const elapsedMs = timestampMs - prior.timestampMs;
     if (elapsedMs < MIN_SAMPLE_INTERVAL_MS) return null;
 
+    // Converting to Number loses precision once a value exceeds 2^53 stroops
+    // (~$900M at 7-decimal USDC); growth is a ratio, so this only matters for
+    // implausibly large vaults, but it degrades silently rather than erroring.
     const growth =
       Number(priceStroops - prior.priceStroops) / Number(prior.priceStroops);
     const elapsedYears = elapsedMs / (SECONDS_PER_YEAR * 1000);
@@ -301,7 +304,7 @@ export interface DefaultRateSourceOptions {
 }
 
 // UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN: the same variables
-// apps/api/_lib/middleware.ts already requires in production for its rate
+// api/_lib/middleware.ts already requires in production for its rate
 // limiter (Redis.fromEnv() reads them under the hood there). Reused here
 // rather than introducing a migration-keeper-specific pair, so one Upstash
 // instance backs both and no new infrastructure needs provisioning to make

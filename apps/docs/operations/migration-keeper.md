@@ -62,7 +62,7 @@ protocol from what's actually available on-chain:
   minutes apart. In production, `createDefaultRateSource` backs this store
   with Upstash Redis over its plain HTTP REST API, reusing the same
   `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` credentials
-  `apps/api/_lib/middleware.ts` already requires for its rate limiter — one
+  `api/_lib/middleware.ts` already requires for its rate limiter — one
   Upstash instance backs both, no new infrastructure to provision. Without
   those set, it falls back to an in-memory store that does **not** survive
   across separate serverless invocations (each Vercel Cron tick is a fresh
