@@ -259,8 +259,18 @@ export function createDefindexRateSource(
       options.store.get(key),
     ]);
     const timestampMs = now();
+    const elapsedMs = prior ? timestampMs - prior.timestampMs : null;
 
-    if (priceStroops !== null && priceStroops > 0n) {
+    // Only advance the stored anchor once a full interval has actually
+    // elapsed since the prior one (or there was no prior at all). Overwriting
+    // it on every call, including a too-recent one, would slide the anchor
+    // forward indefinitely, so the gap would never reach
+    // MIN_SAMPLE_INTERVAL_MS if this is ever called more often than that.
+    if (
+      priceStroops !== null &&
+      priceStroops > 0n &&
+      (elapsedMs === null || elapsedMs >= MIN_SAMPLE_INTERVAL_MS)
+    ) {
       await options.store.set(key, { timestampMs, priceStroops });
     }
 
@@ -268,13 +278,12 @@ export function createDefindexRateSource(
       !prior ||
       priceStroops === null ||
       priceStroops <= 0n ||
-      prior.priceStroops <= 0n
+      prior.priceStroops <= 0n ||
+      elapsedMs === null ||
+      elapsedMs < MIN_SAMPLE_INTERVAL_MS
     ) {
       return null;
     }
-
-    const elapsedMs = timestampMs - prior.timestampMs;
-    if (elapsedMs < MIN_SAMPLE_INTERVAL_MS) return null;
 
     // Converting to Number loses precision once a value exceeds 2^53 stroops
     // (~$900M at 7-decimal USDC); growth is a ratio, so this only matters for

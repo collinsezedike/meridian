@@ -395,6 +395,45 @@ describe("createDefindexRateSource", () => {
     expect(rate).toBeNull();
   });
 
+  it("does not advance the stored anchor when a sample arrives before the interval floor, so a later call still measures from the original anchor", async () => {
+    // Regression for PR #538 review: store.set previously ran unconditionally
+    // before the elapsed-time check, so a too-frequent caller would slide the
+    // anchor forward on every call and elapsedMs would never reach the floor.
+    const store = createInMemoryRateSnapshotStore();
+    const key = `migration-keeper:defindex-rate:${DEFINDEX_VAULT}`;
+    await store.set(key, { timestampMs: 0, priceStroops: 10_000_000n });
+
+    // A too-close call: returns null and must leave the anchor untouched.
+    simulateViewMock.mockResolvedValueOnce([10_050_000n]);
+    const tooSoon = createDefindexRateSource({
+      network: NETWORK,
+      store,
+      now: () => 60_000, // 1 minute later, below the 10-minute floor
+    });
+    await tooSoon(defindexQuery());
+    await expect(store.get(key)).resolves.toEqual({
+      timestampMs: 0,
+      priceStroops: 10_000_000n,
+    });
+
+    // A later call, now genuinely a full year past the *original* anchor,
+    // should succeed with a plausible annualized rate — proving the anchor
+    // never slid forward to the too-soon call's timestamp in between (a 5%
+    // move extrapolated from only 10 minutes would blow past
+    // MAX_PLAUSIBLE_APY and return null regardless, so the window here needs
+    // to be long enough to keep the rate itself plausible).
+    const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+    simulateViewMock.mockResolvedValueOnce([10_500_000n]); // +5% over the original anchor
+    const onTime = createDefindexRateSource({
+      network: NETWORK,
+      store,
+      now: () => YEAR_MS,
+    });
+    const rate = await onTime(defindexQuery());
+
+    expect(rate).not.toBeNull();
+  });
+
   it("treats a share-price move extrapolated from the minimum sample interval as an untrustworthy blowout rather than a real rate", async () => {
     // A 1% move over the shortest usable (10-minute) window compounds to an
     // astronomical annualized figure ((1.01)^52560 - 1), not a real yield:
