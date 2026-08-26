@@ -24,7 +24,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // *all* traffic, not just correctly-authenticated traffic, if it only ran
   // after a successful auth check, unauthenticated/wrong-token spam would
   // be entirely unbounded, since a 401 would return before this ever runs.
-  if (!(await checkRateLimit(req, res))) return;
+  // Wrapped, unlike a plain `await`: checkRateLimit talks to Upstash, and an
+  // outage there would otherwise escape as a bare unhandled 500 with no
+  // [accrual-keeper] log line, before the run (and its own store-outage
+  // signalling) ever starts. Fails closed on purpose even though the run
+  // itself is more tolerant: this is the abuse backstop on an endpoint that
+  // signs real transactions, and the next scheduled tick retries anyway.
+  try {
+    if (!(await checkRateLimit(req, res))) return;
+  } catch (err) {
+    console.error("[accrual-keeper] rate limit check failed:", err);
+    return res
+      .status(503)
+      .json({ error: "Rate limiter unavailable; refusing to run" });
+  }
 
   if (!isCronSecretConfigured()) {
     return res.status(503).json({ error: "CRON_SECRET is not configured" });

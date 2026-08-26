@@ -68,3 +68,34 @@ describe("computePosition", () => {
     expect(p.earned).toBe(0);
   });
 });
+
+describe("computePosition with no recorded cost basis", () => {
+  it("reports no yield for a position that arrived by mUSDC transfer", () => {
+    // The vault has no basis recorded for a holder whose shares were
+    // transferred to them (#504): mUSDC is a Stellar Asset Contract, so the
+    // vault never sees the transfer. Treating that missing basis as a basis
+    // of zero would show the new holder their entire balance as profit.
+    const [position] = computePosition("meridian-usdc", {
+      shares: 100_0000000n,
+      totalShares: 100_0000000n,
+      totalAssets: 120_0000000n,
+      principal: 0n,
+      entryTime: 0n,
+    });
+
+    expect(position?.deposited).toBe(120);
+    expect(position?.earned).toBe(0);
+  });
+
+  it("still reports yield for a depositor whose basis is recorded", () => {
+    const [position] = computePosition("meridian-usdc", {
+      shares: 100_0000000n,
+      totalShares: 100_0000000n,
+      totalAssets: 120_0000000n,
+      principal: 100_0000000n,
+      entryTime: 1n,
+    });
+
+    expect(position?.earned).toBe(20);
+  });
+});
