@@ -11,7 +11,7 @@
 // transient failures. Swallowing them here would silently bypass that.
 
 import { PoolV2, type Pool } from "@blend-capital/blend-sdk";
-import { CONTRACT_ADDRESSES } from "@meridian/shared";
+import { CONTRACT_ADDRESSES, withRaceTimeout } from "@meridian/shared";
 import { getRpcServer } from "./internal";
 import { withBlendTimeout } from "./blend";
 import { getDefindexAssetAmountPerShares } from "./defindex";
@@ -130,9 +130,15 @@ export interface UpstashRateSnapshotStoreOptions {
   // would wrongly treat as a live "prior sample" spanning the gap.
   ttlSeconds?: number;
   fetchFn?: typeof fetch;
+  timeoutMs?: number;
 }
 
 const DEFAULT_SNAPSHOT_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+// Matches keeper-state.ts's DEFAULT_STORE_TIMEOUT_MS: this call sits on the
+// same deadline-budget-constrained hot path (findBestCandidate), so a hung
+// Upstash request shouldn't be able to stall the run past it.
+const DEFAULT_UPSTASH_TIMEOUT_MS = 5_000;
 
 /**
  * Persists snapshots via Upstash's plain HTTP REST API rather than the
@@ -150,12 +156,22 @@ export function createUpstashRateSnapshotStore(
   const fetchFn = options.fetchFn ?? fetch;
   const restUrl = options.restUrl.replace(/\/+$/, "");
   const headers = { Authorization: `Bearer ${options.restToken}` };
+  const timeoutMs = options.timeoutMs ?? DEFAULT_UPSTASH_TIMEOUT_MS;
 
   return {
     async get(key) {
-      const res = await fetchFn(`${restUrl}/get/${encodeURIComponent(key)}`, {
-        headers,
-      });
+      const res = await withRaceTimeout(
+        () =>
+          fetchFn(`${restUrl}/get/${encodeURIComponent(key)}`, {
+            headers,
+            // Belt and braces with the race below: this also frees the
+            // socket rather than leaving a hung request running past the
+            // run, matching keeper-state.ts's command().
+            signal: AbortSignal.timeout(timeoutMs),
+          }),
+        timeoutMs,
+        "Upstash Redis"
+      );
       if (!res.ok) {
         throw new Error(`Upstash GET failed: HTTP ${res.status}`);
       }
@@ -170,9 +186,23 @@ export function createUpstashRateSnapshotStore(
     },
     async set(key, snapshot) {
       const value = `${snapshot.timestampMs}:${snapshot.priceStroops}`;
-      const res = await fetchFn(
-        `${restUrl}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}?EX=${ttlSeconds}`,
-        { method: "POST", headers }
+      // All-path-segments form, per Upstash's documented REST API
+      // (`REST_URL/set/foo/bar/EX/100`). The POST-with-body form
+      // (`POST /set/foo?EX=100`, value in the request body) is the other
+      // documented shape; a POST with the value already in the path AND EX
+      // as a query string, which is what this used to send, is neither.
+      const res = await withRaceTimeout(
+        () =>
+          fetchFn(
+            `${restUrl}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}/EX/${ttlSeconds}`,
+            {
+              method: "POST",
+              headers,
+              signal: AbortSignal.timeout(timeoutMs),
+            }
+          ),
+        timeoutMs,
+        "Upstash Redis"
       );
       if (!res.ok) {
         throw new Error(`Upstash SET failed: HTTP ${res.status}`);
@@ -249,7 +279,17 @@ export function createDefindexRateSource(
     // run concurrently rather than sequentially: this is on
     // findBestCandidate's deadline-budget-constrained hot path (see
     // migration-keeper.ts), so their latencies shouldn't just add up.
-    const [priceStroops, prior] = await Promise.all([
+    //
+    // Promise.allSettled, not Promise.all: this function is itself wrapped
+    // in withKeeperRetry (see this file's header comment), which re-invokes
+    // it on a retry. Promise.all rejects as soon as either promise rejects,
+    // leaving the other still running unobserved; a retry started right
+    // after would then have two concurrent RPC/store calls in flight for
+    // the same query, the same orphaned-promise failure mode
+    // discoverMigrationVaults's own Promise.allSettled comment (
+    // migration-keeper.ts) documents. Waiting for both to settle before
+    // re-throwing closes that window.
+    const [priceStroopsResult, priorResult] = await Promise.allSettled([
       getDefindexAssetAmountPerShares(
         server,
         query.poolId,
@@ -258,6 +298,11 @@ export function createDefindexRateSource(
       ),
       options.store.get(key),
     ]);
+    if (priceStroopsResult.status === "rejected")
+      throw priceStroopsResult.reason;
+    if (priorResult.status === "rejected") throw priorResult.reason;
+    const priceStroops = priceStroopsResult.value;
+    const prior = priorResult.value;
     const timestampMs = now();
     const elapsedMs = prior ? timestampMs - prior.timestampMs : null;
 

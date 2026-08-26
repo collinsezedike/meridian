@@ -566,6 +566,7 @@ describe("createUpstashRateSnapshotStore", () => {
     expect(snapshot).toEqual({ timestampMs: 1234, priceStroops: 5678n });
     expect(fetchFn).toHaveBeenCalledWith("https://upstash.example/get/mykey", {
       headers: { Authorization: "Bearer TOKEN" },
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -613,8 +614,12 @@ describe("createUpstashRateSnapshotStore", () => {
     await store.set("mykey", { timestampMs: 1234, priceStroops: 5678n });
 
     expect(fetchFn).toHaveBeenCalledWith(
-      "https://upstash.example/set/mykey/1234%3A5678?EX=60",
-      { method: "POST", headers: { Authorization: "Bearer TOKEN" } }
+      "https://upstash.example/set/mykey/1234%3A5678/EX/60",
+      {
+        method: "POST",
+        headers: { Authorization: "Bearer TOKEN" },
+        signal: expect.any(AbortSignal),
+      }
     );
   });
 
