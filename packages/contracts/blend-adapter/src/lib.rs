@@ -364,7 +364,12 @@ impl MeridianBlendAdapter {
 
         let current_value = b_tokens_to_usdc(b_tokens, reserve.data.b_rate)?;
 
+        let prev: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
         env.storage().instance().set(&TOTAL_KEY, &current_value);
+
+        env.events()
+            .publish((symbol_short!("accrue"),), (prev, current_value));
+
         Ok(())
     }
 
@@ -420,7 +425,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         contract, contractimpl,
-        testutils::Address as _,
+        testutils::{Address as _, Events},
         token::{StellarAssetClient, TokenClient},
         Address, Env,
     };
@@ -883,5 +888,46 @@ mod tests {
 
         let recipient = Address::generate(&env);
         adapter.withdraw(&100_0000000_i128, &recipient);
+    }
+
+    #[test]
+    fn accrue_publishes_event_on_success() {
+        let (env, vault, usdc_id, adapter, pool) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        let new_rate = SCALAR + SCALAR / 10;
+        pool.set_rate(&new_rate);
+
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
+
+        let events = env.events().all();
+        let accrue_event = events
+            .into_iter()
+            .find(|e| {
+                if e.0 == adapter.address && e.1.len() == 1 {
+                    if let Ok(topic) =
+                        soroban_sdk::TryIntoVal::<_, soroban_sdk::Symbol>::try_into_val(
+                            &e.1.get(0).unwrap(),
+                            &env,
+                        )
+                    {
+                        topic == symbol_short!("accrue")
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            })
+            .expect("accrue event not found");
+
+        let expected_prev = amount;
+        let expected_new = amount + amount / 10;
+        let data: (i128, i128) =
+            soroban_sdk::TryIntoVal::try_into_val(&accrue_event.2, &env).unwrap();
+        assert_eq!(data, (expected_prev, expected_new));
     }
 }
