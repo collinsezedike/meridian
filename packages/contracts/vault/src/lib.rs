@@ -110,7 +110,11 @@ pub enum ContractError {
     WithdrawalTooSmall = 8,
     /// An intermediate arithmetic operation would overflow `i128`.
     Overflow = 9,
-    /// `set_adapter` was called while the vault still has shares outstanding.
+    /// `set_adapter` was called while the vault still has shares outstanding
+    /// (`TOTAL_SH > 0`) or the old adapter still holds a position
+    /// (`ADPT_SH > 0`). The two counters can desync (see `migrate_adapter`'s
+    /// `NoAdapterPosition` doc), so both are checked: `TOTAL_SH` alone is not
+    /// sufficient evidence that the old adapter is actually empty.
     AdapterSwapUnsafe = 10,
     /// `migrate_adapter` was called with the vault's current adapter as the
     /// target.
@@ -549,15 +553,26 @@ impl MeridianVault {
     }
 
     /// Replace the yield adapter. The vault must have no shares outstanding
-    /// before calling this. Resets the adapter-share counter so the new adapter
-    /// starts at zero.
+    /// (`TOTAL_SH == 0`) *and* no position left at the old adapter
+    /// (`ADPT_SH == 0`) before calling this.
+    ///
+    /// Checking `TOTAL_SH` alone is not sufficient: the two counters can
+    /// desync (see `migrate_adapter`'s `NoAdapterPosition` doc), so a vault
+    /// that looks empty by `TOTAL_SH` can still have real value sitting at
+    /// the old adapter. Deliberately does *not* reset `ADPT_SH` to zero on
+    /// swap the way it used to -- doing so would destroy the only evidence
+    /// that a stranded position existed, and it is unnecessary: `ADPT_SH`
+    /// is only ever nonzero here in a genuinely-empty vault as a result of a
+    /// bug, and clearing it would delete the observability that bug needs
+    /// to be diagnosed, not fix it. In the normal case (both counters
+    /// already zero) leaving `ADPT_SH` alone is a no-op.
     pub fn set_adapter(env: Env, new_adapter: Address) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
-        if Self::get_total_shares(env.clone()) > 0 {
+        let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
+        if Self::get_total_shares(env.clone()) > 0 || total_adapter_shares > 0 {
             return Err(ContractError::AdapterSwapUnsafe);
         }
         env.storage().instance().set(&ADAPTER, &new_adapter);
-        env.storage().instance().set(&ADPT_SH, &0_i128);
         Ok(())
     }
 
@@ -1655,6 +1670,79 @@ mod tests {
         let result = vault.try_set_adapter(&new_adapter_id);
         assert_eq!(result, Ok(Ok(())));
         assert_eq!(vault.get_adapter(), new_adapter_id);
+    }
+
+    #[test]
+    fn set_adapter_succeeds_after_genuine_full_withdrawal() {
+        // Regression guard for issue #561, negative direction: prove the
+        // tightened guard doesn't regress the legitimate case of a vault
+        // that reaches empty organically. deposit()+withdraw() keep TOTAL_SH
+        // and ADPT_SH in lockstep -- a full withdrawal burns
+        // shares * ADPT_SH / TOTAL_SH with shares == TOTAL_SH, which divides
+        // evenly, so both counters land on exactly zero together. set_adapter
+        // must still succeed in that real, organically-reached empty state.
+        let (env, _admin, user, usdc, musdc, _adapter, vault) = setup();
+        let amount = 100_0000000_i128;
+        vault.deposit(&user, &amount);
+
+        let musdc_balance = TokenClient::new(&env, &musdc).balance(&user);
+        vault.withdraw(&user, &musdc_balance, &0_i128);
+
+        assert_eq!(vault.get_total_shares(), 0);
+        assert_eq!(
+            env.as_contract(&vault.address, || env
+                .storage()
+                .instance()
+                .get::<_, i128>(&ADPT_SH)
+                .unwrap_or(0)),
+            0
+        );
+
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc);
+        let result = vault.try_set_adapter(&new_adapter_id);
+        assert_eq!(result, Ok(Ok(())));
+        assert_eq!(vault.get_adapter(), new_adapter_id);
+    }
+
+    #[test]
+    fn set_adapter_fails_when_adapter_shares_outstanding_despite_zero_total_shares() {
+        // Regression test for issue #561: set_adapter's AdapterSwapUnsafe
+        // guard checked only TOTAL_SH, not ADPT_SH. The two counters can
+        // desync in production (the rounding-drift path referenced in the
+        // issue); reproducing that drift organically isn't the point of
+        // this test, so -- like accrue_returns_typed_error_when_pool_key_is_unset
+        // above -- ADPT_SH is set directly to construct the exact
+        // TOTAL_SH == 0, ADPT_SH > 0 precondition the issue describes, and
+        // the real set_adapter entry point is exercised against it.
+        let (env, _admin, _user, usdc, _musdc, _adapter, vault) = setup();
+        assert_eq!(vault.get_total_shares(), 0);
+
+        let stranded_adapter_shares = 42_000_000_i128;
+        env.as_contract(&vault.address, || {
+            env.storage()
+                .instance()
+                .set(&ADPT_SH, &stranded_adapter_shares);
+        });
+
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc);
+        let original_adapter = vault.get_adapter();
+
+        let result = vault.try_set_adapter(&new_adapter_id);
+        assert_eq!(result, Err(Ok(ContractError::AdapterSwapUnsafe)));
+
+        // The swap must not have gone through, and -- just as importantly --
+        // the evidence of the stranded position must not have been erased.
+        assert_eq!(vault.get_adapter(), original_adapter);
+        assert_eq!(
+            env.as_contract(&vault.address, || env
+                .storage()
+                .instance()
+                .get::<_, i128>(&ADPT_SH)
+                .unwrap_or(0)),
+            stranded_adapter_shares
+        );
     }
 
     #[test]
