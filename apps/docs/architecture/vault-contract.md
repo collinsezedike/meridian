@@ -54,7 +54,7 @@ Returns the address's mUSDC balance, read from the share token itself. mUSDC rec
 
 ### `get_entry_time(address) -> u64`
 
-Returns the ledger timestamp of the address's current deposit, or `0` if it holds no position. Cleared on a full withdrawal so a later re-deposit starts a fresh clock — but _not_ on a partial withdrawal that leaves dust; see the constraint noted under `deposit()` above. Currently read only for display; nothing on-chain or off-chain conditions behavior on it.
+Returns the ledger timestamp of the address's current deposit, or `0` if it holds no position. Cleared on a full withdrawal so a later re-deposit starts a fresh clock, and self-heals on the next read for any address that currently holds no mUSDC, so a record left behind by a transfer-out is never shown as a live position. The one case that escapes both of these is a partial withdrawal that leaves dust; see the constraint noted under `deposit()` above. Currently read only for display; nothing on-chain or off-chain conditions behavior on it.
 
 ### `get_principal(address) -> i128`
 
