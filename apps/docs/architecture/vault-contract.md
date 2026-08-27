@@ -161,7 +161,7 @@ There is no separate initialization transaction, deliberately. An adapter's `ini
 
 ### BlendAdapter
 
-Supplies USDC into a Blend lending pool as collateral. `deposit()` calls the pool's `submit()` with a `REQUEST_SUPPLY` request; `withdraw()` calls `submit()` with a `REQUEST_WITHDRAW` request and has Blend deliver USDC straight to the recipient.
+Supplies USDC into a Blend lending pool as collateral. `deposit()` calls the pool's `submit()` with a `REQUEST_SUPPLY_COLLATERAL` request; `withdraw()` calls `submit()` with a `REQUEST_WITHDRAW_COLLATERAL` request and has Blend deliver USDC straight to the recipient.
 
 `total_assets()` returns a **cached** value (`TOTAL_KEY` in instance storage), not a live query — it's updated directly on every `deposit()`/`withdraw()` call, but yield accrued independently by Blend (interest on the supplied collateral) is not reflected until `accrue()` is called. `accrue()` is permissionless (anyone can call it) and refreshes the cache by reading the adapter's current bToken balance and exchange rate straight from Blend's own ledger (`get_reserve`/`get_positions`), so there's no risk of drift between the cached total and Blend's actual accounting. It should be called before any `total_assets()` read that will inform a deposit or withdrawal price.
 

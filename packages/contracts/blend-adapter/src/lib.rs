@@ -18,9 +18,16 @@ use soroban_sdk::{
 const POOL_KEY: Symbol = symbol_short!("POOL");
 const TOTAL_KEY: Symbol = symbol_short!("TOTAL");
 
-// Blend RequestType constants
-const REQUEST_SUPPLY: u32 = 2;
-const REQUEST_WITHDRAW: u32 = 3;
+// Blend RequestType constants, per
+// blend-contracts-v2/pool/src/request_type.rs (submitted against the pool's
+// `submit`). The "collateral" suffix is deliberate and load-bearing: this
+// adapter deposits into the collateral map, NOT Blend's plain supply map, and
+// deposit()/accrue() read bToken position from `Positions.collateral`. A
+// future Blend renumbering (or a plain "supply" request) would silently credit
+// an empty bucket and yield a zero-credit deposit; these are pinned here and
+// guarded by the deposit test asserting a strictly-positive credit delta.
+const REQUEST_SUPPLY_COLLATERAL: u32 = 2;
+const REQUEST_WITHDRAW_COLLATERAL: u32 = 3;
 
 // Fixed-point base Blend's own contracts use for `Reserve.data.b_rate` (the
 // bToken-to-underlying-asset exchange rate). This is a protocol-wide constant
@@ -256,7 +263,7 @@ impl MeridianBlendAdapter {
             &vec![
                 &env,
                 Request {
-                    request_type: REQUEST_SUPPLY,
+                    request_type: REQUEST_SUPPLY_COLLATERAL,
                     address: usdc,
                     amount,
                 },
@@ -313,7 +320,7 @@ impl MeridianBlendAdapter {
             &vec![
                 &env,
                 Request {
-                    request_type: REQUEST_WITHDRAW,
+                    request_type: REQUEST_WITHDRAW_COLLATERAL,
                     address: usdc,
                     amount: request_amount,
                 },
@@ -482,14 +489,14 @@ mod tests {
             let mut collateral: i128 = env.storage().instance().get(&M_COLLAT).unwrap_or(0);
 
             for req in requests.iter() {
-                if req.request_type == REQUEST_SUPPLY {
+                if req.request_type == REQUEST_SUPPLY_COLLATERAL {
                     TokenClient::new(&env, &req.address).transfer(
                         &from,
                         &env.current_contract_address(),
                         &req.amount,
                     );
                     collateral += req.amount * scalar / rate;
-                } else if req.request_type == REQUEST_WITHDRAW {
+                } else if req.request_type == REQUEST_WITHDRAW_COLLATERAL {
                     collateral -= req.amount * scalar / rate;
                     TokenClient::new(&env, &req.address).transfer(
                         &env.current_contract_address(),
@@ -624,6 +631,23 @@ mod tests {
 
         assert_eq!(shares, amount);
         assert_eq!(adapter.total_assets(), amount);
+    }
+
+    #[test]
+    fn deposit_credits_strictly_positive_b_tokens() {
+        // Pin the semantics of REQUEST_SUPPLY_COLLATERAL: deposit() must
+        // credit real, strictly-positive bTokens into Blend's collateral map.
+        // A future Blend renumbering that maps the constant to a plain
+        // "supply" request (or any behaviour that credits an empty bucket)
+        // would surface here as a zero-credit deposit and fail this test,
+        // rather than silently breaking the adapter's share accounting.
+        let (env, vault, usdc_id, adapter, _pool) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        assert!(shares > 0, "deposit must credit strictly-positive bTokens");
     }
 
     #[test]
