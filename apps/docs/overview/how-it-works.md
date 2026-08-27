@@ -76,7 +76,7 @@ Neither keeper changes what a user sees or does; they exist so a deposit made on
 ## Security properties
 
 - **No server-side keys.** The API returns unsigned XDR only. Private keys never leave the user's wallet.
-- **User-visible transaction contents.** The wallet shows the exact contract, function, and amount before the user signs — there is no hidden parameter deciding where funds go; that's determined entirely by the vault's current adapter, which is itself a matter of on-chain, auditable state (`vault.get_adapter()`).
+- **User-visible transaction contents.** The wallet shows the exact contract, function, and amount before the user signs. There is no hidden parameter deciding where funds go; that's determined entirely by the vault's current adapter, which is itself a matter of on-chain, auditable state (`vault.get_adapter()`).
 - **On-chain state.** USDC balances, share balances, and the active adapter are all stored in Soroban contract storage, auditable by anyone.
 - **Slippage-bound withdrawals.** `withdraw()` takes a caller-supplied `min_usdc_out` floor, so a ratio shift from a concurrent withdrawal produces a typed revert instead of a silently reduced payout.
 - **Immutable contracts.** No vault or adapter contract exposes an upgrade entry point. Once deployed, contract logic can't be rewritten by anyone, including Meridian, the tradeoff is that a fix requires a fresh deployment (see [Contract immutability](https://github.com/drydocs/meridian/blob/main/docs/contracts.md#contract-immutability)), not an in-place patch.
