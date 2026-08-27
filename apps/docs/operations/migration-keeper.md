@@ -102,7 +102,7 @@ This is deliberately **not** the same key as `MERIDIAN_KEEPER_SECRET_KEY`
 (the accrue keeper's key). `accrue()` is permissionless, any account can call
 it. `migrate_adapter` is admin-gated (`Self::require_admin`), so this key
 must be the vault's actual admin address and carries full vault admin
-authority: `migrate_adapter`, `set_adapter`, `set_paused`, `set_admin`.
+authority: `migrate_adapter`, `set_adapter`, `set_paused`, `transfer_admin`.
 Compromising this key is equivalent to compromising the vault admin
 directly. Keep it separately stored, separately rotatable, and scoped to
 only the systems that need it, unlike the accrue keeper's key, this is not a

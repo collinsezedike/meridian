@@ -96,9 +96,19 @@ Emergency switch. While paused, new deposits are rejected. Withdrawals remain op
 
 Returns whether deposits are currently paused.
 
-### `set_admin(new_admin)` (admin only)
+### `transfer_admin(new_admin)` (admin only)
 
-Rotates the admin key. Lets a compromised or retired admin key be replaced without redeploying the vault.
+Nominates `new_admin` as the next admin. Requires the current admin's `require_auth()`. Records the nominee in a pending slot but does **not** change who the admin is — `get_admin()` still returns the current admin until the nominee itself calls `accept_admin()`. Calling this again before that happens overwrites the pending nominee; only the most recent nomination is live.
+
+This two-step handover exists so a typo'd, unreachable, or otherwise-uncontrolled address can never brick admin: the old admin stays fully in control until the new address proves, by successfully calling `accept_admin()`, that it holds a working signing key.
+
+### `accept_admin() -> Result<(), ContractError>` (pending nominee only)
+
+Completes a handover previously started with `transfer_admin`. Requires the pending nominee's own `require_auth()`, not the current admin's — this is the step that proves the new key actually works. On success, `ADMIN` becomes the nominee and the pending slot is cleared. Fails with `NoPendingAdmin` if no `transfer_admin` nomination is outstanding.
+
+### `get_pending_admin() -> Option<Address>`
+
+Returns the currently pending nominee, or `None` if no handover is in progress.
 
 ### `get_admin() -> Address`
 
@@ -184,7 +194,7 @@ USDC on Stellar uses 7 decimal places. 1 USDC = `10_000_000` stroops. All contra
 
 ## Authorization and safety rails
 
-`caller.require_auth()` is called at the start of both `deposit` and `withdraw`. Admin functions (`set_admin`, `set_paused`, `set_adapter`) call an internal `require_admin` helper that reads the stored admin address and calls `require_auth()` on it. See [BlendAdapter's auth note](#blendadapter) above for a subtler auth requirement specific to that adapter.
+`caller.require_auth()` is called at the start of both `deposit` and `withdraw`. Admin functions (`transfer_admin`, `set_paused`, `set_adapter`) call an internal `require_admin` helper that reads the stored admin address and calls `require_auth()` on it. `accept_admin` is the one exception: it calls `require_auth()` on the pending nominee instead, since its whole purpose is to require the *new* admin's signature, not the current one's. See [BlendAdapter's auth note](#blendadapter) above for a subtler auth requirement specific to that adapter.
 
 Deposits, but never withdrawals, can be paused via `set_paused(true)` — this is deliberate, so a pause can never trap user funds.
 
@@ -208,12 +218,14 @@ Deposits, but never withdrawals, can be paused via `set_paused(true)` — this i
 | `MigrationValueDrift` | 12   | `migrate_adapter`'s post-migration value fell outside `max_slippage_bps` of the pre-migration value.                            |
 | `NoAdapterPosition`   | 13   | `migrate_adapter` was called while the current adapter has no position (`ADPT_SH <= 0`).                                        |
 | `InvalidSlippageBps`  | 14   | `migrate_adapter` was called with `max_slippage_bps > 10_000`.                                                                  |
+| `NoPendingAdmin`      | 16   | `accept_admin` was called with no `transfer_admin` nomination outstanding.                                                      |
 
 ## Contract storage
 
 | Key                  | Storage type | Value                                                                                                                                        |
 | -------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ADMIN`              | Instance     | Admin `Address`                                                                                                                              |
+| `PEND_ADM`           | Instance     | Pending admin nominee `Address`, set by `transfer_admin` and cleared once `accept_admin` completes                                          |
 | `USDC`               | Instance     | USDC contract `Address`                                                                                                                      |
 | `MUSDC`              | Instance     | mUSDC contract `Address`                                                                                                                     |
 | `ADAPTER`            | Instance     | Active adapter contract `Address`                                                                                                            |

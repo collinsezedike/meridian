@@ -11,6 +11,7 @@ use soroban_sdk::{
 // ---------------------------------------------------------------------------
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
+const PEND_ADM: Symbol = symbol_short!("PEND_ADM");
 const USDC: Symbol = symbol_short!("USDC");
 const MUSDC: Symbol = symbol_short!("MUSDC");
 const ADAPTER: Symbol = symbol_short!("ADAPTER");
@@ -131,6 +132,10 @@ pub enum ContractError {
     /// ADPT_SH/TOTAL_SH ratio shifted between when the caller estimated
     /// their proceeds and when their transaction landed.
     MinAmountOutNotMet = 15,
+    /// `accept_admin` was called with no pending nominee recorded (no
+    /// `transfer_admin` call has happened, or a previous nomination was
+    /// already accepted).
+    NoPendingAdmin = 16,
 }
 
 // ---------------------------------------------------------------------------
@@ -481,11 +486,39 @@ impl MeridianVault {
         env.storage().instance().get(&PAUSED).unwrap_or(false)
     }
 
-    /// Admin-only key rotation.
-    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+    /// Admin-only: nominate `new_admin` as the next admin. Requires the
+    /// current admin's `require_auth()`. Does not itself change who the
+    /// admin is — that only happens once the nominee calls `accept_admin`
+    /// with their own signature, so a typo'd or unreachable address can
+    /// never brick admin: the old admin stays in control until a working
+    /// key on the other end proves it can sign. Overwrites any prior,
+    /// not-yet-accepted nomination.
+    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
-        env.storage().instance().set(&ADMIN, &new_admin);
+        env.storage().instance().set(&PEND_ADM, &new_admin);
         Ok(())
+    }
+
+    /// Completes a pending admin handover. Requires the nominee's own
+    /// `require_auth()`, not the current admin's, so the transfer can only
+    /// complete once the new address has demonstrably proven it controls a
+    /// working signing key. Fails with `NoPendingAdmin` if no
+    /// `transfer_admin` nomination is outstanding.
+    pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&PEND_ADM)
+            .ok_or(ContractError::NoPendingAdmin)?;
+        pending.require_auth();
+        env.storage().instance().set(&ADMIN, &pending);
+        env.storage().instance().remove(&PEND_ADM);
+        Ok(())
+    }
+
+    /// Returns the pending admin nominee, if any.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&PEND_ADM)
     }
 
     /// Returns the current admin address.
@@ -1261,13 +1294,44 @@ mod tests {
     }
 
     #[test]
-    fn set_admin_rotates_admin() {
+    fn transfer_admin_then_accept_rotates_admin() {
         let (env, admin, _user, _usdc, _musdc, _adapter, vault) = setup();
         assert_eq!(vault.get_admin(), admin);
 
         let new_admin = Address::generate(&env);
-        vault.set_admin(&new_admin);
+        vault.transfer_admin(&new_admin);
+        // Nominating alone does not change who the admin is yet.
+        assert_eq!(vault.get_admin(), admin);
+        assert_eq!(vault.get_pending_admin(), Some(new_admin.clone()));
+
+        vault.accept_admin();
         assert_eq!(vault.get_admin(), new_admin);
+        // The pending nomination is cleared once accepted.
+        assert_eq!(vault.get_pending_admin(), None);
+    }
+
+    #[test]
+    fn accept_admin_fails_with_no_pending_nominee() {
+        let (_env, _admin, _user, _usdc, _musdc, _adapter, vault) = setup();
+        let result = vault.try_accept_admin();
+        assert_eq!(result, Err(Ok(ContractError::NoPendingAdmin)));
+    }
+
+    #[test]
+    fn transfer_admin_overwrites_a_prior_unaccepted_nomination() {
+        let (env, admin, _user, _usdc, _musdc, _adapter, vault) = setup();
+        let first_nominee = Address::generate(&env);
+        let second_nominee = Address::generate(&env);
+
+        vault.transfer_admin(&first_nominee);
+        vault.transfer_admin(&second_nominee);
+        assert_eq!(vault.get_pending_admin(), Some(second_nominee.clone()));
+
+        vault.accept_admin();
+        assert_eq!(vault.get_admin(), second_nominee);
+        // The admin is still the original one until the accepted nominee's
+        // call above, so first_nominee never gained control.
+        assert_ne!(admin, second_nominee);
     }
 
     // -----------------------------------------------------------------------
@@ -1696,13 +1760,13 @@ mod tests {
     }
 
     #[test]
-    fn set_admin_fails_before_initialize() {
+    fn transfer_admin_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
         let vault_id = env.register(MeridianVault, ());
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let new_admin = Address::generate(&env);
-        let result = vault.try_set_admin(&new_admin);
+        let result = vault.try_transfer_admin(&new_admin);
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
     }
 
