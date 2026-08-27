@@ -22,7 +22,7 @@
     "@stellar/stellar-sdk": "^14.6.1",
     "@tanstack/react-query": "^5.101.4",
     "clsx": "^2.1.1",
-    "i18next": "^26.3.6",
+    "i18next": "^26.4.0",
     "lucide-react": "^1.33.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
