@@ -194,7 +194,7 @@ USDC on Stellar uses 7 decimal places. 1 USDC = `10_000_000` stroops. All contra
 
 ## Authorization and safety rails
 
-`caller.require_auth()` is called at the start of both `deposit` and `withdraw`. Admin functions (`transfer_admin`, `set_paused`, `set_adapter`) call an internal `require_admin` helper that reads the stored admin address and calls `require_auth()` on it. `accept_admin` is the one exception: it calls `require_auth()` on the pending nominee instead, since its whole purpose is to require the *new* admin's signature, not the current one's. See [BlendAdapter's auth note](#blendadapter) above for a subtler auth requirement specific to that adapter.
+`caller.require_auth()` is called at the start of both `deposit` and `withdraw`. Admin functions (`transfer_admin`, `set_paused`, `set_adapter`) call an internal `require_admin` helper that reads the stored admin address and calls `require_auth()` on it. `accept_admin` is the one exception: it calls `require_auth()` on the pending nominee instead, since its whole purpose is to require the _new_ admin's signature, not the current one's. See [BlendAdapter's auth note](#blendadapter) above for a subtler auth requirement specific to that adapter.
 
 Deposits, but never withdrawals, can be paused via `set_paused(true)` — this is deliberate, so a pause can never trap user funds.
 
@@ -225,7 +225,7 @@ Deposits, but never withdrawals, can be paused via `set_paused(true)` — this i
 | Key                  | Storage type | Value                                                                                                                                        |
 | -------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ADMIN`              | Instance     | Admin `Address`                                                                                                                              |
-| `PEND_ADM`           | Instance     | Pending admin nominee `Address`, set by `transfer_admin` and cleared once `accept_admin` completes                                          |
+| `PEND_ADM`           | Instance     | Pending admin nominee `Address`, set by `transfer_admin` and cleared once `accept_admin` completes                                           |
 | `USDC`               | Instance     | USDC contract `Address`                                                                                                                      |
 | `MUSDC`              | Instance     | mUSDC contract `Address`                                                                                                                     |
 | `ADAPTER`            | Instance     | Active adapter contract `Address`                                                                                                            |
