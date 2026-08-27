@@ -10,7 +10,7 @@ Meridian is a stablecoin yield aggregator on the Stellar network. Users deposit 
 4. The user receives mUSDC share tokens representing their position. Share price appreciates as yield accrues.
 5. At any time the user can withdraw by burning their mUSDC shares, receiving USDC plus accumulated yield.
 
-Switching which protocol a vault routes to happens via `set_adapter` (admin-only, deploying a new adapter contract and pointing the vault at it) — it is not something that happens per-deposit or per-user.
+Which protocol a vault routes to can change after a deposit, without any action from the depositor. An hourly migration keeper compares the vault's current adapter against other supported protocols and, when a meaningfully better rate is available, atomically moves the entire position via `migrate_adapter`, slippage-bounded so the move can't complete at a worse value than before it started. A one-off manual swap (`set_adapter`, admin-only) also exists, for cases like recovering from a broken adapter, but ongoing rebalancing is the keeper's job, not something an admin does per-deposit or per-user.
 
 ## What it does not do
 
