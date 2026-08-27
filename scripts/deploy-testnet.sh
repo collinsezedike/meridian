@@ -17,7 +17,7 @@ NETWORK="testnet"
 : "${DEPLOYER:?DEPLOYER env var required (Stellar secret key)}"
 
 # ADMIN is the address that becomes the deployed vault's permanent admin
-# (set_admin, set_paused, set_adapter). Deliberately independent of DEPLOYER
+# (transfer_admin, set_paused, set_adapter). Deliberately independent of DEPLOYER
 # so the deploying key can be thrown away after the run. Defaults to
 # DEPLOYER's own address for local/dev convenience, but should always be
 # explicitly set to a durable key (or multisig) for anything beyond a
@@ -143,7 +143,7 @@ else
   echo "set, so this run has no key that can satisfy initialize()'s"
   echo "admin.require_auth(). initialize() is callable by anyone, so until the"
   echo "call below lands, anyone watching testnet can call it first with their"
-  echo "own address as admin. They would then own set_adapter/set_admin/"
+  echo "own address as admin. They would then own set_adapter/transfer_admin/"
   echo "set_paused on this vault, and the real initialize() would fail with"
   echo "AlreadyInitialized. Run this NOW, or re-run the script with ADMIN_KEY"
   echo "set and abandon this vault:"

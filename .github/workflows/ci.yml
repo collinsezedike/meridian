@@ -109,11 +109,10 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     # Drives the real dev stack against real Stellar testnet RPC (wallet
-    # signing is mocked, see apps/web/e2e/fixtures.ts, but the API calls and
-    # Soroban simulation are real), so this can be flaky on testnet RPC
-    # hiccups in a way that's outside this repo's control. Non-blocking for
-    # now; see #408.
-    continue-on-error: true
+    # signing is mocked, see apps/web/e2e/fixtures.ts), so it exercises
+    # the real API and Soroban simulation paths end to end. Tests use page.route()
+    # to stub live-network-dependent data where it would otherwise be flaky on
+    # testnet RPC hiccups (see #535). Blocking.
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6.0.10

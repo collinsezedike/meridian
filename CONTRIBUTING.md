@@ -400,7 +400,10 @@ pnpm --filter @meridian/web test:e2e
 pnpm --filter @meridian/web test:e2e:ui
 ```
 
-Because it depends on live testnet RPC, this suite is non-blocking in CI (see the `E2E Tests` job) — treat a failure there as a signal to investigate, not necessarily a blocker for your PR.
+This suite is a blocking CI check. Tests that depend on live testnet RPC or other external services
+(such as the vault-list APY/TVL/route assertions) stub the API with `page.route()` to keep the
+suite deterministic — real testnet RPC is still exercised in the deposit/withdraw tx-build specs, which
+accept valid RPC failure states as expected outcomes. Before merging a PR, this job must pass (see #535).
 
 ---
 

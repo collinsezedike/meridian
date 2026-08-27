@@ -749,6 +749,19 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
+    fn refresh_panics_on_accrue_overflow() {
+        let (env, vault, usdc_id, adapter, pool) = setup();
+        let amount = 2_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        pool.set_rate(&i128::MAX);
+        adapter.refresh();
+    }
+
+    #[test]
     fn withdraw_returns_usdc_and_reduces_total() {
         let (env, vault, usdc_id, adapter, _pool) = setup();
         let amount = 100_0000000_i128;
