@@ -109,7 +109,9 @@ pub enum ContractError {
     WithdrawalTooSmall = 8,
     /// An intermediate arithmetic operation would overflow `i128`.
     Overflow = 9,
-    /// `set_adapter` was called while the vault still has shares outstanding.
+    /// `set_adapter` was called while the vault still has shares outstanding,
+    /// either `TOTAL_SH` (vault mUSDC shares) or `ADPT_SH` (adapter-side
+    /// shares). Both are checked because the two counters can desync (#561).
     AdapterSwapUnsafe = 10,
     /// `migrate_adapter` was called with the vault's current adapter as the
     /// target.
@@ -496,16 +498,18 @@ impl MeridianVault {
             .ok_or(ContractError::NotInitialized)
     }
 
-    /// Replace the yield adapter. The vault must have no shares outstanding
-    /// before calling this. Resets the adapter-share counter so the new adapter
-    /// starts at zero.
+    /// Replace the yield adapter. The vault must have no shares outstanding —
+    /// checked on both `TOTAL_SH` (vault mUSDC shares) and `ADPT_SH`
+    /// (adapter-side shares), because the two can desync (#561). Leaves
+    /// `ADPT_SH` untouched: the guard guarantees it is already zero on success.
     pub fn set_adapter(env: Env, new_adapter: Address) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
-        if Self::get_total_shares(env.clone()) > 0 {
+        let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
+        let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
+        if total_shares > 0 || total_adapter_shares > 0 {
             return Err(ContractError::AdapterSwapUnsafe);
         }
         env.storage().instance().set(&ADAPTER, &new_adapter);
-        env.storage().instance().set(&ADPT_SH, &0_i128);
         Ok(())
     }
 
@@ -1558,6 +1562,43 @@ mod tests {
         let result = vault.try_set_adapter(&new_adapter_id);
         assert_eq!(result, Ok(Ok(())));
         assert_eq!(vault.get_adapter(), new_adapter_id);
+    }
+
+    #[test]
+    fn set_adapter_fails_when_only_adapter_shares_outstanding() {
+        // Regression test for #561: the guard must check ADPT_SH as well as
+        // TOTAL_SH, because the two can desync — ADPT_SH can stay positive
+        // after TOTAL_SH hits zero. If set_adapter only checked TOTAL_SH, an
+        // admin could silently strand real value at the old adapter, and the
+        // ADPT_SH reset would destroy the only evidence it existed.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let musdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &adapter_id).initialize(&usdc_id);
+
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        vault.initialize(&admin, &usdc_id, &musdc_id, &adapter_id);
+        StellarAssetClient::new(&env, &musdc_id).set_admin(&vault_id);
+
+        // Simulate the desync: TOTAL_SH == 0 but ADPT_SH > 0.
+        env.as_contract(&vault_id, || {
+            env.storage().instance().set(&ADPT_SH, &100_i128);
+        });
+
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc_id);
+        let result = vault.try_set_adapter(&new_adapter_id);
+        assert_eq!(result, Err(Ok(ContractError::AdapterSwapUnsafe)));
+        assert_eq!(vault.get_adapter(), adapter_id);
     }
 
     #[test]
