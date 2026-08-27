@@ -82,7 +82,7 @@ Moves the vault's entire position from the current adapter to `new_adapter` in o
 
 Fails up front with `InvalidSlippageBps` if `max_slippage_bps > 10_000`, or `SameAdapter` if `new_adapter` is the vault's current adapter, or `NoAdapterPosition` if the current adapter has no position (`ADPT_SH <= 0`) — distinct from `NoSharesOutstanding`, which checks `TOTAL_SH` (vault mUSDC shares) instead, and the two can desync.
 
-Refreshes and reads the old adapter's `total_assets()` as the pre-migration value (an independent measurement taken before extraction, so it can catch loss on the withdrawal leg itself, not just the deposit leg), withdraws the vault's entire adapter-share position into the vault itself, deposits it into `new_adapter`, and requires the new adapter to report a positive share count (`DepositTooSmall` otherwise, this is what stops the vault's own bookkeeping from ever being pointed at zero adapter shares while `TOTAL_SH` is still positive) and a post-migration `total_assets()` no lower than `(10_000 - max_slippage_bps) / 10_000` of the pre-migration value (`MigrationValueDrift` otherwise). `10_000` itself is a valid, if extreme, choice of `max_slippage_bps`, an admin explicitly accepting no value-preservation protection, e.g. when recovering from an old adapter already known to be broken. Since Soroban transactions are atomic, a failed check leaves no partial state, nothing moves. On success, `ADAPTER` and `ADPT_SH` are updated; `TOTAL_SH`, every holder's mUSDC balance, and every depositor's `Principal`/`Entry` are untouched, since they're denominated in vault mUSDC shares, not adapter shares.
+Refreshes and reads the old adapter's `total_assets()` as the pre-migration value (an independent measurement taken before extraction, so it can catch loss on the withdrawal leg itself, not just the deposit leg), also baselines `new_adapter`'s `total_assets()` before landing any funds on it (so a pre-existing balance the target already held — e.g. residue stranded by the `set_adapter` wrong-counter case above — isn't later counted as value this migration delivered), withdraws the vault's entire adapter-share position into the vault itself, deposits it into `new_adapter`, and requires the new adapter to report a positive share count (`DepositTooSmall` otherwise, this is what stops the vault's own bookkeeping from ever being pointed at zero adapter shares while `TOTAL_SH` is still positive) and a post-migration `total_assets()` delta over that baseline no lower than `(10_000 - max_slippage_bps) / 10_000` of the pre-migration value (`MigrationValueDrift` otherwise). `10_000` itself is a valid, if extreme, choice of `max_slippage_bps`, an admin explicitly accepting no value-preservation protection, e.g. when recovering from an old adapter already known to be broken. Since Soroban transactions are atomic, a failed check leaves no partial state, nothing moves. On success, `ADAPTER` and `ADPT_SH` are updated; `TOTAL_SH`, every holder's mUSDC balance, and every depositor's `Principal`/`Entry` are untouched, since they're denominated in vault mUSDC shares, not adapter shares.
 
 **This does not protect against a malicious or compromised admin key.** The admin chooses `new_adapter`, and a fake adapter could report whatever `total_assets()` it likes to pass the slippage check and then keep the funds. The invariant guards against accidental value loss (slippage, a buggy new adapter), not against the admin key itself, that's a key-custody problem (see the shared testnet admin/deployer/mUSDC-issuer key warning in the deploy scripts), not something this function can close on its own.
 
@@ -96,9 +96,19 @@ Emergency switch. While paused, new deposits are rejected. Withdrawals remain op
 
 Returns whether deposits are currently paused.
 
-### `set_admin(new_admin)` (admin only)
+### `transfer_admin(new_admin)` (admin only)
 
-Rotates the admin key. Lets a compromised or retired admin key be replaced without redeploying the vault.
+Nominates `new_admin` as the next admin. Requires the current admin's `require_auth()`. Records the nominee in a pending slot but does **not** change who the admin is — `get_admin()` still returns the current admin until the nominee itself calls `accept_admin()`. Calling this again before that happens overwrites the pending nominee; only the most recent nomination is live.
+
+This two-step handover exists so a typo'd, unreachable, or otherwise-uncontrolled address can never brick admin: the old admin stays fully in control until the new address proves, by successfully calling `accept_admin()`, that it holds a working signing key.
+
+### `accept_admin() -> Result<(), ContractError>` (pending nominee only)
+
+Completes a handover previously started with `transfer_admin`. Requires the pending nominee's own `require_auth()`, not the current admin's — this is the step that proves the new key actually works. On success, `ADMIN` becomes the nominee and the pending slot is cleared. Fails with `NoPendingAdmin` if no `transfer_admin` nomination is outstanding.
+
+### `get_pending_admin() -> Option<Address>`
+
+Returns the currently pending nominee, or `None` if no handover is in progress.
 
 ### `get_admin() -> Address`
 
@@ -184,7 +194,7 @@ USDC on Stellar uses 7 decimal places. 1 USDC = `10_000_000` stroops. All contra
 
 ## Authorization and safety rails
 
-`caller.require_auth()` is called at the start of both `deposit` and `withdraw`. Admin functions (`set_admin`, `set_paused`, `set_adapter`) call an internal `require_admin` helper that reads the stored admin address and calls `require_auth()` on it. See [BlendAdapter's auth note](#blendadapter) above for a subtler auth requirement specific to that adapter.
+`caller.require_auth()` is called at the start of both `deposit` and `withdraw`. Admin functions (`transfer_admin`, `set_paused`, `set_adapter`) call an internal `require_admin` helper that reads the stored admin address and calls `require_auth()` on it. `accept_admin` is the one exception: it calls `require_auth()` on the pending nominee instead, since its whole purpose is to require the _new_ admin's signature, not the current one's. See [BlendAdapter's auth note](#blendadapter) above for a subtler auth requirement specific to that adapter.
 
 Deposits, but never withdrawals, can be paused via `set_paused(true)` — this is deliberate, so a pause can never trap user funds.
 
@@ -208,12 +218,14 @@ Deposits, but never withdrawals, can be paused via `set_paused(true)` — this i
 | `MigrationValueDrift` | 12   | `migrate_adapter`'s post-migration value fell outside `max_slippage_bps` of the pre-migration value.                            |
 | `NoAdapterPosition`   | 13   | `migrate_adapter` was called while the current adapter has no position (`ADPT_SH <= 0`).                                        |
 | `InvalidSlippageBps`  | 14   | `migrate_adapter` was called with `max_slippage_bps > 10_000`.                                                                  |
+| `NoPendingAdmin`      | 16   | `accept_admin` was called with no `transfer_admin` nomination outstanding.                                                      |
 
 ## Contract storage
 
 | Key                  | Storage type | Value                                                                                                                                        |
 | -------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ADMIN`              | Instance     | Admin `Address`                                                                                                                              |
+| `PEND_ADM`           | Instance     | Pending admin nominee `Address`, set by `transfer_admin` and cleared once `accept_admin` completes                                           |
 | `USDC`               | Instance     | USDC contract `Address`                                                                                                                      |
 | `MUSDC`              | Instance     | mUSDC contract `Address`                                                                                                                     |
 | `ADAPTER`            | Instance     | Active adapter contract `Address`                                                                                                            |
