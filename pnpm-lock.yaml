@@ -59,8 +59,8 @@ importers:
         version: 1.38.2
     devDependencies:
       '@vercel/node':
-        specifier: ^5.10.0
-        version: 5.10.0(rollup@4.60.2)
+        specifier: ^7.0.0
+        version: 7.0.0(@vercel/build-utils@14.1.0)(rollup@4.60.2)
       vitest:
         specifier: ^4.1.11
         version: 4.1.11(@edge-runtime/vm@3.2.0)(@types/node@26.2.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12))
@@ -1809,8 +1809,10 @@ packages:
     engines: {node: '>=20'}
     hasBin: true
 
-  '@vercel/node@5.10.0':
-    resolution: {integrity: sha512-VhpH6g8kpM8wvi15/BST3ggXLaVRYQ7KCmDDsxkHaOfkwWICWBrgAratveMaU6sCIyETKS0gCU+Z7Dksv/i0UA==}
+  '@vercel/node@7.0.0':
+    resolution: {integrity: sha512-RqNQuw4Ix0nG5yiUUE8UZPEaz+f3YRKJtEzYq8qGvGElNYwokivBVPa0BcW1XWjKwGcGGSJPFz5pLnLp+XY85g==}
+    peerDependencies:
+      '@vercel/build-utils': 14.4.0
 
   '@vercel/python-analysis@0.13.2':
     resolution: {integrity: sha512-IEr5K2gvX143NBoQc1W4BWrdDWjZwxnIT6UrL5Y1dnyH7Cqc4AV00FIAddB1YpnIZBJwT4ZhE8QbgqBeO6C9Zw==}
@@ -5155,7 +5157,7 @@ snapshots:
       - rollup
       - supports-color
 
-  '@vercel/node@5.10.0(rollup@4.60.2)':
+  '@vercel/node@7.0.0(@vercel/build-utils@14.1.0)(rollup@4.60.2)':
     dependencies:
       '@edge-runtime/node-utils': 2.3.0
       '@edge-runtime/primitives': 4.1.0
