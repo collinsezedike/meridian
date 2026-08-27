@@ -191,9 +191,17 @@ impl MeridianVault {
         // The virtual offset makes the first-deposit price 1 share = 1 stroop while
         // neutralising the inflation attack on every subsequent deposit.
         let shares_to_mint = amount
-            .checked_mul(total_shares + OFFSET)
+            .checked_mul(
+                total_shares
+                    .checked_add(OFFSET)
+                    .ok_or(ContractError::Overflow)?,
+            )
             .ok_or(ContractError::Overflow)?
-            .checked_div(total_assets + OFFSET)
+            .checked_div(
+                total_assets
+                    .checked_add(OFFSET)
+                    .ok_or(ContractError::Overflow)?,
+            )
             .ok_or(ContractError::Overflow)?;
 
         if shares_to_mint <= 0 {
