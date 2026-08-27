@@ -604,6 +604,9 @@ impl MeridianVault {
         if new_shares <= 0 {
             return Err(ContractError::DepositTooSmall);
         }
+        // Price the new adapter from a fresh read so a cache-backed adapter
+        // (e.g. Blend) reports its real post-deposit value, matching deposit().
+        new_adapter_client.refresh();
         let value_after = new_adapter_client.total_assets();
 
         let min_acceptable = value_before
