@@ -583,6 +583,13 @@ impl MeridianVault {
         old_adapter.refresh();
         let value_before = old_adapter.total_assets();
 
+        // Baseline the target adapter's balance before landing any funds on
+        // it, so a pre-existing residue (e.g. left over from a prior
+        // stranding bug) isn't counted as value this migration delivered.
+        let new_adapter_client = AdapterClient::new(&env, &new_adapter);
+        new_adapter_client.refresh();
+        let new_adapter_value_before = new_adapter_client.total_assets();
+
         // Withdraw the vault's entire position into the vault itself, not a
         // single depositor, mirroring the same withdraw() entrypoint every
         // user withdrawal already goes through.
@@ -599,12 +606,16 @@ impl MeridianVault {
             &new_adapter,
             &withdrawn,
         );
-        let new_adapter_client = AdapterClient::new(&env, &new_adapter);
         let new_shares = new_adapter_client.deposit(&withdrawn);
         if new_shares <= 0 {
             return Err(ContractError::DepositTooSmall);
         }
-        let value_after = new_adapter_client.total_assets();
+        // The value this migration delivered is the delta over the target's
+        // pre-existing balance, not its raw post-transfer total.
+        let value_after = new_adapter_client
+            .total_assets()
+            .checked_sub(new_adapter_value_before)
+            .ok_or(ContractError::Overflow)?;
 
         let min_acceptable = value_before
             .checked_mul(10_000i128 - max_slippage_bps as i128)
@@ -1653,6 +1664,43 @@ mod tests {
         // Nothing moved: the old adapter still holds the full position.
         assert_eq!(vault.get_adapter(), adapter);
         assert_eq!(vault.get_total_assets(), amount);
+    }
+
+    #[test]
+    fn migrate_adapter_excludes_target_pre_existing_balance_from_value_after() {
+        use lossy_mock::{LossyMockAdapter, LossyMockAdapterClient};
+
+        let (env, _admin, user, usdc, _musdc, adapter, vault) = setup();
+        let amount = 100_0000000_i128;
+        vault.deposit(&user, &amount);
+
+        let lossy_adapter_id = env.register(LossyMockAdapter, ());
+        LossyMockAdapterClient::new(&env, &lossy_adapter_id).initialize(&usdc);
+
+        // Strand a balance on the target before it's ever a migration target,
+        // e.g. left over from the set_adapter wrong-counter bug tracked
+        // separately. This residue is bigger than the real loss below, so if
+        // value_after ever counts it as delivered value, the slippage check
+        // is fooled into passing.
+        let residue = 60_0000000_i128;
+        StellarAssetClient::new(&env, &usdc).mint(&lossy_adapter_id, &residue);
+
+        // The lossy adapter loses half of whatever it's deposited. With a 0
+        // bps tolerance this must be rejected on the real delivered value
+        // alone (50 of the 100 migrated), not the residue-inflated total
+        // (60 residue + 50 delivered = 110, which would incorrectly clear
+        // the 100 baseline).
+        let result = vault.try_migrate_adapter(&lossy_adapter_id, &0);
+        assert_eq!(result, Err(Ok(ContractError::MigrationValueDrift)));
+
+        // Nothing moved: the old adapter still holds the full position, and
+        // the target's pre-existing residue is untouched.
+        assert_eq!(vault.get_adapter(), adapter);
+        assert_eq!(vault.get_total_assets(), amount);
+        assert_eq!(
+            LossyMockAdapterClient::new(&env, &lossy_adapter_id).total_assets(),
+            residue
+        );
     }
 
     #[test]
