@@ -15,6 +15,26 @@ use soroban_sdk::{
 const DFX_VAULT: Symbol = symbol_short!("DFXVAULT");
 
 // ---------------------------------------------------------------------------
+// Slippage tolerance
+// ---------------------------------------------------------------------------
+
+/// Maximum tolerated execution-price slippage on either leg of a DeFindex
+/// interaction, in basis points. #117 and #432 established this floor
+/// off-chain in stellar-sdk-helpers/src/defindex.ts, but the on-chain path
+/// MeridianVault::deposit/withdraw actually invokes still passed a literal 0
+/// minimum, accepting any price the DeFindex vault happened to offer (#558).
+/// A floor set to the exact expected amount would revert on ordinary
+/// rounding, so this leaves headroom rather than demanding an exact match.
+const SLIPPAGE_BPS: i128 = 50; // 0.5%
+const BPS_DENOMINATOR: i128 = 10_000;
+
+/// Floors `amount` by `SLIPPAGE_BPS`, giving the minimum acceptable amount to
+/// pass as the DeFindex vault's `amounts_min` / `min_amounts_out` leg.
+fn min_after_slippage(amount: i128) -> i128 {
+    amount - (amount * SLIPPAGE_BPS) / BPS_DENOMINATOR
+}
+
+// ---------------------------------------------------------------------------
 // DeFindex vault interface
 // ---------------------------------------------------------------------------
 
@@ -129,6 +149,11 @@ impl MeridianDefindexAdapter {
     /// Called by the vault after transferring `amount` USDC to this adapter.
     /// Deposits USDC into the DeFindex vault on behalf of the adapter and
     /// returns the dfToken shares received.
+    ///
+    /// `amounts_min` is floored `SLIPPAGE_BPS` below `amount` (the exact
+    /// desired deposit), not 0, so the DeFindex vault call rejects execution
+    /// that lands materially below what was requested instead of accepting
+    /// any price it happens to offer.
     pub fn deposit(env: Env, amount: i128) -> i128 {
         require_vault_auth(&env);
 
@@ -140,7 +165,8 @@ impl MeridianDefindexAdapter {
 
         let client = DefindexVaultClient::new(&env, &dfx);
         let shares_before = client.balance(&adapter);
-        let _ = client.deposit(&vec![&env, amount], &vec![&env, 0_i128], &adapter, &true);
+        let min_amount = min_after_slippage(amount);
+        let _ = client.deposit(&vec![&env, amount], &vec![&env, min_amount], &adapter, &true);
         let shares_after = client.balance(&adapter);
 
         shares_after - shares_before
@@ -149,6 +175,11 @@ impl MeridianDefindexAdapter {
     /// Called by the vault to redeem `shares` dfTokens from the DeFindex vault.
     /// DeFindex sends USDC to this adapter; the adapter forwards it to
     /// `recipient`. Returns the USDC amount received.
+    ///
+    /// `min_amounts_out` is floored `SLIPPAGE_BPS` below the payout DeFindex's
+    /// own `get_asset_amounts_per_shares` quotes for `shares` just before the
+    /// call, not 0, so a withdrawal executing at a materially worse rate than
+    /// quoted fails instead of paying out whatever DeFindex offers.
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
         require_vault_auth(&env);
 
@@ -159,8 +190,15 @@ impl MeridianDefindexAdapter {
         let usdc = get_usdc(&env);
         let adapter = env.current_contract_address();
 
-        let amounts =
-            DefindexVaultClient::new(&env, &dfx).withdraw(&shares, &vec![&env, 0_i128], &adapter);
+        let client = DefindexVaultClient::new(&env, &dfx);
+        // Vec.get() returns Option which safely defaults to 0 if the vector doesn't contain
+        // index 0 or is empty, so this unwrap_or is safe and intentional.
+        let expected = client
+            .get_asset_amounts_per_shares(&shares)
+            .get(0)
+            .unwrap_or(0);
+        let min_out = min_after_slippage(expected);
+        let amounts = client.withdraw(&shares, &vec![&env, min_out], &adapter);
 
         // Vec.get() returns Option which safely defaults to 0 if the vector doesn't contain
         // index 0 or is empty, so this unwrap_or is safe and intentional.
@@ -231,11 +269,16 @@ mod tests {
     // lets tests configure exactly what `withdraw` returns, so the
     // `amounts.get(0).unwrap_or(0)` edge case in the real adapter (a
     // differently-shaped or empty return vector) can be exercised directly.
+    // `deposit`/`withdraw` also record the `amounts_min`/`min_amounts_out`
+    // leg they were called with, so #558's regression tests can assert the
+    // adapter sent a real floor instead of a literal 0.
     // -----------------------------------------------------------------------
 
     const MDV_USDC: Symbol = symbol_short!("MDV_USDC");
     const MDV_SH: Symbol = symbol_short!("MDV_SH");
     const MDV_WAMT: Symbol = symbol_short!("MDV_WAMT");
+    const MDV_DMIN: Symbol = symbol_short!("MDV_DMIN");
+    const MDV_WMIN: Symbol = symbol_short!("MDV_WMIN");
 
     #[contract]
     pub struct MockDefindexVault;
@@ -253,10 +296,20 @@ mod tests {
             env.storage().instance().set(&MDV_WAMT, &amounts);
         }
 
+        // The `amounts_min` the last `deposit()` call was made with.
+        pub fn last_deposit_min(env: Env) -> i128 {
+            env.storage().instance().get(&MDV_DMIN).unwrap_or(0)
+        }
+
+        // The `min_amounts_out` the last `withdraw()` call was made with.
+        pub fn last_withdraw_min(env: Env) -> i128 {
+            env.storage().instance().get(&MDV_WMIN).unwrap_or(0)
+        }
+
         pub fn deposit(
             env: Env,
             amounts_desired: Vec<i128>,
-            _amounts_min: Vec<i128>,
+            amounts_min: Vec<i128>,
             from: Address,
             _invest: bool,
         ) -> Val {
@@ -269,6 +322,10 @@ mod tests {
             let amount = amounts_desired.get(0).unwrap_or(0);
             TokenClient::new(&env, &usdc).transfer(&from, &env.current_contract_address(), &amount);
 
+            env.storage()
+                .instance()
+                .set(&MDV_DMIN, &amounts_min.get(0).unwrap_or(0));
+
             let prev: i128 = env.storage().instance().get(&MDV_SH).unwrap_or(0);
             env.storage().instance().set(&MDV_SH, &(prev + amount));
             Val::VOID.into()
@@ -277,9 +334,13 @@ mod tests {
         pub fn withdraw(
             env: Env,
             withdraw_shares: i128,
-            _min_amounts_out: Vec<i128>,
+            min_amounts_out: Vec<i128>,
             from: Address,
         ) -> Vec<i128> {
+            env.storage()
+                .instance()
+                .set(&MDV_WMIN, &min_amounts_out.get(0).unwrap_or(0));
+
             let prev: i128 = env.storage().instance().get(&MDV_SH).unwrap_or(0);
             env.storage()
                 .instance()
@@ -395,6 +456,40 @@ mod tests {
 
         assert_eq!(shares, amount);
         assert_eq!(adapter.total_assets(), amount);
+    }
+
+    #[test]
+    fn deposit_passes_a_real_slippage_floor_not_zero() {
+        // Regression test for #558: deposit() must not pass 0 as
+        // amounts_min, letting the DeFindex vault execute at any price.
+        let (env, vault, usdc_id, adapter, dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        let expected_min = amount - (amount * 50) / 10_000;
+        assert!(expected_min > 0);
+        assert_eq!(dfx.last_deposit_min(), expected_min);
+    }
+
+    #[test]
+    fn withdraw_passes_a_real_slippage_floor_not_zero() {
+        // Regression test for #558: withdraw() must not pass 0 as
+        // min_amounts_out, letting the DeFindex vault execute at any price.
+        // The mock values 1:1, so the quoted payout equals `shares`.
+        let (env, vault, usdc_id, adapter, dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        let recipient = Address::generate(&env);
+        adapter.withdraw(&amount, &recipient);
+
+        let expected_min = amount - (amount * 50) / 10_000;
+        assert!(expected_min > 0);
+        assert_eq!(dfx.last_withdraw_min(), expected_min);
     }
 
     #[test]
