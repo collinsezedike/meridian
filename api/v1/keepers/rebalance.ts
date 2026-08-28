@@ -33,7 +33,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // itself is more tolerant: this is the abuse backstop on an endpoint that
   // signs real transactions, and the next scheduled tick retries anyway.
   try {
-    if (!(await checkRateLimit(req, res))) return;
+    if (!(await checkRateLimit(req, res, { strict: true }))) return;
   } catch (err) {
     console.error("[migration-keeper] rate limit check failed:", err);
     return res
