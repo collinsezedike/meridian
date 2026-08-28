@@ -409,6 +409,25 @@ impl MeridianBlendAdapter {
         env.storage().instance().get(&TOTAL_KEY).unwrap_or(0)
     }
 
+    /// Returns the adapter's current bToken share balance, read directly from
+    /// Blend's ledger rather than self-tracked.
+    pub fn total_shares(env: Env) -> i128 {
+        let pool: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&POOL_KEY),
+        );
+        let usdc = get_usdc(&env);
+        let adapter = env.current_contract_address();
+
+        let client = BlendPoolClient::new(&env, &pool);
+        let reserve = client.get_reserve(&usdc);
+        client
+            .get_positions(&adapter)
+            .collateral
+            .get(reserve.config.index)
+            .unwrap_or(0)
+    }
+
     /// Returns the Blend pool this adapter supplies to.
     pub fn get_pool(env: Env) -> Address {
         adapter_common::get_or_not_initialized::<_, ContractError>(

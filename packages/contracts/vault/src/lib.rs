@@ -39,6 +39,10 @@ pub trait YieldAdapterInterface {
     fn deposit(env: Env, amount: i128) -> i128;
     fn withdraw(env: Env, shares: i128, recipient: Address) -> i128;
     fn total_assets(env: Env) -> i128;
+    /// The adapter's current protocol-share balance, read from the underlying
+    /// protocol's own ledger rather than self-tracked. Lets the vault reconcile
+    /// ADPT_SH instead of estimating its decrements.
+    fn total_shares(env: Env) -> i128;
     /// Refreshes the adapter's cached total_assets before it is read for
     /// deposit/withdraw pricing. A no-op for adapters that already price
     /// live on every call.
@@ -276,7 +280,8 @@ impl MeridianVault {
         TokenClient::new(&env, &usdc).transfer(&caller, &adapter_addr, &amount);
 
         // Adapter deploys USDC to the underlying protocol and returns its own shares.
-        let adapter_shares = AdapterClient::new(&env, &adapter_addr).deposit(&amount);
+        let adapter_client = AdapterClient::new(&env, &adapter_addr);
+        let _adapter_shares = adapter_client.deposit(&amount);
 
         // Mint mUSDC shares to caller.
         MusdcAdminClient::new(&env, &musdc).mint(&caller, &shares_to_mint);
@@ -287,7 +292,7 @@ impl MeridianVault {
             .set(&TOTAL_SH, &(total_shares + shares_to_mint));
         env.storage()
             .instance()
-            .set(&ADPT_SH, &(total_adapter_shares + adapter_shares));
+            .set(&ADPT_SH, &adapter_client.total_shares());
 
         // Stamp the entry time on the caller's first deposit; top-ups keep
         // the original time. Keyed off whether an entry record exists rather
@@ -376,7 +381,8 @@ impl MeridianVault {
             .ok_or(ContractError::Overflow)?;
 
         // Adapter redeems protocol shares, delivers USDC to vault, returns amount.
-        let usdc_out = AdapterClient::new(&env, &adapter_addr)
+        let adapter_client = AdapterClient::new(&env, &adapter_addr);
+        let usdc_out = adapter_client
             .withdraw(&adapter_shares_to_burn, &env.current_contract_address());
 
         if usdc_out <= 0 {
@@ -400,7 +406,7 @@ impl MeridianVault {
             .set(&TOTAL_SH, &(total_shares - shares));
         env.storage()
             .instance()
-            .set(&ADPT_SH, &(total_adapter_shares - adapter_shares_to_burn));
+            .set(&ADPT_SH, &adapter_client.total_shares());
 
         let remaining = caller_shares - shares;
 
@@ -865,7 +871,9 @@ impl MeridianVault {
         }
 
         env.storage().instance().set(&ADAPTER, &new_adapter);
-        env.storage().instance().set(&ADPT_SH, &new_shares);
+        env.storage()
+            .instance()
+            .set(&ADPT_SH, &new_adapter_client.total_shares());
         Ok(())
     }
 
@@ -1106,6 +1114,10 @@ mod tests {
             mock_total_assets(&env, &usdc)
         }
 
+        pub fn total_shares(env: Env) -> i128 {
+            env.storage().instance().get(&MA_SH).unwrap_or(0)
+        }
+
         pub fn refresh(_env: Env) {
             // No-op: MockAdapter already prices total_assets() live.
         }
@@ -1165,6 +1177,10 @@ mod tests {
                 mock_total_assets(&env, &usdc)
             }
 
+            pub fn total_shares(env: Env) -> i128 {
+                env.storage().instance().get(&LA_SH).unwrap_or(0)
+            }
+
             pub fn refresh(_env: Env) {
                 // No-op: LossyMockAdapter already prices total_assets() live.
             }
@@ -1214,6 +1230,10 @@ mod tests {
                 let usdc: Address =
                     get_or_not_initialized(&env, env.storage().instance().get(&ZS_USDC));
                 mock_total_assets(&env, &usdc)
+            }
+
+            pub fn total_shares(env: Env) -> i128 {
+                env.storage().instance().get(&ZS_SH).unwrap_or(0)
             }
 
             pub fn refresh(_env: Env) {
@@ -1289,6 +1309,10 @@ mod tests {
                 // Instance storage read defaults to 0 if CM_TOTAL hasn't been set, which is safe since
                 // initialize() sets this key to 0.
                 env.storage().instance().get(&CM_TOTAL).unwrap_or(0)
+            }
+
+            pub fn total_shares(env: Env) -> i128 {
+                env.storage().instance().get(&CM_SH).unwrap_or(0)
             }
 
             pub fn refresh(env: Env) {

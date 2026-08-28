@@ -199,6 +199,18 @@ impl MeridianDefindexAdapter {
         }
     }
 
+    /// Returns the adapter's current dfToken share balance read directly from
+    /// the DeFindex vault's ledger.
+    pub fn total_shares(env: Env) -> i128 {
+        let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&DFX_VAULT),
+        );
+        let adapter = env.current_contract_address();
+
+        DefindexVaultClient::new(&env, &dfx).balance(&adapter)
+    }
+
     /// No-op: DeFindex's total_assets() already prices live on every call
     /// via the vault's exchange rate, so there is no cache to refresh.
     pub fn refresh(_env: Env) {}
