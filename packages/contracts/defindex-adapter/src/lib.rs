@@ -176,7 +176,7 @@ impl MeridianDefindexAdapter {
     pub fn balance(env: Env) -> i128 {
         let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
             &env,
-            adapter_common::get_pool(&env),
+            env.storage().instance().get(&DFX_VAULT),
         );
         let client = DefindexVaultClient::new(&env, &dfx);
         client.balance(&env.current_contract_address())
