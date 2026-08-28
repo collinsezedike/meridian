@@ -2,14 +2,14 @@
 
 ## Stack
 
-| Concern      | Library                  |
-| ------------ | ------------------------ |
-| Bundler      | Vite 8                   |
-| UI           | React 19                 |
-| Styling      | Tailwind CSS             |
-| Server state | TanStack Query v5        |
-| Client state | Zustand                  |
-| Wallet       | `@stellar/freighter-api` |
+| Concern      | Library                                                    |
+| ------------ | ---------------------------------------------------------- |
+| Bundler      | Vite 8                                                     |
+| UI           | React 19                                                   |
+| Styling      | Tailwind CSS                                               |
+| Server state | TanStack Query v5                                          |
+| Client state | Zustand                                                    |
+| Wallet       | `@stellar/freighter-api`, `@lobstrco/signer-extension-api` |
 
 ## Component structure
 
@@ -18,7 +18,7 @@ The UI is intentionally minimal: one page, one panel.
 ```
 App
 ├── Header
-│   └── WalletConnect        # Connect / disconnect Freighter
+│   └── WalletConnect        # Connect / disconnect + wallet picker (#611)
 └── VaultPanel               # All deposit/withdraw interaction
     ├── Hero (APY, TVL, Route)
     ├── Position summary     # Shown when connected with a position
@@ -43,7 +43,7 @@ useVaults
 useVaultActions.deposit(amount, vaultId)
   └─► api.buildDeposit({ walletAddress, vaultId, amount })
         └─► POST /api/v1/tx/deposit → { xdr, fee }
-              └─► signTransaction(xdr, networkPassphrase)  ← Freighter
+              └─► signTransaction(xdr, networkPassphrase)  ← whichever wallet is selected
                     └─► api.submitTx({ xdr: signedXdr })
                           └─► POST /api/v1/tx/submit → { hash }
                                 └─► queryClient.invalidateQueries(["positions"])
@@ -74,9 +74,15 @@ interface WalletAdapter {
 }
 ```
 
-`useWalletConnect` drives the connection flow through this interface: it calls `wallet.isInstalled()` to detect the extension and `wallet.connect()` to request access, then persists the returned public key in the store. On page load the store revalidates a restored key via `wallet.isAuthorized()`.
+### Wallet registry and picker (#611)
 
-The only implementation today is `FreighterWallet`, exported as `wallet`. Adding a wallet (e.g. xBull, LOBSTR) means adding a new `WalletAdapter` implementation and selecting it in `wallet.ts`. No callers change.
+`wallet.ts` exports `WALLETS: WalletMeta[]`, one entry per implemented adapter (`FreighterWallet`, `LobstrWallet`; `XBullWallet` joins once #598 merges — nothing else here needs to change for that). Each entry carries an `id`, a display `name`, an `installUrl` for the no-extension fallback, and the adapter instance itself.
+
+Which wallet is "selected" is tracked independently of `useWalletStore`, in `wallet.ts` itself (`getSelectedWalletId()`/`setSelectedWalletId()`, backed by a plain `localStorage` key) — not in the Zustand store, to avoid a circular import (`store/wallet.ts` already imports from `lib/wallet.ts`). It defaults to Freighter and only changes on a _successful_ connect, so a failed or cancelled attempt never silently switches which wallet later sign/reconnect calls go through.
+
+`useWalletConnect().handleConnect(walletId?)` connects through a specific wallet — passed explicitly by the picker UI in `WalletConnect.tsx`, or defaulted to the persisted selection when omitted (the plain "Connect Wallet" button's click handler, unchanged from before the picker existed). `attemptedWalletId` (also returned by the hook) tracks whichever wallet the most recent attempt was for, so the `status === "no-extension"` fallback can link to that wallet's own `installUrl` and name instead of a hardcoded Freighter link.
+
+The exported `wallet: WalletAdapter` singleton still exists for callers that only care about "whichever wallet the user is connected through" — `useSignAndSubmit`'s `sign()` call and the store's `revalidate()`'s `isAuthorized()` check — and now dispatches to `getWalletAdapter(getSelectedWalletId())` on every call rather than being pinned to Freighter. Adding a new wallet still means adding a `WalletAdapter` implementation and one entry in `WALLETS`; no caller of the singleton or of `useWalletConnect` needs to change.
 
 ## API client
 

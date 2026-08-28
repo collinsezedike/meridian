@@ -185,5 +185,78 @@ export class LobstrWallet implements WalletAdapter {
   }
 }
 
-// Freighter is the only supported wallet today.
-export const wallet: WalletAdapter = new FreighterWallet();
+// ---------------------------------------------------------------------------
+// Wallet registry (#611)
+// ---------------------------------------------------------------------------
+
+export type WalletId = "freighter" | "lobstr";
+
+export interface WalletMeta {
+  id: WalletId;
+  name: string;
+  // Where to send a user who picks this wallet but doesn't have it
+  // installed. Both are the wallet's own general site rather than a
+  // store-specific deep link, matching how freighter.app was already used
+  // here before this wallet became one of several.
+  installUrl: string;
+  adapter: WalletAdapter;
+}
+
+// Every implemented adapter, in the order offered to the user. xBull (#598)
+// joins this list once its adapter lands — nothing else here should need to
+// change for that.
+export const WALLETS: WalletMeta[] = [
+  {
+    id: "freighter",
+    name: "Freighter",
+    installUrl: "https://freighter.app",
+    adapter: new FreighterWallet(),
+  },
+  {
+    id: "lobstr",
+    name: "LOBSTR",
+    installUrl: "https://lobstr.co",
+    adapter: new LobstrWallet(),
+  },
+];
+
+const DEFAULT_WALLET_ID: WalletId = "freighter";
+const SELECTED_WALLET_STORAGE_KEY = "meridian-selected-wallet";
+
+export function isWalletId(value: string | null): value is WalletId {
+  return WALLETS.some((w) => w.id === value);
+}
+
+/** The user's last-picked wallet, persisted across sessions. Defaults to Freighter. */
+export function getSelectedWalletId(): WalletId {
+  if (typeof window === "undefined") return DEFAULT_WALLET_ID;
+  const stored = window.localStorage.getItem(SELECTED_WALLET_STORAGE_KEY);
+  return isWalletId(stored) ? stored : DEFAULT_WALLET_ID;
+}
+
+export function setSelectedWalletId(id: WalletId): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(SELECTED_WALLET_STORAGE_KEY, id);
+}
+
+export function getWalletMeta(id: WalletId): WalletMeta {
+  return WALLETS.find((w) => w.id === id) ?? WALLETS[0]!;
+}
+
+export function getWalletAdapter(id: WalletId): WalletAdapter {
+  return getWalletMeta(id).adapter;
+}
+
+// Back-compat dispatcher: resolves to whichever wallet is currently
+// selected on every call, rather than being pinned to one adapter. Callers
+// that only ever need "the wallet the user is connected through" (signing,
+// re-authorization checks) keep using this and automatically follow the
+// user's choice; callers that need to act on a *specific* wallet before it
+// becomes the selection (the connect picker) use getWalletAdapter directly.
+export const wallet: WalletAdapter = {
+  isInstalled: () => getWalletAdapter(getSelectedWalletId()).isInstalled(),
+  isAuthorized: () => getWalletAdapter(getSelectedWalletId()).isAuthorized(),
+  connect: () => getWalletAdapter(getSelectedWalletId()).connect(),
+  sign: (xdr, networkPassphrase) =>
+    getWalletAdapter(getSelectedWalletId()).sign(xdr, networkPassphrase),
+};

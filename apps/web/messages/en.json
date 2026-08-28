@@ -8,7 +8,9 @@
     "copyAddress": "Copy Address",
     "copied": "Copied",
     "walletDisconnected": "Wallet Disconnected",
-    "walletConnected": "Wallet Connected"
+    "walletConnected": "Wallet Connected",
+    "chooseWallet": "Choose a wallet",
+    "installed": "Installed"
   },
 
   "vaultPanel": {
@@ -47,7 +49,7 @@
   "common": {
     "connectWallet": "Connect Wallet",
     "connecting": "Connecting...",
-    "installFreighter": "Install Freighter",
+    "installWallet": "Install {{name}}",
     "retry": "Retry"
   }
 }

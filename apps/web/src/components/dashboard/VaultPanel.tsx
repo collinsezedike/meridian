@@ -4,6 +4,7 @@ import { usePositions } from "../../hooks/usePositions";
 import { useVaultActions } from "../../hooks/useVaultActions";
 import { useWalletStore } from "../../store/wallet";
 import { useWalletConnect } from "../../hooks/useWalletConnect";
+import { getWalletMeta } from "../../lib/wallet";
 import { PositionSummary } from "./PositionSummary";
 import { DepositTab } from "./DepositTab";
 import { WithdrawTab } from "./WithdrawTab";
@@ -28,7 +29,11 @@ export function VaultPanel() {
   const vaults = data?.vaults;
   const { t } = useTranslation();
   const { connected, publicKey } = useWalletStore();
-  const { handleConnect, status: connectStatus } = useWalletConnect();
+  const {
+    handleConnect,
+    status: connectStatus,
+    attemptedWalletId,
+  } = useWalletConnect();
   const {
     data: positions = [],
     isError: positionsError,
@@ -221,16 +226,18 @@ export function VaultPanel() {
             </p>
             {connectStatus === "no-extension" ? (
               <a
-                href="https://freighter.app"
+                href={getWalletMeta(attemptedWalletId).installUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center justify-center w-full rounded-xl border border-amber-800/70 bg-amber-950/20 hover:border-amber-700 text-amber-400 hover:text-amber-300 text-sm font-medium py-3 transition-colors duration-150"
               >
-                {t("common.installFreighter")}
+                {t("common.installWallet", {
+                  name: getWalletMeta(attemptedWalletId).name,
+                })}
               </a>
             ) : (
               <button
-                onClick={handleConnect}
+                onClick={() => void handleConnect()}
                 disabled={connectStatus === "connecting"}
                 className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 disabled:text-gray-600 text-white text-sm font-semibold py-3 transition-all duration-150 disabled:cursor-not-allowed"
               >

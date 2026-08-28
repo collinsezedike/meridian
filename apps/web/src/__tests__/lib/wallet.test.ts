@@ -7,23 +7,88 @@ vi.mock("@stellar/freighter-api", () => ({
   signTransaction: vi.fn(),
 }));
 
+vi.mock("@lobstrco/signer-extension-api", () => ({
+  isConnected: vi.fn(),
+  getPublicKey: vi.fn(),
+  signTransaction: vi.fn(),
+}));
+
 import {
   isConnected,
   isAllowed,
   requestAccess,
   signTransaction as freighterSign,
 } from "@stellar/freighter-api";
-import { wallet } from "../../lib/wallet";
+import { isConnected as lobstrIsConnected } from "@lobstrco/signer-extension-api";
+import {
+  wallet,
+  WALLETS,
+  isWalletId,
+  getSelectedWalletId,
+  setSelectedWalletId,
+  getWalletMeta,
+  getWalletAdapter,
+} from "../../lib/wallet";
 
 const ADDRESS = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+const SELECTED_WALLET_STORAGE_KEY = "meridian-selected-wallet";
 
 afterEach(() => {
   delete (window as unknown as { __E2E_MOCK_WALLET__?: unknown })
     .__E2E_MOCK_WALLET__;
+  window.localStorage.removeItem(SELECTED_WALLET_STORAGE_KEY);
 });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.removeItem(SELECTED_WALLET_STORAGE_KEY);
+});
+
+describe("wallet registry", () => {
+  it("lists Freighter and LOBSTR as implemented adapters", () => {
+    expect(WALLETS.map((w) => w.id)).toEqual(["freighter", "lobstr"]);
+  });
+
+  it("isWalletId accepts only registered ids", () => {
+    expect(isWalletId("freighter")).toBe(true);
+    expect(isWalletId("lobstr")).toBe(true);
+    expect(isWalletId("xbull")).toBe(false);
+    expect(isWalletId(null)).toBe(false);
+  });
+
+  it("defaults the selected wallet to Freighter when nothing is stored", () => {
+    expect(getSelectedWalletId()).toBe("freighter");
+  });
+
+  it("falls back to Freighter for a corrupt or unrecognized stored value", () => {
+    window.localStorage.setItem(SELECTED_WALLET_STORAGE_KEY, "not-a-wallet");
+    expect(getSelectedWalletId()).toBe("freighter");
+  });
+
+  it("persists an explicit selection across reads", () => {
+    setSelectedWalletId("lobstr");
+    expect(getSelectedWalletId()).toBe("lobstr");
+    expect(window.localStorage.getItem(SELECTED_WALLET_STORAGE_KEY)).toBe(
+      "lobstr"
+    );
+  });
+
+  it("getWalletMeta/getWalletAdapter resolve the matching registry entry", () => {
+    expect(getWalletMeta("lobstr").name).toBe("LOBSTR");
+    expect(getWalletAdapter("lobstr")).toBe(
+      WALLETS.find((w) => w.id === "lobstr")!.adapter
+    );
+  });
+
+  it("the wallet dispatcher follows the persisted selection, not a fixed adapter", async () => {
+    setSelectedWalletId("lobstr");
+    vi.mocked(lobstrIsConnected).mockResolvedValue(true);
+    await expect(wallet.isInstalled()).resolves.toBe(true);
+    // If the dispatcher were pinned to Freighter, this would call the real
+    // Freighter isConnected() instead of LOBSTR's isConnected().
+    expect(isConnected).not.toHaveBeenCalled();
+    expect(lobstrIsConnected).toHaveBeenCalledOnce();
+  });
 });
 
 describe("wallet — real Freighter path (no mock wallet present)", () => {

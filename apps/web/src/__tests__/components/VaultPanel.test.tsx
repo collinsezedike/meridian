@@ -78,6 +78,7 @@ beforeEach(() => {
   vi.mocked(useWalletConnect).mockReturnValue({
     handleConnect,
     status: "idle",
+    attemptedWalletId: "freighter",
   } as ReturnType<typeof useWalletConnect>);
 });
 
