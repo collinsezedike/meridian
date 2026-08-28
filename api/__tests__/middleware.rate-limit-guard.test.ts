@@ -57,6 +57,10 @@ describe("production rate-limit guard", () => {
     VERCEL_ENV: process.env.VERCEL_ENV,
     UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL,
     UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN,
+    UPSTASH_REDIS_REST_KV_REST_API_URL:
+      process.env.UPSTASH_REDIS_REST_KV_REST_API_URL,
+    UPSTASH_REDIS_REST_KV_REST_API_TOKEN:
+      process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN,
   };
 
   afterEach(() => {
@@ -81,6 +85,20 @@ describe("production rate-limit guard", () => {
     process.env.VERCEL_ENV = "production";
     process.env.UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
     process.env.UPSTASH_REDIS_REST_TOKEN = "test-token";
+    await expect(import("../_lib/middleware.js")).resolves.toBeDefined();
+  });
+
+  it("loads in production when only the Vercel Marketplace-provisioned names are set", async () => {
+    // Vercel's Upstash integration provisions credentials under a
+    // store-prefixed name, not the plain UPSTASH_REDIS_REST_URL/_TOKEN a
+    // manually-configured instance uses.
+    vi.resetModules();
+    process.env.VERCEL_ENV = "production";
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    process.env.UPSTASH_REDIS_REST_KV_REST_API_URL =
+      "https://example.upstash.io";
+    process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN = "test-token";
     await expect(import("../_lib/middleware.js")).resolves.toBeDefined();
   });
 

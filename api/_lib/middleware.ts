@@ -26,9 +26,18 @@ const LIMIT = 100;
 const WINDOW = "60 s";
 const WINDOW_MS = 60_000;
 
-const UPSTASH_CONFIGURED =
-  Boolean(process.env.UPSTASH_REDIS_REST_URL) &&
-  Boolean(process.env.UPSTASH_REDIS_REST_TOKEN);
+// Vercel's own Upstash Marketplace integration provisions credentials under
+// a store-prefixed name (UPSTASH_REDIS_REST_KV_REST_API_URL/_TOKEN), not the
+// plain UPSTASH_REDIS_REST_URL/_TOKEN a manually-configured Upstash instance
+// uses. Accept either so this doesn't depend on which path provisioned it.
+const UPSTASH_URL =
+  process.env.UPSTASH_REDIS_REST_URL ??
+  process.env.UPSTASH_REDIS_REST_KV_REST_API_URL;
+const UPSTASH_TOKEN =
+  process.env.UPSTASH_REDIS_REST_TOKEN ??
+  process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN;
+
+const UPSTASH_CONFIGURED = Boolean(UPSTASH_URL) && Boolean(UPSTASH_TOKEN);
 
 // The in-memory fallback is per-process and is not shared across workers, so
 // on a production deploy it is effectively no limit at all. Fail loudly at
@@ -37,13 +46,15 @@ const UPSTASH_CONFIGURED =
 // (VERCEL_ENV="preview") keep the fallback.
 if (process.env.VERCEL_ENV === "production" && !UPSTASH_CONFIGURED) {
   throw new Error(
-    "Refusing to start: UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required when VERCEL_ENV=production (the in-memory rate-limit fallback is not shared across workers)"
+    "Refusing to start: UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_KV_REST_API_URL and their _TOKEN counterparts are required when VERCEL_ENV=production (the in-memory rate-limit fallback is not shared across workers)"
   );
 }
 
+// Not Redis.fromEnv(): that helper only reads the plain UPSTASH_REDIS_REST_URL/
+// _TOKEN names, which would miss the Marketplace-provisioned ones resolved above.
 const ratelimit = UPSTASH_CONFIGURED
   ? new Ratelimit({
-      redis: Redis.fromEnv(),
+      redis: new Redis({ url: UPSTASH_URL!, token: UPSTASH_TOKEN! }),
       limiter: Ratelimit.slidingWindow(LIMIT, WINDOW),
     })
   : null;
