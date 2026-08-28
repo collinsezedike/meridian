@@ -366,8 +366,15 @@ export interface DefaultRateSourceOptions {
 function upstashSnapshotStoreFromEnv(
   env: Record<string, string | undefined>
 ): RateSnapshotStore | null {
-  const restUrl = env.UPSTASH_REDIS_REST_URL?.trim();
-  const restToken = env.UPSTASH_REDIS_REST_TOKEN?.trim();
+  // Vercel's own Upstash Marketplace integration provisions credentials
+  // under a store-prefixed name, not the plain UPSTASH_REDIS_REST_URL/_TOKEN
+  // a manually-configured Upstash instance uses. Accept either.
+  const restUrl = (
+    env.UPSTASH_REDIS_REST_URL ?? env.UPSTASH_REDIS_REST_KV_REST_API_URL
+  )?.trim();
+  const restToken = (
+    env.UPSTASH_REDIS_REST_TOKEN ?? env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN
+  )?.trim();
   if (!restUrl || !restToken) return null;
   return createUpstashRateSnapshotStore({ restUrl, restToken });
 }
