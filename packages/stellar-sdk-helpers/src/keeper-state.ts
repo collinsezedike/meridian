@@ -628,8 +628,15 @@ export function loadKeeperStateStore(
     timeoutMs?: number;
   }
 ): KeeperStateStore {
-  const url = env.UPSTASH_REDIS_REST_URL?.trim();
-  const token = env.UPSTASH_REDIS_REST_TOKEN?.trim();
+  // Vercel's own Upstash Marketplace integration provisions credentials
+  // under a store-prefixed name, not the plain UPSTASH_REDIS_REST_URL/_TOKEN
+  // a manually-configured Upstash instance uses. Accept either.
+  const url = (
+    env.UPSTASH_REDIS_REST_URL ?? env.UPSTASH_REDIS_REST_KV_REST_API_URL
+  )?.trim();
+  const token = (
+    env.UPSTASH_REDIS_REST_TOKEN ?? env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN
+  )?.trim();
   if (url && token) {
     return createUpstashKeeperStateStore({
       url,
