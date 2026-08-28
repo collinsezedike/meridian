@@ -387,6 +387,25 @@ impl MeridianBlendAdapter {
         }
     }
 
+    /// Returns the adapter's live bToken share balance.
+    pub fn balance(env: Env) -> i128 {
+        let pool: Address = env
+            .storage()
+            .instance()
+            .get(&POOL_KEY)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotInitialized));
+
+        let usdc: Address = adapter_common::get_usdc(&env);
+        let client = BlendPoolClient::new(&env, &pool);
+        let index = client.get_reserve(&usdc).config.index;
+
+        client
+            .get_positions(&env.current_contract_address())
+            .collateral
+            .get(index)
+            .unwrap_or(0)
+    }
+
     /// Returns the cached USDC value of the adapter's Blend position. Reflects
     /// yield only as of the last `accrue()` call; call `accrue()` first for a
     /// value that includes interest accrued since then.

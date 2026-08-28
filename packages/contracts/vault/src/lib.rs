@@ -16,7 +16,6 @@ const USDC: Symbol = symbol_short!("USDC");
 const MUSDC: Symbol = symbol_short!("MUSDC");
 const ADAPTER: Symbol = symbol_short!("ADAPTER");
 const TOTAL_SH: Symbol = symbol_short!("TOTAL_SH");
-const ADPT_SH: Symbol = symbol_short!("ADPT_SH");
 const PAUSED: Symbol = symbol_short!("PAUSED");
 
 // Virtual shares/assets offset (OpenZeppelin ERC-4626 mitigation against the
@@ -39,6 +38,7 @@ const OFFSET: i128 = 1_000;
 pub trait YieldAdapterInterface {
     fn deposit(env: Env, amount: i128) -> i128;
     fn withdraw(env: Env, shares: i128, recipient: Address) -> i128;
+    fn balance(env: Env) -> i128;
     fn total_assets(env: Env) -> i128;
     /// Refreshes the adapter's cached total_assets before it is read for
     /// deposit/withdraw pricing. A no-op for adapters that already price
@@ -165,7 +165,6 @@ impl MeridianVault {
         env.storage().instance().set(&MUSDC, &musdc);
         env.storage().instance().set(&ADAPTER, &adapter);
         env.storage().instance().set(&TOTAL_SH, &0_i128);
-        env.storage().instance().set(&ADPT_SH, &0_i128);
         Ok(())
     }
 
@@ -190,7 +189,6 @@ impl MeridianVault {
             .get(&ADAPTER)
             .ok_or(ContractError::NotInitialized)?;
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
-        let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
 
         // Refresh the adapter's cached total before pricing so this
         // depositor's own transaction is priced with up-to-date yield.
@@ -230,18 +228,15 @@ impl MeridianVault {
         TokenClient::new(&env, &usdc).transfer(&caller, &adapter_addr, &amount);
 
         // Adapter deploys USDC to the underlying protocol and returns its own shares.
-        let adapter_shares = AdapterClient::new(&env, &adapter_addr).deposit(&amount);
+        AdapterClient::new(&env, &adapter_addr).deposit(&amount);
 
         // Mint mUSDC shares to caller.
         token::StellarAssetClient::new(&env, &musdc).mint(&caller, &shares_to_mint);
 
-        // Update global share and adapter-share counters.
+        // Update global share counter.
         env.storage()
             .instance()
             .set(&TOTAL_SH, &(total_shares + shares_to_mint));
-        env.storage()
-            .instance()
-            .set(&ADPT_SH, &(total_adapter_shares + adapter_shares));
 
         // Stamp the entry time on the caller's first deposit; top-ups keep
         // the original time. Keyed off whether an entry record exists rather
@@ -305,7 +300,13 @@ impl MeridianVault {
         AdapterClient::new(&env, &adapter_addr).refresh();
 
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
-        let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
+
+        // Fix for ADPT_SH drift (Issue #565 / #566):
+        // By reading the adapter's live share balance rather than estimating a
+        // locally-computed decrement, we eliminate ADPT_SH drift entirely.
+        // This removes the structural first-mover incentive to exit the vault
+        // during periods of rounding drift, protecting protocol stability.
+        let total_adapter_shares: i128 = AdapterClient::new(&env, &adapter_addr).balance();
 
         if total_shares <= 0 {
             return Err(ContractError::NoSharesOutstanding);
@@ -352,9 +353,6 @@ impl MeridianVault {
         env.storage()
             .instance()
             .set(&TOTAL_SH, &(total_shares - shares));
-        env.storage()
-            .instance()
-            .set(&ADPT_SH, &(total_adapter_shares - adapter_shares_to_burn));
 
         let remaining = caller_shares - shares;
 
@@ -538,7 +536,6 @@ impl MeridianVault {
             return Err(ContractError::AdapterSwapUnsafe);
         }
         env.storage().instance().set(&ADAPTER, &new_adapter);
-        env.storage().instance().set(&ADPT_SH, &0_i128);
         Ok(())
     }
 
@@ -601,13 +598,13 @@ impl MeridianVault {
             return Err(ContractError::SameAdapter);
         }
 
-        let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
+        let old_adapter = AdapterClient::new(&env, &old_adapter_addr);
+        let total_adapter_shares: i128 = old_adapter.balance();
         if total_adapter_shares <= 0 {
             return Err(ContractError::NoAdapterPosition);
         }
 
         let usdc = Self::usdc(&env)?;
-        let old_adapter = AdapterClient::new(&env, &old_adapter_addr);
 
         // Read the old adapter's value independently, before extraction, so
         // this baseline can catch loss on the withdrawal leg itself (e.g. a
@@ -660,7 +657,6 @@ impl MeridianVault {
         }
 
         env.storage().instance().set(&ADAPTER, &new_adapter);
-        env.storage().instance().set(&ADPT_SH, &new_shares);
         Ok(())
     }
 
@@ -796,10 +792,13 @@ mod tests {
         }
 
         pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
-            // USDC address is always set in initialize(), so this is safe.
             let usdc: Address =
                 get_or_not_initialized(&env, env.storage().instance().get(&MA_USDC));
             mock_proportional_withdraw(&env, &usdc, &MA_SH, shares, &recipient)
+        }
+
+        pub fn balance(env: Env) -> i128 {
+            env.storage().instance().get(&MA_SH).unwrap_or(0)
         }
 
         pub fn total_assets(env: Env) -> i128 {
@@ -855,10 +854,13 @@ mod tests {
             }
 
             pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
-                // USDC address is always set in initialize(), so this is safe.
                 let usdc: Address =
                     get_or_not_initialized(&env, env.storage().instance().get(&LA_USDC));
                 mock_proportional_withdraw(&env, &usdc, &LA_SH, shares, &recipient)
+            }
+
+            pub fn balance(env: Env) -> i128 {
+                env.storage().instance().get(&LA_SH).unwrap_or(0)
             }
 
             pub fn total_assets(env: Env) -> i128 {
@@ -906,10 +908,13 @@ mod tests {
             }
 
             pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
-                // USDC address is always set in initialize(), so this is safe.
                 let usdc: Address =
                     get_or_not_initialized(&env, env.storage().instance().get(&ZS_USDC));
                 mock_proportional_withdraw(&env, &usdc, &ZS_SH, shares, &recipient)
+            }
+
+            pub fn balance(env: Env) -> i128 {
+                env.storage().instance().get(&ZS_SH).unwrap_or(0)
             }
 
             pub fn total_assets(env: Env) -> i128 {

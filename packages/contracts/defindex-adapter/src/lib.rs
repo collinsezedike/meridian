@@ -172,6 +172,16 @@ impl MeridianDefindexAdapter {
         usdc_out
     }
 
+    /// Returns the adapter's live dfToken share balance.
+    pub fn balance(env: Env) -> i128 {
+        let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            adapter_common::get_pool(&env),
+        );
+        let client = DefindexVaultClient::new(&env, &dfx);
+        client.balance(&env.current_contract_address())
+    }
+
     /// Live USDC value of the adapter's dfToken position, computed by the
     /// DeFindex vault's exchange rate. Updates automatically as yield accrues.
     pub fn total_assets(env: Env) -> i128 {
