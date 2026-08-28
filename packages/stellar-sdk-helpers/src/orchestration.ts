@@ -45,19 +45,24 @@ export async function buildDepositTx(
 
 /**
  * Build an unsigned withdrawal transaction for the coordinator vault identified
- * by `vaultId`. `shares` is the mUSDC share count to burn.
+ * by `vaultId`. `shares` is the mUSDC share count to burn. `minUsdcOut` is the
+ * minimum USDC the caller is willing to receive; the vault rejects the call
+ * with `MinAmountOutNotMet` if the redeemed amount falls below it. Defaults to
+ * `"0"` (no slippage protection) when omitted.
  */
 export async function buildWithdrawTx(
   vaultId: string,
   walletAddress: string,
   shares: string,
-  network: StellarNetwork
+  network: StellarNetwork,
+  minUsdcOut: string = "0"
 ): Promise<{ xdr: string; fee: string }> {
   const entry = resolveVaultEntry(vaultId, network);
   return buildCoordinatorWithdrawTx(
     { contractId: entry.contractId, network },
     walletAddress,
-    toStroops(shares)
+    toStroops(shares),
+    toStroops(minUsdcOut)
   );
 }
 

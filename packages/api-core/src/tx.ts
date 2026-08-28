@@ -52,12 +52,13 @@ export async function handleWithdrawRequest(
   }
 
   try {
-    const { walletAddress, vaultId, shares } = parsed.data;
+    const { walletAddress, vaultId, shares, min_usdc_out } = parsed.data;
     const result = await buildWithdrawTx(
       vaultId,
       walletAddress,
       shares,
-      APP_NETWORK
+      APP_NETWORK,
+      min_usdc_out
     );
     return { status: 200, body: result };
   } catch (err) {

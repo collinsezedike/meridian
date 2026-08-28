@@ -177,6 +177,28 @@ describe("POST /api/v1/tx/withdraw", () => {
     expect(res.json()).toMatchObject({ xdr: "WITHDRAWXDR", fee: "100" });
   });
 
+  it("forwards min_usdc_out when provided", async () => {
+    const app = buildApp();
+    vi.mocked(buildWithdrawTx).mockResolvedValue({
+      xdr: "WITHDRAWXDR",
+      fee: "100",
+    });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/tx/withdraw",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...validBody, min_usdc_out: "4.9" }),
+    });
+    expect(buildWithdrawTx).toHaveBeenCalledWith(
+      "blend-usdc-fixed",
+      WALLET,
+      "5",
+      expect.anything(),
+      "4.9"
+    );
+  });
+
   it("returns 400 for a missing shares field", async () => {
     const app = buildApp();
     const res = await app.inject({

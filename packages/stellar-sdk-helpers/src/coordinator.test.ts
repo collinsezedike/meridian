@@ -79,11 +79,12 @@ describe("buildCoordinatorDepositTx", () => {
 });
 
 describe("buildCoordinatorWithdrawTx", () => {
-  it("calls the vault's withdraw(caller, shares) with the correct ScVal args", async () => {
+  it("calls the vault's withdraw(caller, shares, min_usdc_out) with the correct ScVal args", async () => {
     const result = await buildCoordinatorWithdrawTx(
       { contractId: CONTRACT_ID, network },
       WALLET,
-      50_000_000n
+      50_000_000n,
+      1_000_000n
     );
 
     expect(result).toEqual({ xdr: "UNSIGNED_XDR", fee: "150" });
@@ -93,8 +94,27 @@ describe("buildCoordinatorWithdrawTx", () => {
       "withdraw"
     );
     const args = invocation.invokeContract().args();
+    expect(args).toHaveLength(3);
     expect(Address.fromScVal(args[0]!).toString()).toBe(WALLET);
     expect(args[1]).toEqual(nativeToScVal(50_000_000n, { type: "i128" }));
+    expect(args[2]).toEqual(nativeToScVal(1_000_000n, { type: "i128" }));
+  });
+
+  it("defaults min_usdc_out to 0n when omitted", async () => {
+    await buildCoordinatorWithdrawTx(
+      { contractId: CONTRACT_ID, network },
+      WALLET,
+      50_000_000n
+    );
+    const [, , op] = vi.mocked(prepareSorobanTx).mock.calls[0]!;
+    const args = op
+      .body()
+      .invokeHostFunctionOp()
+      .hostFunction()
+      .invokeContract()
+      .args();
+    expect(args).toHaveLength(3);
+    expect(args[2]).toEqual(nativeToScVal(0n, { type: "i128" }));
   });
 
   it("throws without calling prepareSorobanTx for non-positive shares", async () => {
@@ -105,6 +125,18 @@ describe("buildCoordinatorWithdrawTx", () => {
         0n
       )
     ).rejects.toThrow(/shares must be positive/);
+    expect(prepareSorobanTx).not.toHaveBeenCalled();
+  });
+
+  it("throws without calling prepareSorobanTx for a negative minUsdcOut", async () => {
+    await expect(
+      buildCoordinatorWithdrawTx(
+        { contractId: CONTRACT_ID, network },
+        WALLET,
+        50_000_000n,
+        -1n
+      )
+    ).rejects.toThrow(/minUsdcOut must be non-negative/);
     expect(prepareSorobanTx).not.toHaveBeenCalled();
   });
 });

@@ -19,6 +19,8 @@ mUSDC is a **freely transferable** share token, and the vault treats it as one: 
 
 Called once at deployment. Sets the admin, USDC contract address, mUSDC contract address, and the initial yield adapter address. Requires `admin.require_auth()`. Fails with `AlreadyInitialized` if called again.
 
+The vault uses a `__constructor` to write a sentinel value at deploy time, closing the front-running window that existed when deploy and initialize were two separate transactions. On any vault deployed from current WASM, `initialize` will return `AlreadyInitialized` before it can do any useful work — the constructor has already claimed the contract. This matches the pattern already applied to both adapters in #550. Callers that scripted a two-step `deploy` + `initialize` against earlier WASM must switch to a single `stellar contract deploy … -- <args>` invocation.
+
 ### `deposit(caller, amount) -> Result<i128, ContractError>`
 
 Transfers `amount` USDC from the caller into the vault, forwards it to the active adapter, and mints proportional mUSDC shares. Fails with `DepositsPaused` if `set_paused(true)` is in effect, `ZeroAmount` if `amount <= 0`, or `DepositTooSmall` if the amount rounds down to zero shares at the current price.
@@ -35,9 +37,9 @@ Stamps `Entry(caller)` with the current ledger timestamp on the caller's first d
 
 **Known constraint — dust-position entry-time gaming:** "first deposit" here means `Balance(caller)` was `0` going in, not "no history." A partial withdrawal that leaves a non-zero dust balance (e.g. 1 stroop) does not clear `Entry(caller)` — only a full exit does (see `withdraw()` below) — so a much later, much larger top-up on that dust position is not a first deposit and inherits the original entry timestamp instead of getting a fresh one. This has no effect today: no entry point reads `Entry`/`get_entry_time` for anything but display. It becomes directly exploitable the moment any duration-gated feature (a fee discount, a loyalty multiplier, vesting) is built against raw `entry_time`. Do not build such a feature against the raw value without first switching the write path to a size-weighted average timestamp on top-up, so a large late deposit meaningfully pulls `entry_time` forward rather than inheriting the original stamp wholesale.
 
-### `withdraw(caller, shares) -> Result<i128, ContractError>`
+### `withdraw(caller, shares, min_usdc_out) -> Result<i128, ContractError>`
 
-Burns `shares` mUSDC from the caller, redeems the proportional adapter position, and returns the resulting USDC. Fails with `ZeroAmount` if `shares <= 0`, `NoSharesOutstanding` if the vault has no shares outstanding at all, `InsufficientShares` if the caller doesn't hold enough mUSDC, or `WithdrawalTooSmall` if the redemption rounds down to zero USDC.
+Burns `shares` mUSDC from the caller, redeems the proportional adapter position, and returns the resulting USDC. Fails with `ZeroAmount` if `shares <= 0`, `NoSharesOutstanding` if the vault has no shares outstanding at all, `InsufficientShares` if the caller doesn't hold enough mUSDC, `WithdrawalTooSmall` if the redemption rounds down to zero USDC, or `MinAmountOutNotMet` if the USDC redeemed is less than `min_usdc_out`. Pass `0` for `min_usdc_out` to disable the slippage guard.
 
 The `InsufficientShares` check reads the caller's live mUSDC balance, the same balance the burn operates on, so the two can never disagree. The check is kept rather than left to the burn's own failure so callers get the typed error instead of a panic.
 
@@ -219,6 +221,7 @@ Deposits, but never withdrawals, can be paused via `set_paused(true)` — this i
 | `NoAdapterPosition`   | 13   | `migrate_adapter` was called while the current adapter has no position (`ADPT_SH <= 0`).                                        |
 | `InvalidSlippageBps`  | 14   | `migrate_adapter` was called with `max_slippage_bps > 10_000`.                                                                  |
 | `NoPendingAdmin`      | 16   | `accept_admin` was called with no `transfer_admin` nomination outstanding.                                                      |
+| `MinAmountOutNotMet`  | 17   | `withdraw` was called with a `min_usdc_out` guard and the redeemed USDC fell below it. Protects callers from unexpected slippage or a price move between simulation and execution. |
 
 ## Contract storage
 

@@ -105,7 +105,18 @@ describe("buildWithdrawTx", () => {
     expect(buildCoordinatorWithdrawTx).toHaveBeenCalledWith(
       { contractId: VAULT_CONTRACT, network },
       WALLET,
-      50_000_000n
+      50_000_000n,
+      0n
+    );
+  });
+
+  it("forwards min_usdc_out as stroops to buildCoordinatorWithdrawTx", async () => {
+    await buildWithdrawTx("meridian-usdc", WALLET, "5", network, "0.5");
+    expect(buildCoordinatorWithdrawTx).toHaveBeenCalledWith(
+      { contractId: VAULT_CONTRACT, network },
+      WALLET,
+      50_000_000n,
+      5_000_000n
     );
   });
 

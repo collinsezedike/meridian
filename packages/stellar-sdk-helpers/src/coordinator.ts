@@ -38,15 +38,21 @@ export async function buildCoordinatorDepositTx(
 
 /**
  * Build an unsigned withdrawal transaction that calls the coordinator vault's
- * `withdraw(caller, shares)` function. The vault redeems the proportional
- * adapter shares and returns USDC to the caller.
+ * `withdraw(caller, shares, min_usdc_out)` function. The vault redeems the
+ * proportional adapter shares and returns USDC to the caller.
+ *
+ * `minUsdcOut` is the slippage guard: the contract rejects the transaction
+ * with `MinAmountOutNotMet` if the redeemed USDC would fall below this value.
+ * Pass `0n` to disable slippage protection.
  */
 export async function buildCoordinatorWithdrawTx(
   config: CoordinatorConfig,
   walletAddress: string,
-  shares: bigint
+  shares: bigint,
+  minUsdcOut: bigint = 0n
 ): Promise<{ xdr: string; fee: string }> {
   if (shares <= 0n) throw new Error("shares must be positive");
+  if (minUsdcOut < 0n) throw new Error("minUsdcOut must be non-negative");
   const contract = new Contract(config.contractId);
   return prepareSorobanTx(
     config.network,
@@ -54,7 +60,8 @@ export async function buildCoordinatorWithdrawTx(
     contract.call(
       "withdraw",
       Address.fromString(walletAddress).toScVal(),
-      i128(shares)
+      i128(shares),
+      i128(minUsdcOut)
     )
   );
 }
