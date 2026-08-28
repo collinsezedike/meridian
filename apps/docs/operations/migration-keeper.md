@@ -50,7 +50,11 @@ protocol from what's actually available on-chain:
   the same weekly-compounded rate estimate Blend's own indexer and UI
   compute, via `Reserve.setRates()`. This avoids a second, hand-rolled copy
   of that formula that could silently drift from Blend's actual deployed
-  behavior.
+  behavior. The reserve it prices is the vault's own asset, threaded through
+  each `RateQuery` from the vault's `KNOWN_POOLS` entry (`assetId`, see
+  `known-pools.ts`), falling back to the network's USDC address for a vault
+  without one — so a EURC pool prices its EURC reserve, not the USDC one
+  (#539).
 - **DeFindex**: `DefindexAdapter` exposes `get_asset_amounts_per_shares()`, a
   live share-price snapshot with no rate on its own — a rate needs a second
   sample separated in time. `createDefindexRateSource` takes a fresh

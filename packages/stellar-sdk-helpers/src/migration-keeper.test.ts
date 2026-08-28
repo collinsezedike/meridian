@@ -154,6 +154,15 @@ const VAULT: KnownPoolMeta = {
   contractId: "CVAULT",
 };
 
+const EURC_VAULT: KnownPoolMeta = {
+  id: "meridian-eurc",
+  name: "Meridian",
+  protocol: "meridian",
+  label: "EURC Vault",
+  contractId: "CEURCVAULT",
+  assetId: "CEURCASSET",
+};
+
 const DISCOVERED_VAULT: DiscoveredVault = {
   vaultId: "meridian-usdc",
   vaultContractId: "CVAULT",
@@ -303,6 +312,32 @@ describe("discoverMigrationVaults", () => {
 
     expect(result.failures).toEqual([]);
     expect(result.vaults).toEqual([DISCOVERED_VAULT]);
+  });
+
+  it("resolves the vault's assetId from its KNOWN_POOLS entry (#539)", async () => {
+    stellarMocks.simulateView
+      .mockResolvedValueOnce("CBLENDADAPTER")
+      .mockResolvedValueOnce("blend")
+      .mockResolvedValueOnce("CBLENDPOOL");
+
+    const result = await discoverMigrationVaults({
+      network: NETWORK,
+      pools: { "meridian-eurc": EURC_VAULT },
+      logger: logger(),
+      sleep: vi.fn(),
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.vaults).toEqual([
+      {
+        vaultId: "meridian-eurc",
+        vaultContractId: "CEURCVAULT",
+        currentAdapterId: "CBLENDADAPTER",
+        currentProtocol: "blend",
+        currentPoolId: "CBLENDPOOL",
+        assetId: "CEURCASSET",
+      },
+    ]);
   });
 
   it("retries a transient discovery failure and succeeds", async () => {
@@ -480,6 +515,66 @@ describe("runMigrationKeeper", () => {
     expect(result.skipped).toEqual([
       { vaultId: "meridian-usdc", reason: "current rate unavailable" },
     ]);
+  });
+
+  it("threads the vault's assetId into every rate query so a non-USDC vault prices the right reserve (#539)", async () => {
+    const submitMigration = vi.fn(async () => ({
+      hash: "EURC_MIGRATE_HASH",
+      ledger: 123,
+    }));
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+    const eurcVault: DiscoveredVault = {
+      ...DISCOVERED_VAULT,
+      assetId: "CEURCASSET",
+    };
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [eurcVault],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+    });
+
+    // Both the current vault's rate and each candidate's rate are evaluated
+    // against the vault's own reserve asset, never a hardcoded USDC address
+    // (see rate-sources.ts for how createBlendRateSource consumes it).
+    expect(rateSource).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: "blend", assetId: "CEURCASSET" })
+    );
+    expect(rateSource).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: "defindex", assetId: "CEURCASSET" })
+    );
+    expect(result.migrations).toMatchObject([
+      { toProtocol: "defindex", improvementBps: 200 },
+    ]);
+  });
+
+  it("keeps the USDC-vault query shape unchanged when the vault has no assetId (#539)", async () => {
+    // #539 acceptance criterion: no change to RateQuery's existing USDC-vault
+    // behavior. A vault whose KNOWN_POOLS entry has no assetId must not start
+    // carrying an assetId field, so the Blend rate source keeps falling back
+    // to its USDC default exactly as before.
+    const submitMigration = vi.fn();
+    const rateSource = vi.fn(async () => null);
+
+    await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      submitMigration,
+    });
+
+    expect(rateSource).toHaveBeenCalled();
+    for (const call of rateSource.mock.calls) {
+      expect(call[0]).not.toHaveProperty("assetId");
+    }
   });
 
   it("migrates when a candidate clears the minimum improvement threshold", async () => {

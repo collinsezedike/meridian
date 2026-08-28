@@ -36,6 +36,7 @@ const NETWORK: StellarNetwork = {
 const BLEND_POOL = "CBLENDPOOL";
 const DEFINDEX_VAULT = "CDEFINDEXVAULT";
 const ASSET_ID = "CUSDCASSET";
+const EURC_ID = "CEURCASSET";
 
 function blendQuery(overrides: Partial<RateQuery> = {}): RateQuery {
   return {
@@ -160,6 +161,81 @@ describe("createBlendRateSource", () => {
     expect(rate).toBe(Math.round(mainnetReserve.estSupplyApy * 10_000));
   });
 
+  it("prices a non-USDC reserve from the query's assetId, per pool (#539)", async () => {
+    // Regression for #539: createBlendRateSource used to resolve a single
+    // hardcoded USDC address, so an EURC Blend pool could never produce a
+    // rate — pool.reserves.get(usdc) looked up a reserve that doesn't exist
+    // there, returning null forever, silently. The query's assetId must be
+    // used instead. The pool below only carries an EURC reserve, proving the
+    // USDC fallback isn't what's being priced.
+    const eurcReserve = makeReserveV2({
+      rBase: 0.01,
+      rOne: 0.04,
+      rTwo: 0.5,
+      rThree: 1.5,
+      util: 0.8,
+      curUtil: 0.7,
+      address: EURC_ID,
+    });
+    eurcReserve.setRates(1_000_000n);
+    const loadPool = vi.fn(
+      async () =>
+        ({ reserves: new Map([[EURC_ID, eurcReserve]]) }) as unknown as Pool
+    );
+    const rateSource = createBlendRateSource({ network: NETWORK, loadPool });
+
+    const rate = await rateSource(blendQuery({ assetId: EURC_ID }));
+
+    expect(rate).toBe(Math.round(eurcReserve.estSupplyApy * 10_000));
+    expect(loadPool).toHaveBeenCalledWith(NETWORK, BLEND_POOL);
+  });
+
+  it("prefers the query's assetId over the factory's assetId option (#539)", async () => {
+    // The factory's assetId option is a backwards-compatible default from the
+    // pre-#539 single-asset world; a per-query assetId threaded from the
+    // vault's KNOWN_POOLS entry must win, so a EURC vault isn't silently
+    // priced against the USDC reserve in a pool that holds both.
+    const eurcReserve = makeReserveV2({
+      rBase: 0.01,
+      rOne: 0.04,
+      rTwo: 0.5,
+      rThree: 1.5,
+      util: 0.8,
+      curUtil: 0.7,
+      address: EURC_ID,
+    });
+    eurcReserve.setRates(1_000_000n);
+    const usdcReserve = makeReserveV2({
+      rBase: 0.02,
+      rOne: 0.05,
+      rTwo: 0.5,
+      rThree: 1.5,
+      util: 0.8,
+      curUtil: 0.7,
+      address: ASSET_ID,
+    });
+    usdcReserve.setRates(1_000_000n);
+    const loadPool = vi.fn(
+      async () =>
+        ({
+          reserves: new Map([
+            [EURC_ID, eurcReserve],
+            [ASSET_ID, usdcReserve],
+          ]),
+        }) as unknown as Pool
+    );
+    const rateSource = createBlendRateSource({
+      network: NETWORK,
+      assetId: ASSET_ID,
+      loadPool,
+    });
+
+    const rate = await rateSource(blendQuery({ assetId: EURC_ID }));
+
+    expect(rate).toBe(Math.round(eurcReserve.estSupplyApy * 10_000));
+    expect(rate).not.toBe(Math.round(usdcReserve.estSupplyApy * 10_000));
+  });
+
   it("lets a pool-load failure propagate rather than swallowing it into null", async () => {
     // runMigrationKeeper wraps every rateSource() call in withKeeperRetry
     // (see migration-keeper.ts), which classifies and retries transient
@@ -272,6 +348,7 @@ function makeReserveV2(params: {
   rThree: number;
   util: number;
   curUtil: number;
+  address?: string;
 }): ReserveV2 {
   const SCALE_7 = 10_000_000;
   const config = new ReserveConfigV2(
@@ -303,7 +380,7 @@ function makeReserveV2(params: {
   );
   return new ReserveV2(
     BLEND_POOL,
-    ASSET_ID,
+    params.address ?? ASSET_ID,
     config,
     data,
     undefined,
