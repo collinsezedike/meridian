@@ -7,8 +7,9 @@ vi.mock("../_lib/middleware.js", async () => {
   );
   return {
     ...actual,
-    checkRateLimit: vi.fn(async (...args: Parameters<typeof actual.checkRateLimit>) =>
-      actual.checkRateLimit(...args)
+    checkRateLimit: vi.fn(
+      async (...args: Parameters<typeof actual.checkRateLimit>) =>
+        actual.checkRateLimit(...args)
     ),
   };
 });
@@ -162,7 +163,9 @@ beforeEach(() => {
 
 describe("POST /api/v1/tx/deposit", () => {
   it("returns 503 when the upstream rate limiter fails", async () => {
-    vi.mocked(checkRateLimit).mockRejectedValueOnce(new Error("Upstash timeout"));
+    vi.mocked(checkRateLimit).mockRejectedValueOnce(
+      new Error("Upstash timeout")
+    );
 
     const res = makeRes();
     await depositHandler(
@@ -178,7 +181,9 @@ describe("POST /api/v1/tx/deposit", () => {
     );
 
     expect(res.statusCode).toBe(503);
-    expect(res.body).toEqual({ error: "Rate limiter unavailable; refusing to run" });
+    expect(res.body).toEqual({
+      error: "Rate limiter unavailable; refusing to run",
+    });
   });
 
   it("rejects non-POST methods with 405", async () => {
