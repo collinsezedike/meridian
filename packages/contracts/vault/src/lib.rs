@@ -113,6 +113,11 @@ pub enum ContractError {
     NoAdapterPosition = 13,
     /// `migrate_adapter` was called with `max_slippage_bps > 10_000`.
     InvalidSlippageBps = 14,
+    /// A `checked_div` call was given a zero divisor. Distinct from
+    /// `Overflow`: a zero divisor means the adapter is reporting degenerate
+    /// totals (zero or negative `total_assets`), not that an intermediate
+    /// multiplication saturated `i128`.
+    DivisionByZero = 19,
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +188,7 @@ impl MeridianVault {
             .checked_mul(total_shares + OFFSET)
             .ok_or(ContractError::Overflow)?
             .checked_div(total_assets + OFFSET)
-            .ok_or(ContractError::Overflow)?;
+            .ok_or(ContractError::DivisionByZero)?;
 
         if shares_to_mint <= 0 {
             return Err(ContractError::DepositTooSmall);
@@ -277,7 +282,7 @@ impl MeridianVault {
             .checked_mul(total_adapter_shares)
             .ok_or(ContractError::Overflow)?
             .checked_div(total_shares)
-            .ok_or(ContractError::Overflow)?;
+            .ok_or(ContractError::DivisionByZero)?;
 
         // Adapter redeems protocol shares, delivers USDC to vault, returns amount.
         let usdc_out = AdapterClient::new(&env, &adapter_addr)
@@ -309,7 +314,7 @@ impl MeridianVault {
             .checked_mul(shares)
             .ok_or(ContractError::Overflow)?
             .checked_div(caller_shares)
-            .ok_or(ContractError::Overflow)?;
+            .ok_or(ContractError::DivisionByZero)?;
         env.storage()
             .persistent()
             .set(&principal_key, &(principal - principal_out));
@@ -508,7 +513,7 @@ impl MeridianVault {
             .checked_mul(10_000i128 - max_slippage_bps as i128)
             .ok_or(ContractError::Overflow)?
             .checked_div(10_000i128)
-            .ok_or(ContractError::Overflow)?;
+            .ok_or(ContractError::DivisionByZero)?;
         if value_after < min_acceptable {
             return Err(ContractError::MigrationValueDrift);
         }
