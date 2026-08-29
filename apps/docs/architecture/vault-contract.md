@@ -138,6 +138,8 @@ The consequences are confined to reporting, and never to fund safety:
 
 Closing this properly means a share token whose code the vault controls, i.e. replacing the mUSDC SAC with a custom SEP-41 token that calls back into the vault on transfer so basis can be split pro-rata and entry time merged as a principal-weighted average. That is a new contract plus a redeployment and migration of the live share token, not a change to this one, and it is tracked separately rather than folded in here.
 
+**Sequencing risk:** once mUSDC is accepted as collateral on any third-party lending market, an ordinary liquidation transfers mUSDC to a liquidator with no relationship to Meridian, turning the still-open transfer desync into unrecoverable third-party value destruction rather than a two-party problem. This adds pressure to complete the custom token migration (#504 scope) before such integrations go live.
+
 ## Adapter contracts
 
 Every adapter implements the shared `YieldAdapterInterface` trait defined in `vault/src/lib.rs`:
