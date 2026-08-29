@@ -18,7 +18,8 @@ const UPSTASH_TOKEN =
   process.env.UPSTASH_REDIS_REST_TOKEN ??
   process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN;
 
-export const UPSTASH_CONFIGURED = Boolean(UPSTASH_URL) && Boolean(UPSTASH_TOKEN);
+export const UPSTASH_CONFIGURED =
+  Boolean(UPSTASH_URL) && Boolean(UPSTASH_TOKEN);
 
 /**
  * Checks if production distributed Redis rate-limiting credentials are configured.
@@ -79,7 +80,8 @@ export function enforceStrictRateLimit(res: VercelResponse): boolean {
 
   if (isProduction && !isDistributedRateLimitingConfigured()) {
     res.status(503).json({
-      error: "Service Unavailable: Distributed rate limiting is required in production for this route.",
+      error:
+        "Service Unavailable: Distributed rate limiting is required in production for this route.",
       code: "RATE_LIMIT_BACKEND_UNAVAILABLE",
     });
     return false;
