@@ -32,25 +32,26 @@ function toFiniteBps(rate: number): number | null {
 
 export interface BlendRateSourceOptions {
   network: StellarNetwork;
-  // Reserve asset to price. Meridian vaults are single-asset today (USDC);
-  // hardcoding this per network mirrors blend.ts's blendAssetForVault. It
-  // isn't threaded through RateQuery itself: that type is a deliberately
-  // unchanged public seam (protocol/adapterId/poolId only), see
-  // migration-keeper.ts.
+  // Fallback reserve asset to price when a query carries no assetId. The
+  // per-query assetId (threaded from the vault's KNOWN_POOLS entry, #539)
+  // wins when present; this option is kept for backwards compatibility with
+  // the pre-#539 behavior, where every vault was USDC and this defaulted to
+  // the network's USDC address.
   assetId?: string;
   // Injectable for tests; defaults to the real SDK loader.
   loadPool?: (network: StellarNetwork, poolId: string) => Promise<Pool>;
 }
 
 /**
- * Prices a Blend pool's current supply rate for `assetId` using
- * @blend-capital/blend-sdk's own Reserve model (`Reserve.setRates`, the same
- * three-slope kinked-curve math Blend's own indexer and UI read) rather than
- * a hand-rolled reimplementation of it off the raw fields BlendAdapter
- * exposes. `estSupplyApy` (Blend's own weekly-compounded estimate) is used
- * rather than the raw `supplyApr` so the comparison against DeFindex's
- * realized, compounded rate below is apples-to-apples: both are annualized
- * yields, not one APR next to one APY.
+ * Prices a Blend pool's current supply rate for the query's reserve asset
+ * (`query.assetId`, falling back to `options.assetId` and then this
+ * network's USDC) using @blend-capital/blend-sdk's own Reserve model
+ * (`Reserve.setRates`, the same three-slope kinked-curve math Blend's own
+ * indexer and UI read) rather than a hand-rolled reimplementation of it off
+ * the raw fields BlendAdapter exposes. `estSupplyApy` (Blend's own
+ * weekly-compounded estimate) is used rather than the raw `supplyApr` so the
+ * comparison against DeFindex's realized, compounded rate below is
+ * apples-to-apples: both are annualized yields, not one APR next to one APY.
  */
 export function createBlendRateSource(
   options: BlendRateSourceOptions
@@ -60,7 +61,7 @@ export function createBlendRateSource(
   // futurenet node) falls back to testnet's addresses.
   const addressKey =
     options.network.network === "mainnet" ? "mainnet" : "testnet";
-  const assetId = options.assetId ?? CONTRACT_ADDRESSES[addressKey].usdc;
+  const defaultAssetId = CONTRACT_ADDRESSES[addressKey].usdc;
   const loadPool =
     options.loadPool ??
     ((network: StellarNetwork, poolId: string) =>
@@ -73,6 +74,10 @@ export function createBlendRateSource(
 
   return async (query: RateQuery) => {
     if (query.protocol !== "blend") return null;
+    // Per-query assetId (the vault's own reserve asset, see migration-keeper.ts)
+    // wins over the factory's fallback so a EURC vault prices the EURC reserve
+    // in whichever pool it's evaluated against (#539).
+    const assetId = query.assetId ?? options.assetId ?? defaultAssetId;
     const pool = await loadPool(options.network, query.poolId);
     const reserve = pool.reserves.get(assetId);
     if (!reserve) return null;

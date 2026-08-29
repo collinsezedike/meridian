@@ -93,6 +93,12 @@ export interface RateQuery {
   protocol: string;
   adapterId: string;
   poolId: string;
+  // Reserve asset (Stellar Asset Contract) to price when the query targets a
+  // Blend pool. Threaded from the vault's KNOWN_POOLS entry so a non-USDC
+  // vault prices its own reserve (e.g. EURC) in whichever pool it's evaluated
+  // against instead of a hardcoded USDC address (#539). Optional: callers that
+  // omit it (and the USDC default behavior) are unchanged.
+  assetId?: string;
 }
 
 /**
@@ -137,6 +143,11 @@ export interface DiscoveredVault {
   currentAdapterId: string;
   currentProtocol: string;
   currentPoolId: string;
+  // The vault's underlying reserve asset, resolved from its KNOWN_POOLS entry
+  // during discovery (#539). Threaded into every RateQuery so Blend pools are
+  // priced on the correct reserve (e.g. EURC) rather than a hardcoded USDC
+  // address.
+  assetId?: string;
 }
 
 export interface MigrationSuccess {
@@ -434,6 +445,7 @@ export async function discoverMigrationVaults(
             currentAdapterId: adapterId,
             currentProtocol: protocol,
             currentPoolId: poolId,
+            ...(meta.assetId !== undefined && { assetId: meta.assetId }),
           };
         },
         retryConfig,
@@ -546,6 +558,7 @@ async function findBestCandidate(
           protocol: vault.currentProtocol,
           adapterId: vault.currentAdapterId,
           poolId: vault.currentPoolId,
+          ...(vault.assetId !== undefined && { assetId: vault.assetId }),
         }),
       {
         maxAttempts: config.maxAttempts,
@@ -584,7 +597,12 @@ async function findBestCandidate(
       const result = await withKeeperRetry(
         async () => {
           const poolId = await resolveCandidatePool(adapterId);
-          return rateSource({ protocol, adapterId, poolId });
+          return rateSource({
+            protocol,
+            adapterId,
+            poolId,
+            ...(vault.assetId !== undefined && { assetId: vault.assetId }),
+          });
         },
         {
           maxAttempts: config.maxAttempts,

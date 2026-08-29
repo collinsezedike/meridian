@@ -651,8 +651,11 @@ impl MeridianVault {
         if new_shares <= 0 {
             return Err(ContractError::DepositTooSmall);
         }
+        // Price the new adapter from a fresh read so a cache-backed adapter
+        // (e.g. Blend) reports its real post-deposit value, matching deposit().
         // The value this migration delivered is the delta over the target's
         // pre-existing balance, not its raw post-transfer total.
+        new_adapter_client.refresh();
         let value_after = new_adapter_client
             .total_assets()
             .checked_sub(new_adapter_value_before)
