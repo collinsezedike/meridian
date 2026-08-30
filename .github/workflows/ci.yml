@@ -148,9 +148,6 @@ jobs:
       - name: Run clippy
         working-directory: packages/contracts
         run: cargo clippy --all-targets -- -D warnings
-      - name: Run contract tests
-        working-directory: packages/contracts
-        run: cargo test
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Install LLVM coverage tools
@@ -162,6 +159,7 @@ jobs:
           --package meridian-vault
           --package meridian-blend-adapter
           --package meridian-defindex-adapter
+          --package adapter-common
           --summary-only
           --fail-under-lines 97.5
       - name: Build wasm
