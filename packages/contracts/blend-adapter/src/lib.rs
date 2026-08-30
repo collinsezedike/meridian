@@ -368,15 +368,25 @@ impl MeridianBlendAdapter {
         Ok(())
     }
 
-    /// Refreshes the cached total_assets to include yield accrued since the
-    /// last call, satisfying the shared YieldAdapterInterface contract.
-    /// Currently just calls accrue(), which remains a public,
-    /// permissionless entry point in its own right.
-    ///
-    /// Panics on failure rather than returning a Result: the shared adapter
-    /// interface's refresh() has no error return, so propagating accrue()'s
-    /// Result would mean changing that interface's ABI across both adapters
-    /// and the vault's calls into them. Panicking here instead of silently
+    pub fn total_shares(env: Env) -> i128 {
+        let pool: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&POOL_KEY),
+        );
+        let usdc = get_usdc(&env);
+        let client = BlendPoolClient::new(&env, &pool);
+        let index = client.get_reserve(&usdc).config.index;
+        client
+            .get_positions(&env.current_contract_address())
+            .collateral
+            .get(index)
+            .unwrap_or(0)
+    }
+
+    /// Refreshes the adapter's cached total_assets by attempting to accrue yield.
+    /// A failure to accrue (e.g., if the underlying pool reverts) must bubble up
+    /// rather than being swallowed, to prevent the vault from operating on stale
+    /// pricing. This adapter relies on the standard panic handler: bubbling by
     /// discarding the error preserves this function's pre-existing
     /// fail-loud behaviour (accrue()'s storage read used to be a bare
     /// unwrap(), which panicked directly) rather than downgrading a real

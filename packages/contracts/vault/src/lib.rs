@@ -40,6 +40,10 @@ pub trait YieldAdapterInterface {
     fn deposit(env: Env, amount: i128) -> i128;
     fn withdraw(env: Env, shares: i128, recipient: Address) -> i128;
     fn total_assets(env: Env) -> i128;
+    /// The adapter's current protocol-share balance, read from the underlying
+    /// protocol's own ledger rather than self-tracked. Lets the vault reconcile
+    /// ADPT_SH instead of estimating its decrements.
+    fn total_shares(env: Env) -> i128;
     /// Refreshes the adapter's cached total_assets before it is read for
     /// deposit/withdraw pricing. A no-op for adapters that already price
     /// live on every call.
@@ -241,7 +245,7 @@ impl MeridianVault {
             .set(&TOTAL_SH, &(total_shares + shares_to_mint));
         env.storage()
             .instance()
-            .set(&ADPT_SH, &(total_adapter_shares + adapter_shares));
+            .set(&ADPT_SH, &AdapterClient::new(&env, &adapter_addr).total_shares());
 
         // Stamp the entry time on the caller's first deposit; top-ups keep
         // the original time. Keyed off whether an entry record exists rather
@@ -354,7 +358,7 @@ impl MeridianVault {
             .set(&TOTAL_SH, &(total_shares - shares));
         env.storage()
             .instance()
-            .set(&ADPT_SH, &(total_adapter_shares - adapter_shares_to_burn));
+            .set(&ADPT_SH, &AdapterClient::new(&env, &adapter_addr).total_shares());
 
         let remaining = caller_shares - shares;
 
@@ -809,6 +813,10 @@ mod tests {
             mock_total_assets(&env, &usdc)
         }
 
+        pub fn total_shares(env: Env) -> i128 {
+            env.storage().instance().get(&MA_SH).unwrap_or(0)
+        }
+
         pub fn refresh(_env: Env) {
             // No-op: MockAdapter already prices total_assets() live.
         }
@@ -868,6 +876,10 @@ mod tests {
                 mock_total_assets(&env, &usdc)
             }
 
+            pub fn total_shares(env: Env) -> i128 {
+                env.storage().instance().get(&LA_SH).unwrap_or(0)
+            }
+
             pub fn refresh(_env: Env) {
                 // No-op: LossyMockAdapter already prices total_assets() live.
             }
@@ -917,6 +929,10 @@ mod tests {
                 let usdc: Address =
                     get_or_not_initialized(&env, env.storage().instance().get(&ZS_USDC));
                 mock_total_assets(&env, &usdc)
+            }
+
+            pub fn total_shares(env: Env) -> i128 {
+                env.storage().instance().get(&ZS_SH).unwrap_or(0)
             }
 
             pub fn refresh(_env: Env) {
@@ -992,6 +1008,10 @@ mod tests {
                 // Instance storage read defaults to 0 if CM_TOTAL hasn't been set, which is safe since
                 // initialize() sets this key to 0.
                 env.storage().instance().get(&CM_TOTAL).unwrap_or(0)
+            }
+
+            pub fn total_shares(env: Env) -> i128 {
+                env.storage().instance().get(&CM_SH).unwrap_or(0)
             }
 
             pub fn refresh(env: Env) {
