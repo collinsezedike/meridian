@@ -230,11 +230,30 @@ impl MeridianBlendAdapter {
 
         let adapter = env.current_contract_address();
 
+        let client = BlendPoolClient::new(&env, &pool);
+        let index = client.get_reserve(&usdc).config.index;
+        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
+        let b_tokens_before = client
+            .get_positions(&adapter)
+            .collateral
+            .get(index)
+            .unwrap_or(0);
+
         // Blend's pool pulls `amount` USDC from us (the spender) via its own
         // internal token.transfer call, not one we make directly. Self-auth via
         // direct invocation only covers calls WE make; it does not extend to
         // this nested transfer the pool triggers on our behalf several frames
         // down the stack, so we must pre-authorize it explicitly.
+        //
+        // IMPORTANT: This call must be placed immediately before client.submit()
+        // with no intervening cross-contract calls. Soroban's
+        // InvokerContractAuthorizationTracker is torn down as soon as the next
+        // sub-invocation returns and the call stack unwinds — it does NOT
+        // survive across multiple independent cross-contract calls. Placing this
+        // after get_reserve() and get_positions() (which are themselves
+        // cross-contract calls) means the tracker is already gone by the time
+        // submit() triggers the nested usdc.transfer, causing an
+        // Auth(InvalidAction) error in production.
         env.authorize_as_current_contract(vec![
             &env,
             InvokerContractAuthEntry::Contract(SubContractInvocation {
@@ -246,15 +265,6 @@ impl MeridianBlendAdapter {
                 sub_invocations: Vec::new(&env),
             }),
         ]);
-
-        let client = BlendPoolClient::new(&env, &pool);
-        let index = client.get_reserve(&usdc).config.index;
-        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
-        let b_tokens_before = client
-            .get_positions(&adapter)
-            .collateral
-            .get(index)
-            .unwrap_or(0);
 
         client.submit(
             &adapter,
@@ -649,6 +659,84 @@ mod tests {
 
         assert!(shares > 0, "deposit must credit strictly-positive bTokens");
     }
+
+    /// Regression test for the auth-ordering bug in deposit() (#650).
+    ///
+    /// `authorize_as_current_contract()` must be called immediately before
+    /// `client.submit()` with no intervening cross-contract calls. Soroban's
+    /// `InvokerContractAuthorizationTracker` is torn down after the next
+    /// sub-invocation returns, so placing it before `get_reserve()` /
+    /// `get_positions()` consumes the tracker before `submit()`'s nested
+    /// `usdc.transfer(adapter, pool, amount)` ever runs.
+    ///
+    /// This test uses `mock_auths` (real auth-tree validation) rather than
+    /// `mock_all_auths_allowing_non_root_auth`, which bypasses that check
+    /// entirely and would have hidden this bug. If the call is ever moved back
+    /// to before the read calls, Soroban will reject the nested transfer with
+    /// `Auth(InvalidAction)` and this test will fail.
+    #[test]
+    fn deposit_authorization_tree_matches_the_real_pool_call_shape() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+
+        let env = Env::default();
+        // Do NOT use mock_all_auths_allowing_non_root_auth here — that bypasses
+        // real authorization-tree validation and would not catch the bug this
+        // test guards against.
+
+        let admin = Address::generate(&env);
+        let vault = Address::generate(&env);
+
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        let pool_id = env.register(MockBlendPool, ());
+        let pool = MockBlendPoolClient::new(&env, &pool_id);
+
+        env.mock_all_auths_allowing_non_root_auth();
+        pool.initialize(&SCALAR, &RESERVE_INDEX);
+
+        let adapter_id = env.register(
+            MeridianBlendAdapter,
+            (vault.clone(), pool_id.clone(), usdc_id.clone()),
+        );
+        let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
+
+        let amount = 100_0000000_i128;
+
+        // Mint and transfer USDC to adapter (as vault would do before calling deposit).
+        StellarAssetClient::new(&env, &usdc_id).mint(&vault, &amount);
+        env.mock_all_auths_allowing_non_root_auth();
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+
+        // Now run deposit() under enforcing mock_auths. The auth entry
+        // describes the full call tree Soroban's enforcer expects:
+        //   vault → adapter.deposit(amount)
+        //     └─ adapter (as contract invoker) → usdc.transfer(adapter, pool, amount)
+        env.mock_auths(&[MockAuth {
+            address: &vault,
+            invoke: &MockAuthInvoke {
+                contract: &adapter_id,
+                fn_name: "deposit",
+                args: (amount,).into_val(&env),
+                sub_invokes: &[MockAuthInvoke {
+                    contract: &usdc_id,
+                    fn_name: "transfer",
+                    args: (adapter_id.clone(), pool_id.clone(), amount).into_val(&env),
+                    sub_invokes: &[],
+                }],
+            },
+        }]);
+
+        // If authorize_as_current_contract() is placed before the
+        // get_reserve()/get_positions() calls, Soroban tears down the tracker
+        // after one of those sub-invocations and deposit() fails here with
+        // Auth(InvalidAction). With the correct ordering (auth immediately
+        // before submit()), this must succeed.
+        let shares = adapter.deposit(&amount);
+        assert!(shares > 0);
+    }
+
 
     #[test]
     fn get_pool_returns_the_configured_pool() {
