@@ -100,3 +100,56 @@ where
 {
     value.unwrap_or_else(|| panic_with_error!(env, E::not_initialized()))
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env};
+
+    /// `get_vault` returns `None` before `store_vault_and_usdc` is called.
+    #[test]
+    fn get_vault_returns_none_before_init() {
+        let env = Env::default();
+        assert_eq!(get_vault(&env), None);
+    }
+
+    /// `get_vault` returns `Some(vault)` after `store_vault_and_usdc` is called.
+    #[test]
+    fn get_vault_returns_some_after_store() {
+        let env = Env::default();
+        let vault = Address::generate(&env);
+        let usdc = Address::generate(&env);
+
+        store_vault_and_usdc(&env, &vault, &usdc);
+
+        assert_eq!(get_vault(&env), Some(vault));
+    }
+
+    /// `require_not_initialized` returns `Ok(())` on a fresh environment.
+    #[test]
+    fn require_not_initialized_ok_before_init() {
+        let env = Env::default();
+        assert_eq!(require_not_initialized(&env), Ok(()));
+    }
+
+    /// `require_not_initialized` returns `Err(AlreadyInitialized)` once
+    /// `VAULT_KEY` has been written via `store_vault_and_usdc`.
+    #[test]
+    fn require_not_initialized_errs_after_store() {
+        let env = Env::default();
+        let vault = Address::generate(&env);
+        let usdc = Address::generate(&env);
+
+        store_vault_and_usdc(&env, &vault, &usdc);
+
+        assert_eq!(
+            require_not_initialized(&env),
+            Err(AdapterError::AlreadyInitialized)
+        );
+    }
+}
+

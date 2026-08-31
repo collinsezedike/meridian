@@ -8,3 +8,6 @@ crate-type = ["rlib"]
 
 [dependencies]
 soroban-sdk = { version = "22.0.0", features = ["alloc"] }
+
+[dev-dependencies]
+soroban-sdk = { version = "22.0.0", features = ["testutils", "alloc"] }
