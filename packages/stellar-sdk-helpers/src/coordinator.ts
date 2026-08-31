@@ -149,3 +149,57 @@ export async function fetchVaultAdmin(
   }
   return admin;
 }
+
+export interface CoordinatorState {
+  // The adapter's own reported protocol id (e.g. "blend", "defindex"),
+  // discovered on-chain via get_adapter -> get_protocol rather than tracked
+  // in config — see fetchMeridianApy in vaults.ts for why that matters: it
+  // self-updates if the adapter is ever swapped via set_adapter or
+  // migrate_adapter, with nothing that could drift out of sync.
+  protocol: string;
+  adapterId: string;
+  // Human-readable units (USDC/mUSDC, not stroops), rounded to 2 decimals.
+  totalShares: number;
+  totalAssets: number;
+  paused: boolean;
+}
+
+/**
+ * Reads the coordinator vault's current operational state for the admin
+ * dashboard's Vault State card: active adapter/protocol, total shares, total
+ * assets, and the pause flag. All four reads are read-only simulations, no
+ * signature required.
+ */
+export async function fetchCoordinatorState(
+  config: CoordinatorConfig
+): Promise<CoordinatorState> {
+  const { contractId, network } = config;
+  const server = getRpcServer(network.rpcUrl, 12_000);
+  const passphrase = network.passphrase;
+
+  const adapterId = (await simulateView(
+    server,
+    contractId,
+    passphrase,
+    "get_adapter"
+  )) as string;
+
+  const [protocol, totalSharesRaw, totalAssetsRaw, paused] = await Promise.all([
+    simulateView(server, adapterId, passphrase, "get_protocol"),
+    simulateView(server, contractId, passphrase, "get_total_shares"),
+    simulateView(server, contractId, passphrase, "get_total_assets"),
+    simulateView(server, contractId, passphrase, "is_paused"),
+  ]);
+
+  return {
+    protocol: protocol as string,
+    adapterId,
+    totalShares: toHumanUnits(toBigInt(totalSharesRaw)),
+    totalAssets: toHumanUnits(toBigInt(totalAssetsRaw)),
+    paused: Boolean(paused),
+  };
+}
+
+function toHumanUnits(stroops: bigint): number {
+  return Number((Number(stroops) / 1e7).toFixed(2));
+}

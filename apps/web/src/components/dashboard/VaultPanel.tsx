@@ -9,12 +9,7 @@ import { PositionSummary } from "./PositionSummary";
 import { DepositTab } from "./DepositTab";
 import { WithdrawTab } from "./WithdrawTab";
 import { useTranslation } from "react-i18next";
-
-const PROTOCOL_LABEL: Record<string, string> = {
-  blend: "Blend Capital",
-  defindex: "DeFindex",
-  meridian: "Meridian",
-};
+import { PROTOCOL_LABEL } from "../../lib/protocolLabels";
 
 function formatTvl(value: number): string {
   if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;

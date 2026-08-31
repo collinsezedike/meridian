@@ -139,6 +139,52 @@ Submits a Freighter-signed XDR to the Stellar network.
 
 A `PENDING` or `DUPLICATE` status from the Stellar RPC is treated as success and the hash is returned. An `ERROR` status returns 500.
 
+### `GET /api/v1/keepers/health`
+
+Read-only status of both scheduled keepers, for the admin dashboard's Keeper Health card (#615). Public, same as `/api/v1/vaults` — it reports on runs already recorded elsewhere, never triggers one, and holds no signing authority.
+
+**Response**
+
+```json
+{
+  "keepers": [
+    {
+      "id": "accrual",
+      "intervalMs": 900000,
+      "lastSuccessMs": 1716729600000,
+      "healthy": true
+    },
+    {
+      "id": "migration",
+      "intervalMs": 3600000,
+      "lastSuccessMs": null,
+      "healthy": false
+    }
+  ],
+  "checkedAt": "2026-05-26T12:00:00.000Z"
+}
+```
+
+`lastSuccessMs` is `null` until that keeper's endpoint (`/api/v1/keepers/accrue` or `/rebalance`) has completed a run with zero failures at least once — see `keeper-heartbeat.ts`. `healthy` is `false` whenever `lastSuccessMs` is `null` or more than 2x the keeper's own schedule interval old, matching `.github/workflows/keepers.yml`'s cron cadence.
+
+### `GET /api/v1/admin/vault-state`
+
+Read-only coordinator vault state for the admin dashboard's Vault State card (#615): active adapter/protocol, total shares, total assets, and the pause flag. Public, same reasoning as `/api/v1/keepers/health` — it's the same on-chain data `/api/v1/vaults` already surfaces, just reshaped for the admin view.
+
+**Response**
+
+```json
+{
+  "protocol": "blend",
+  "adapterId": "CADAPTER...",
+  "totalShares": 12345.67,
+  "totalAssets": 12890.12,
+  "paused": false
+}
+```
+
+Returns 404 if no Meridian coordinator vault is configured for the current network (e.g. mainnet, before one is deployed there), or 503 if the on-chain read fails.
+
 ## Serverless vs Fastify
 
 Both implementations share the same handler logic and import from the same workspace packages (`@meridian/shared`, `@meridian/stellar-sdk-helpers`).

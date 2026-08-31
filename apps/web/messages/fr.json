@@ -51,5 +51,33 @@
     "connecting": "Connexion...",
     "installWallet": "Installer {{name}}",
     "retry": "Réessayer"
+  },
+
+  "admin": {
+    "title": "Tableau de bord admin",
+    "connectPrompt": "Connectez un portefeuille administrateur autorisé pour voir le tableau de bord.",
+    "notAuthorized": "Ce portefeuille n'est pas autorisé à voir le tableau de bord admin.",
+    "keeperHealth": {
+      "title": "État des keepers",
+      "accrual": "Keeper d'accumulation",
+      "migration": "Keeper de migration",
+      "healthy": "Sain",
+      "stalled": "Bloqué",
+      "lastRun": "Dernière exécution",
+      "never": "Jamais",
+      "interval": "Toutes les {{interval}}",
+      "overdueBy": "En retard de {{duration}}",
+      "loadError": "Impossible de charger l'état des keepers."
+    },
+    "vaultState": {
+      "title": "État du coffre",
+      "adapter": "Adaptateur",
+      "totalShares": "Parts totales",
+      "totalAssets": "Actifs totaux",
+      "status": "Statut",
+      "active": "Actif",
+      "paused": "En pause",
+      "loadError": "Impossible de charger l'état du coffre."
+    }
   }
 }

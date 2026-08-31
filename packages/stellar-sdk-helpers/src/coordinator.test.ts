@@ -16,6 +16,7 @@ import {
   buildCoordinatorWithdrawTx,
   fetchCoordinatorPosition,
   fetchVaultAdmin,
+  fetchCoordinatorState,
 } from "./coordinator";
 import { prepareSorobanTx, simulateView } from "./tx";
 
@@ -293,5 +294,78 @@ describe("fetchVaultAdmin", () => {
     await expect(
       fetchVaultAdmin({ contractId: CONTRACT_ID, network })
     ).rejects.toThrow(/unexpected response shape/);
+  });
+});
+
+describe("fetchCoordinatorState", () => {
+  const ADAPTER_ID = "CADAPTERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2";
+
+  function mockStateCalls(opts: {
+    protocol?: string;
+    totalShares?: bigint;
+    totalAssets?: bigint;
+    paused?: boolean;
+  }) {
+    vi.mocked(simulateView).mockImplementation(
+      async (_server, _contractId, _passphrase, method) => {
+        switch (method) {
+          case "get_adapter":
+            return ADAPTER_ID as never;
+          case "get_protocol":
+            return (opts.protocol ?? "blend") as never;
+          case "get_total_shares":
+            return (opts.totalShares ?? 0n) as never;
+          case "get_total_assets":
+            return (opts.totalAssets ?? 0n) as never;
+          case "is_paused":
+            return (opts.paused ?? false) as never;
+          default:
+            throw new Error(
+              `unexpected simulateView method: ${String(method)}`
+            );
+        }
+      }
+    );
+  }
+
+  it("reads the active adapter's protocol, total shares/assets, and pause flag", async () => {
+    mockStateCalls({
+      protocol: "blend",
+      totalShares: 1_000_0000000n,
+      totalAssets: 1_050_0000000n,
+      paused: false,
+    });
+
+    const state = await fetchCoordinatorState({
+      contractId: CONTRACT_ID,
+      network,
+    });
+
+    expect(state).toEqual({
+      protocol: "blend",
+      adapterId: ADAPTER_ID,
+      totalShares: 1000,
+      totalAssets: 1050,
+      paused: false,
+    });
+  });
+
+  it("reports paused: true when the vault is paused", async () => {
+    mockStateCalls({ paused: true });
+    const state = await fetchCoordinatorState({
+      contractId: CONTRACT_ID,
+      network,
+    });
+    expect(state.paused).toBe(true);
+  });
+
+  it("rounds shares/assets to 2 decimal places of human-readable units", async () => {
+    // 12345678 stroops = 1.2345678 units, rounds to 1.23.
+    mockStateCalls({ totalShares: 12_345_678n, totalAssets: 0n });
+    const state = await fetchCoordinatorState({
+      contractId: CONTRACT_ID,
+      network,
+    });
+    expect(state.totalShares).toBe(1.23);
   });
 });

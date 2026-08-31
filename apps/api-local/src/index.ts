@@ -13,6 +13,8 @@ import { DEFAULT_ALLOWED_ORIGIN } from "@meridian/shared";
 import { vaultsRoute } from "./routes/vaults";
 import { positionsRoute } from "./routes/positions";
 import { txRoute } from "./routes/tx";
+import { keepersRoute } from "./routes/keepers";
+import { adminRoute } from "./routes/admin";
 
 // Rate limits: global 100 req/min; /tx/deposit and /tx/withdraw 10 req/min per IP.
 // Body limit: 10 KB on all routes to block oversized payload attacks.
@@ -41,6 +43,8 @@ app.addHook("onSend", (_req, reply, _payload, done) => {
 app.register(vaultsRoute, { prefix: "/api/v1/vaults" });
 app.register(positionsRoute, { prefix: "/api/v1/positions" });
 app.register(txRoute, { prefix: "/api/v1/tx" });
+app.register(keepersRoute, { prefix: "/api/v1/keepers" });
+app.register(adminRoute, { prefix: "/api/v1/admin" });
 
 app.get("/health", async () => ({ status: "ok" }));
 

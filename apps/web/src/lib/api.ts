@@ -3,6 +3,21 @@ import type { ApiVault, PositionInfo } from "@meridian/stellar-sdk-helpers";
 export type { ApiVault };
 export type ApiPosition = PositionInfo;
 
+export interface KeeperHealthEntry {
+  id: "accrual" | "migration";
+  intervalMs: number;
+  lastSuccessMs: number | null;
+  healthy: boolean;
+}
+
+export interface VaultState {
+  protocol: string;
+  adapterId: string;
+  totalShares: number;
+  totalAssets: number;
+  paused: boolean;
+}
+
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -71,4 +86,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  getKeeperHealth: () =>
+    apiFetch<{ keepers: KeeperHealthEntry[]; checkedAt: string }>(
+      "/api/v1/keepers/health"
+    ),
+  getVaultState: () => apiFetch<VaultState>("/api/v1/admin/vault-state"),
 };

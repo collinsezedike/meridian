@@ -99,6 +99,36 @@ vi.mock("@meridian/stellar-sdk-helpers", () => ({
       entryTime: 0,
     },
   ]),
+  consoleLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  loadKeeperHeartbeatStore: vi.fn(() => ({
+    get: vi.fn(async () => null),
+    set: vi.fn(async () => {}),
+  })),
+  recordKeeperHeartbeat: vi.fn(async () => {}),
+  getKeeperHeartbeat: vi.fn(async () => null),
+  isKeeperHealthy: vi.fn(() => false),
+  KEEPER_SCHEDULE_MS: { accrual: 15 * 60_000, migration: 60 * 60_000 },
+  KNOWN_POOLS: {
+    testnet: {
+      "meridian-usdc": {
+        id: "meridian-usdc",
+        name: "Meridian",
+        protocol: "meridian",
+        label: "USDC Vault",
+        contractId: "CBOE7JPROCMUKQ4NJWPKCLBBQGHLTGV4X3463DHK4D7KX6KWXGZETAJL",
+        assetId: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
+        asset: "USDC",
+      },
+    },
+    mainnet: {},
+  },
+  fetchCoordinatorState: vi.fn(async () => ({
+    protocol: "blend",
+    adapterId: "CADAPTER",
+    totalShares: 1000,
+    totalAssets: 1050,
+    paused: false,
+  })),
 }));
 
 import depositHandler from "../v1/tx/deposit";
@@ -109,6 +139,8 @@ import vaultsHandler from "../v1/vaults/index";
 import positionsHandler from "../v1/positions/[publicKey]";
 import keeperHandler from "../v1/keepers/accrue";
 import rebalanceHandler from "../v1/keepers/rebalance";
+import keeperHealthHandler from "../v1/keepers/health";
+import vaultStateHandler from "../v1/admin/vault-state";
 import {
   checkRateLimit,
   resetRateLimitForTesting,
@@ -118,6 +150,10 @@ import {
   runBlendAccrualKeeper,
   runMigrationKeeper,
   resolvePositions,
+  recordKeeperHeartbeat,
+  getKeeperHeartbeat,
+  isKeeperHealthy,
+  fetchCoordinatorState,
 } from "@meridian/stellar-sdk-helpers";
 
 // A 56-char Stellar public key shape (only the length is validated).
@@ -413,6 +449,12 @@ describe("GET /api/v1/keepers/accrue", () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toMatchObject({ successes: [{ hash: "HASH" }] });
     expect(runBlendAccrualKeeper).toHaveBeenCalledOnce();
+    expect(recordKeeperHeartbeat).toHaveBeenCalledWith(
+      expect.anything(),
+      "accrual",
+      expect.any(String),
+      expect.anything()
+    );
   });
 
   it("returns 500 when a submission fails so the cron run is observable", async () => {
@@ -449,6 +491,7 @@ describe("GET /api/v1/keepers/accrue", () => {
     expect(res.body).toMatchObject({
       failures: [{ vaultId: "meridian-usdc", error: "try again later" }],
     });
+    expect(recordKeeperHeartbeat).not.toHaveBeenCalled();
   });
 
   it("redacts an unexpected keeper-run error instead of leaking it raw", async () => {
@@ -591,6 +634,12 @@ describe("GET /api/v1/keepers/rebalance", () => {
       ],
     });
     expect(runMigrationKeeper).toHaveBeenCalledOnce();
+    expect(recordKeeperHeartbeat).toHaveBeenCalledWith(
+      expect.anything(),
+      "migration",
+      expect.any(String),
+      expect.anything()
+    );
   });
 
   it("returns 500 when a migration fails so the cron run is observable", async () => {
@@ -626,6 +675,7 @@ describe("GET /api/v1/keepers/rebalance", () => {
     expect(res.body).toMatchObject({
       failures: [{ vaultId: "meridian-usdc", error: "try again later" }],
     });
+    expect(recordKeeperHeartbeat).not.toHaveBeenCalled();
   });
 
   it("redacts an unexpected keeper-run error instead of leaking it raw", async () => {
@@ -644,5 +694,69 @@ describe("GET /api/v1/keepers/rebalance", () => {
 
     expect(res.statusCode).toBe(500);
     expect(res.body).toEqual({ error: "Keeper operation failed" });
+  });
+});
+
+describe("GET /api/v1/keepers/health", () => {
+  it("is public — no cron bearer token required", async () => {
+    const res = makeRes();
+    await keeperHealthHandler(fakeReq({ method: "GET", headers: {} }), res);
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("reports both keepers with their health flag and interval", async () => {
+    vi.mocked(getKeeperHeartbeat).mockImplementation(async (_store, id) =>
+      id === "accrual" ? Date.now() : null
+    );
+    vi.mocked(isKeeperHealthy).mockImplementation((id) => id === "accrual");
+
+    const res = makeRes();
+    await keeperHealthHandler(fakeReq({ method: "GET", headers: {} }), res);
+
+    expect(res.statusCode).toBe(200);
+    const body = res.body as { keepers: Array<Record<string, unknown>> };
+    expect(body.keepers).toHaveLength(2);
+    expect(body.keepers.find((k) => k.id === "accrual")).toMatchObject({
+      healthy: true,
+    });
+    expect(body.keepers.find((k) => k.id === "migration")).toMatchObject({
+      healthy: false,
+      lastSuccessMs: null,
+    });
+  });
+});
+
+describe("GET /api/v1/admin/vault-state", () => {
+  it("is public — no cron bearer token required", async () => {
+    const res = makeRes();
+    await vaultStateHandler(fakeReq({ method: "GET", headers: {} }), res);
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("returns the coordinator vault's on-chain state", async () => {
+    const res = makeRes();
+    await vaultStateHandler(fakeReq({ method: "GET", headers: {} }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      protocol: "blend",
+      adapterId: "CADAPTER",
+      totalShares: 1000,
+      totalAssets: 1050,
+      paused: false,
+    });
+  });
+
+  it("returns 503 when the on-chain read fails", async () => {
+    vi.mocked(fetchCoordinatorState).mockRejectedValueOnce(
+      new Error("rpc unavailable")
+    );
+
+    const res = makeRes();
+    await vaultStateHandler(fakeReq({ method: "GET", headers: {} }), res);
+
+    expect(res.statusCode).toBe(503);
   });
 });

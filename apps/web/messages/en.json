@@ -51,5 +51,33 @@
     "connecting": "Connecting...",
     "installWallet": "Install {{name}}",
     "retry": "Retry"
+  },
+
+  "admin": {
+    "title": "Admin Dashboard",
+    "connectPrompt": "Connect an authorized admin wallet to view the dashboard.",
+    "notAuthorized": "This wallet is not authorized to view the admin dashboard.",
+    "keeperHealth": {
+      "title": "Keeper Health",
+      "accrual": "Accrual Keeper",
+      "migration": "Migration Keeper",
+      "healthy": "Healthy",
+      "stalled": "Stalled",
+      "lastRun": "Last run",
+      "never": "Never",
+      "interval": "Every {{interval}}",
+      "overdueBy": "Overdue by {{duration}}",
+      "loadError": "Couldn't load keeper health."
+    },
+    "vaultState": {
+      "title": "Vault State",
+      "adapter": "Adapter",
+      "totalShares": "Total Shares",
+      "totalAssets": "Total Assets",
+      "status": "Status",
+      "active": "Active",
+      "paused": "Paused",
+      "loadError": "Couldn't load vault state."
+    }
   }
 }

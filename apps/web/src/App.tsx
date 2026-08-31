@@ -1,14 +1,27 @@
 import { useCallback, useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { VaultPanel } from "./components/dashboard/VaultPanel"; // FIX 1:./
-import { WalletConnect } from "./components/onboarding/WalletConnect"; // FIX 1:./
-import { Toasts } from "./components/ui/Toasts"; // FIX 1:./
-import { ErrorBoundary } from "./components/ui/ErrorBoundary"; // FIX 1:./
-import { useWalletStore } from "./store/wallet"; // FIX 1:./
+import { VaultPanel } from "./components/dashboard/VaultPanel";
+import { WalletConnect } from "./components/onboarding/WalletConnect";
+import { Toasts } from "./components/ui/Toasts";
+import { ErrorBoundary } from "./components/ui/ErrorBoundary";
+import { AdminDashboard } from "./pages/AdminDashboard";
+import { useWalletStore } from "./store/wallet";
 import { useTranslation } from "react-i18next";
 import { AdminLogin } from "./pages/AdminLogin";
 
 const queryClient = new QueryClient();
+
+// No router dependency for a single extra route: the app has exactly two
+// pages, and pulling in react-router for one static path split would be a
+// heavier change than the admin dashboard itself (#615) needs.
+//
+// The app is served under /app/* (see the root vercel.json rewrite,
+// "/app/:path*" -> "/app/index.html"), so the admin route lives at
+// /app/admin — that existing rewrite already covers it, no routing config
+// change needed.
+function isAdminRoute(): boolean {
+  return window.location.pathname.startsWith("/app/admin");
+}
 
 function Dashboard() {
   const { t, i18n } = useTranslation();
@@ -36,11 +49,18 @@ function Dashboard() {
           </div>
         </div>
       </header>
-      <main className="max-w-xl mx-auto px-6 py-10">
+
+      {isAdminRoute() ? (
         <ErrorBoundary>
-          <VaultPanel />
+          <AdminDashboard />
         </ErrorBoundary>
-      </main>
+      ) : (
+        <main className="max-w-xl mx-auto px-6 py-10">
+          <ErrorBoundary>
+            <VaultPanel />
+          </ErrorBoundary>
+        </main>
+      )}
     </div>
   );
 }
