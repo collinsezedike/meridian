@@ -17,3 +17,4 @@ export * from "./routing";
 export * from "./tx";
 export * from "./types";
 export * from "./vaults";
+export * from "./admin-history";

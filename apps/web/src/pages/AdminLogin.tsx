@@ -3,6 +3,7 @@ import { fetchVaultAdmin } from "@meridian/stellar-sdk-helpers";
 import { APP_ADDRESSES, APP_NETWORK } from "@meridian/shared";
 import { useWalletStore } from "../store/wallet";
 import { useWalletConnect } from "../hooks/useWalletConnect";
+import { AdminDashboard } from "./AdminDashboard";
 
 // Keyed by the public key it was resolved for, so a wallet switch is
 // recognized as "not checked yet" (loading) during render rather than
@@ -67,8 +68,8 @@ export function AdminLogin() {
 
   if (status === "allowed") {
     return (
-      <div className="min-h-screen bg-[#0d1117] text-emerald-400 p-4">
-        Admin Dashboard
+      <div className="min-h-screen bg-[#0d1117] text-white">
+        <AdminDashboard />
       </div>
     );
   }

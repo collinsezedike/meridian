@@ -15,6 +15,9 @@ vi.mock("../../hooks/useWalletConnect", () => ({
 vi.mock("@meridian/stellar-sdk-helpers", () => ({
   fetchVaultAdmin: vi.fn(),
 }));
+vi.mock("../../pages/AdminDashboard", () => ({
+  AdminDashboard: () => <div data-testid="admin-dashboard" />,
+}));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -56,7 +59,7 @@ describe("AdminLogin", () => {
     render(<AdminLogin />);
 
     await waitFor(() => {
-      expect(screen.getByText("Admin Dashboard")).toBeDefined();
+      expect(screen.getByTestId("admin-dashboard")).toBeDefined();
     });
   });
 

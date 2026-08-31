@@ -79,5 +79,13 @@
       "paused": "Paused",
       "loadError": "Couldn't load vault state."
     }
+  },
+
+  "adminHistory": {
+    "title": "Admin Action History",
+    "subtitle": "Chronological log of vault administration calls",
+    "error": "Failed to load admin history",
+    "empty": "No admin actions recorded yet",
+    "viewTx": "View tx"
   }
 }

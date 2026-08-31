@@ -79,5 +79,13 @@
       "paused": "En pause",
       "loadError": "Impossible de charger l'état du coffre."
     }
+  },
+
+  "adminHistory": {
+    "title": "Historique des actions admin",
+    "subtitle": "Journal chronologique des appels d'administration du coffre",
+    "error": "Échec du chargement de l'historique admin",
+    "empty": "Aucune action admin enregistrée pour l'instant",
+    "viewTx": "Voir tx"
   }
 }

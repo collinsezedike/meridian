@@ -91,4 +91,19 @@ export const api = {
       "/api/v1/keepers/health"
     ),
   getVaultState: () => apiFetch<VaultState>("/api/v1/admin/vault-state"),
+  getAdminHistory: (vaultId: string) =>
+    apiFetch<{
+      vaultId: string;
+      contractId: string;
+      actions: Array<{
+        id: string;
+        type: string;
+        timestamp: string;
+        transactionHash: string;
+        sourceAccount: string;
+        summary: string;
+        details: Record<string, unknown>;
+      }>;
+      updatedAt: string;
+    }>(`/api/v1/admin/history?vaultId=${encodeURIComponent(vaultId)}`),
 };
