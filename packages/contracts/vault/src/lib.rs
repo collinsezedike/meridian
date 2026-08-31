@@ -226,7 +226,6 @@ impl MeridianVault {
             .get(&ADAPTER)
             .ok_or(ContractError::NotInitialized)?;
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SH).unwrap_or(0);
-        let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
 
         // Refresh the adapter's cached total before pricing so this
         // depositor's own transaction is priced with up-to-date yield.
@@ -2182,7 +2181,7 @@ mod tests {
         // shipped) by directly corrupting the stored counter, then prove the
         // very next deposit snaps it back to ground truth instead of
         // compounding on the wrong value.
-        let (env, _admin, user, usdc, _musdc, adapter, vault) = setup();
+        let (env, _admin, user, _usdc, _musdc, adapter, vault) = setup();
         let amount = 100_0000000_i128;
         vault.deposit(&user, &amount);
 
