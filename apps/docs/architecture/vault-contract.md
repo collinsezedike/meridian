@@ -19,7 +19,7 @@ mUSDC is a **freely transferable** share token, and the vault treats it as one: 
 
 Called once at deployment. Sets the admin, USDC contract address, mUSDC contract address, and the initial yield adapter address. Requires `admin.require_auth()`. Fails with `AlreadyInitialized` if called again.
 
-The vault uses a `__constructor` to write a sentinel value at deploy time, closing the front-running window that existed when deploy and initialize were two separate transactions. On any vault deployed from current WASM, `initialize` will return `AlreadyInitialized` before it can do any useful work — the constructor has already claimed the contract. This matches the pattern already applied to both adapters in #550. Callers that scripted a two-step `deploy` + `initialize` against earlier WASM must switch to a single `stellar contract deploy … -- <args>` invocation.
+Unlike the adapters (see [Adapter Contracts](#adapter-contracts) below), the vault does not use a `__constructor` — it still follows the two-step `deploy` then `initialize` pattern, so a deployed-but-uninitialized vault is claimable by whoever calls `initialize` first. See the deploy scripts for how this window is closed in practice.
 
 ### `deposit(caller, amount) -> Result<i128, ContractError>`
 
@@ -204,24 +204,24 @@ Deposits, but never withdrawals, can be paused via `set_paused(true)` — this i
 
 `ContractError` (defined in `vault/src/lib.rs`) gives fallible entry points typed, stable error codes instead of panic strings:
 
-| Variant               | Code | Meaning                                                                                                                         |
-| --------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `AlreadyInitialized`  | 1    | `initialize` called on a contract that already has an admin.                                                                    |
-| `NotInitialized`      | 2    | A state-mutating call was made before `initialize`.                                                                             |
-| `DepositsPaused`      | 3    | `deposit` called while `set_paused(true)` is in effect.                                                                         |
-| `ZeroAmount`          | 4    | `deposit`/`withdraw` called with a non-positive amount/shares.                                                                  |
-| `DepositTooSmall`     | 5    | The deposited amount rounds down to zero shares, or `migrate_adapter` moved funds into a new adapter that credited zero shares. |
-| `NoSharesOutstanding` | 6    | `withdraw` called while the vault has no shares outstanding.                                                                    |
-| `InsufficientShares`  | 7    | The caller doesn't hold enough mUSDC to burn.                                                                                   |
-| `WithdrawalTooSmall`  | 8    | The shares burned round down to zero USDC.                                                                                      |
-| `Overflow`            | 9    | An intermediate arithmetic operation would overflow `i128`.                                                                     |
-| `AdapterSwapUnsafe`   | 10   | `set_adapter` was called while the vault still has shares outstanding.                                                          |
-| `SameAdapter`         | 11   | `migrate_adapter` was called with the vault's current adapter as the target.                                                    |
-| `MigrationValueDrift` | 12   | `migrate_adapter`'s post-migration value fell outside `max_slippage_bps` of the pre-migration value.                            |
-| `NoAdapterPosition`   | 13   | `migrate_adapter` was called while the current adapter has no position (`ADPT_SH <= 0`).                                        |
-| `InvalidSlippageBps`  | 14   | `migrate_adapter` was called with `max_slippage_bps > 10_000`.                                                                  |
-| `NoPendingAdmin`      | 16   | `accept_admin` was called with no `transfer_admin` nomination outstanding.                                                      |
-| `MinAmountOutNotMet`  | 17   | `withdraw` was called with a `min_usdc_out` guard and the redeemed USDC fell below it. Protects callers from unexpected slippage or a price move between simulation and execution. |
+| Variant               | Code | Meaning                                                                                                                                                                            |
+| --------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AlreadyInitialized`  | 1    | `initialize` called on a contract that already has an admin.                                                                                                                       |
+| `NotInitialized`      | 2    | A state-mutating call was made before `initialize`.                                                                                                                                |
+| `DepositsPaused`      | 3    | `deposit` called while `set_paused(true)` is in effect.                                                                                                                            |
+| `ZeroAmount`          | 4    | `deposit`/`withdraw` called with a non-positive amount/shares.                                                                                                                     |
+| `DepositTooSmall`     | 5    | The deposited amount rounds down to zero shares, or `migrate_adapter` moved funds into a new adapter that credited zero shares.                                                    |
+| `NoSharesOutstanding` | 6    | `withdraw` called while the vault has no shares outstanding.                                                                                                                       |
+| `InsufficientShares`  | 7    | The caller doesn't hold enough mUSDC to burn.                                                                                                                                      |
+| `WithdrawalTooSmall`  | 8    | The shares burned round down to zero USDC.                                                                                                                                         |
+| `Overflow`            | 9    | An intermediate arithmetic operation would overflow `i128`.                                                                                                                        |
+| `AdapterSwapUnsafe`   | 10   | `set_adapter` was called while the vault still has shares outstanding.                                                                                                             |
+| `SameAdapter`         | 11   | `migrate_adapter` was called with the vault's current adapter as the target.                                                                                                       |
+| `MigrationValueDrift` | 12   | `migrate_adapter`'s post-migration value fell outside `max_slippage_bps` of the pre-migration value.                                                                               |
+| `NoAdapterPosition`   | 13   | `migrate_adapter` was called while the current adapter has no position (`ADPT_SH <= 0`).                                                                                           |
+| `InvalidSlippageBps`  | 14   | `migrate_adapter` was called with `max_slippage_bps > 10_000`.                                                                                                                     |
+| `NoPendingAdmin`      | 16   | `accept_admin` was called with no `transfer_admin` nomination outstanding.                                                                                                         |
+| `MinAmountOutNotMet`  | 15   | `withdraw` was called with a `min_usdc_out` guard and the redeemed USDC fell below it. Protects callers from unexpected slippage or a price move between simulation and execution. |
 
 ## Contract storage
 
