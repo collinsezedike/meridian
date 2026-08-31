@@ -97,6 +97,21 @@ vi.mock("./tx", () => ({
   waitForTransaction: stellarMocks.waitForTransaction,
 }));
 
+// The real default rate source (rate-sources.ts) is covered by its own
+// dedicated test file (rate-sources.test.ts): it talks to Blend/DeFindex
+// over the network and needs its own fixtures and mocks. Here it's mocked
+// out entirely so this file can stay focused on keeper mechanics
+// (discovery, retry, submission) without dragging that in, while still
+// proving runMigrationKeeper actually wires it up when no rateSource dep is
+// injected (see "wires the real default rate source" below).
+const rateSourcesMocks = vi.hoisted(() => ({
+  createDefaultRateSource: vi.fn(),
+}));
+
+vi.mock("./rate-sources", () => ({
+  createDefaultRateSource: rateSourcesMocks.createDefaultRateSource,
+}));
+
 import {
   discoverMigrationVaults,
   loadMigrationKeeperConfig,
@@ -105,6 +120,12 @@ import {
   type MigrationKeeperConfig,
 } from "./migration-keeper";
 import type { KeeperLogger } from "./keeper-retry";
+import {
+  createInMemoryKeeperStateStore,
+  submissionStateKey,
+  type KeeperStateStore,
+  type SubmissionRecord,
+} from "./keeper-state";
 import type { KnownPoolMeta } from "./known-pools";
 
 const NETWORK = {
@@ -121,6 +142,7 @@ const CONFIG: MigrationKeeperConfig = {
   rpcTimeoutMs: 100,
   minImprovementBps: 50,
   maxSlippageBps: 100,
+  submissionTtlMs: 360_000,
   candidateAdapters: { defindex: "CDEFINDEXADAPTER" },
 };
 
@@ -132,6 +154,15 @@ const VAULT: KnownPoolMeta = {
   contractId: "CVAULT",
 };
 
+const EURC_VAULT: KnownPoolMeta = {
+  id: "meridian-eurc",
+  name: "Meridian",
+  protocol: "meridian",
+  label: "EURC Vault",
+  contractId: "CEURCVAULT",
+  assetId: "CEURCASSET",
+};
+
 const DISCOVERED_VAULT: DiscoveredVault = {
   vaultId: "meridian-usdc",
   vaultContractId: "CVAULT",
@@ -139,6 +170,9 @@ const DISCOVERED_VAULT: DiscoveredVault = {
   currentProtocol: "blend",
   currentPoolId: "CBLENDPOOL",
 };
+
+// Hash of the signed transaction, known before submission.
+const SIGNED_HASH = "deadbeef";
 
 function logger(): KeeperLogger {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -158,6 +192,11 @@ beforeEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.useRealTimers();
+  // Every test other than the one specifically about default wiring passes
+  // its own `rateSource` dep, which takes precedence over this; this default
+  // just keeps those unrelated tests from ever hitting the real
+  // createDefaultRateSource mock (undefined) if they forget to.
+  rateSourcesMocks.createDefaultRateSource.mockReturnValue(async () => null);
   stellarMocks.getRpcServer.mockReturnValue(makeServer());
   stellarMocks.keypairFromSecret.mockReturnValue({
     publicKey: vi.fn(() => "GADMIN"),
@@ -165,7 +204,12 @@ beforeEach(() => {
   stellarMocks.isSimulationError.mockReturnValue(false);
   stellarMocks.isSimulationSuccess.mockReturnValue(true);
   stellarMocks.assembleTransaction.mockReturnValue({
-    build: () => ({ sign: stellarMocks.signPrepared }),
+    build: () => ({
+      sign: stellarMocks.signPrepared,
+      // The keeper records the signed transaction's own hash before it is
+      // ever sent, so the built transaction has to expose one.
+      hash: () => Buffer.from(SIGNED_HASH, "hex"),
+    }),
   });
 });
 
@@ -268,6 +312,32 @@ describe("discoverMigrationVaults", () => {
 
     expect(result.failures).toEqual([]);
     expect(result.vaults).toEqual([DISCOVERED_VAULT]);
+  });
+
+  it("resolves the vault's assetId from its KNOWN_POOLS entry (#539)", async () => {
+    stellarMocks.simulateView
+      .mockResolvedValueOnce("CBLENDADAPTER")
+      .mockResolvedValueOnce("blend")
+      .mockResolvedValueOnce("CBLENDPOOL");
+
+    const result = await discoverMigrationVaults({
+      network: NETWORK,
+      pools: { "meridian-eurc": EURC_VAULT },
+      logger: logger(),
+      sleep: vi.fn(),
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.vaults).toEqual([
+      {
+        vaultId: "meridian-eurc",
+        vaultContractId: "CEURCVAULT",
+        currentAdapterId: "CBLENDADAPTER",
+        currentProtocol: "blend",
+        currentPoolId: "CBLENDPOOL",
+        assetId: "CEURCASSET",
+      },
+    ]);
   });
 
   it("retries a transient discovery failure and succeeds", async () => {
@@ -415,8 +485,16 @@ describe("discoverMigrationVaults", () => {
 });
 
 describe("runMigrationKeeper", () => {
-  it("never migrates with the default rate source: no rate source is verified for either protocol yet", async () => {
+  it("wires the real default rate source (rate-sources.ts) when no rateSource dep is injected", async () => {
+    // #511: runMigrationKeeper used to fall back to a stub that always
+    // returned null, so it could never migrate anything in practice no
+    // matter how the rest of the mechanism was configured. It must now
+    // build the real Blend/DeFindex rate source (createDefaultRateSource,
+    // see rate-sources.ts and its own dedicated tests) from the run's
+    // network config whenever the caller doesn't supply one explicitly.
     const submitMigration = vi.fn();
+    const stubRateSource = vi.fn(async () => null);
+    rateSourcesMocks.createDefaultRateSource.mockReturnValue(stubRateSource);
 
     const result = await runMigrationKeeper(CONFIG, {
       discoverVaults: async () => ({
@@ -426,11 +504,77 @@ describe("runMigrationKeeper", () => {
       submitMigration,
     });
 
+    expect(rateSourcesMocks.createDefaultRateSource).toHaveBeenCalledWith(
+      CONFIG.network
+    );
+    expect(stubRateSource).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: "blend" })
+    );
     expect(submitMigration).not.toHaveBeenCalled();
     expect(result.migrations).toEqual([]);
     expect(result.skipped).toEqual([
       { vaultId: "meridian-usdc", reason: "current rate unavailable" },
     ]);
+  });
+
+  it("threads the vault's assetId into every rate query so a non-USDC vault prices the right reserve (#539)", async () => {
+    const submitMigration = vi.fn(async () => ({
+      hash: "EURC_MIGRATE_HASH",
+      ledger: 123,
+    }));
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+    const eurcVault: DiscoveredVault = {
+      ...DISCOVERED_VAULT,
+      assetId: "CEURCASSET",
+    };
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [eurcVault],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+    });
+
+    // Both the current vault's rate and each candidate's rate are evaluated
+    // against the vault's own reserve asset, never a hardcoded USDC address
+    // (see rate-sources.ts for how createBlendRateSource consumes it).
+    expect(rateSource).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: "blend", assetId: "CEURCASSET" })
+    );
+    expect(rateSource).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: "defindex", assetId: "CEURCASSET" })
+    );
+    expect(result.migrations).toMatchObject([
+      { toProtocol: "defindex", improvementBps: 200 },
+    ]);
+  });
+
+  it("keeps the USDC-vault query shape unchanged when the vault has no assetId (#539)", async () => {
+    // #539 acceptance criterion: no change to RateQuery's existing USDC-vault
+    // behavior. A vault whose KNOWN_POOLS entry has no assetId must not start
+    // carrying an assetId field, so the Blend rate source keeps falling back
+    // to its USDC default exactly as before.
+    const submitMigration = vi.fn();
+    const rateSource = vi.fn(async () => null);
+
+    await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      submitMigration,
+    });
+
+    expect(rateSource).toHaveBeenCalled();
+    for (const call of rateSource.mock.calls) {
+      expect(call[0]).not.toHaveProperty("assetId");
+    }
   });
 
   it("migrates when a candidate clears the minimum improvement threshold", async () => {
@@ -452,10 +596,16 @@ describe("runMigrationKeeper", () => {
       submitMigration,
     });
 
+    // The fourth argument is this run's submission-lease hooks: an injected
+    // submitter is expected to forward them to keep cross-invocation dedup.
     expect(submitMigration).toHaveBeenCalledWith(
       DISCOVERED_VAULT,
       "CDEFINDEXADAPTER",
-      1
+      1,
+      expect.objectContaining({
+        onSigned: expect.any(Function),
+        onResolved: expect.any(Function),
+      })
     );
     expect(result.migrations).toEqual([
       {
@@ -1172,5 +1322,191 @@ describe("runMigrationKeeper", () => {
         transient: true,
       },
     ]);
+  });
+});
+
+describe("runMigrationKeeper cross-invocation dedup", () => {
+  const KEY = submissionStateKey("migration", "testnet", "meridian-usdc");
+
+  async function store(seed?: SubmissionRecord) {
+    const inner = createInMemoryKeeperStateStore();
+    if (seed) await inner.claim(KEY, seed, 600_000);
+    return inner;
+  }
+
+  const rateSource = () =>
+    vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+  function run(stateStore: KeeperStateStore, rates = rateSource()) {
+    return runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      stateStore,
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource: rates,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+    });
+  }
+
+  it("does not send a second migrate_adapter while a prior one is still unconfirmed", async () => {
+    // The whole point of #515: unlike accrue(), a duplicate here costs real
+    // slippage a second time, not a flat fee.
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
+    const rates = rateSource();
+
+    const result = await run(
+      await store({ hash: "INFLIGHT_HASH", updatedAtMs: Date.now() - 1_000 }),
+      rates
+    );
+
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    // Blocked before evaluation, so the rate lookups (and the deadline
+    // budget they spend) are never paid for a vault that cannot migrate.
+    expect(rates).not.toHaveBeenCalled();
+    expect(result.migrations).toEqual([]);
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        reason: expect.stringContaining("still unconfirmed"),
+      },
+    ]);
+  });
+
+  it("skips a vault another run has claimed but not yet signed for", async () => {
+    // A plain "no record" read is not a claim: two concurrent invocations
+    // could otherwise both pass the check and both broadcast.
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
+
+    const result = await run(
+      await store({ hash: null, updatedAtMs: Date.now() })
+    );
+
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(result.skipped).toMatchObject([
+      { reason: expect.stringContaining("already preparing") },
+    ]);
+  });
+
+  it("resolves a prior submission that landed and evaluates again", async () => {
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "SUCCESS", ledger: 5 })),
+      sendTransaction: vi.fn(async () => ({
+        hash: "SUBMITTED_HASH",
+        status: "PENDING",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
+    const stateStore = await store({
+      hash: "LANDED_HASH",
+      updatedAtMs: Date.now() - 1_000,
+    });
+
+    const result = await run(stateStore);
+
+    expect(result.migrations).toMatchObject([{ hash: "SUBMITTED_HASH" }]);
+    expect(await stateStore.get(KEY)).toBeNull();
+  });
+
+  it("clears a record whose transaction is past its validity window instead of blocking on it", async () => {
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+      sendTransaction: vi.fn(async () => ({
+        hash: "SUBMITTED_HASH",
+        status: "PENDING",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
+
+    const result = await run(
+      await store({
+        hash: "DEAD_HASH",
+        updatedAtMs: Date.now() - CONFIG.submissionTtlMs - 1,
+      })
+    );
+
+    expect(result.migrations).toMatchObject([{ hash: "SUBMITTED_HASH" }]);
+  });
+
+  it("records the signed hash before the transaction is sent, so a killed run still blocks the next one", async () => {
+    let recordedAtSend: string | null | undefined;
+    const stateStore = await store();
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+      sendTransaction: vi.fn(async () => {
+        recordedAtSend = (await stateStore.get(KEY))?.record.hash;
+        return { hash: "SUBMITTED_HASH", status: "PENDING" };
+      }),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.simulateView.mockResolvedValue(
+      DISCOVERED_VAULT.currentAdapterId
+    );
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+
+    await run(stateStore);
+
+    expect(recordedAtSend).toBe(SIGNED_HASH);
+    expect(await stateStore.get(KEY)).toBeNull();
+  });
+
+  it("skips the vault when the prior submission's status cannot be checked", async () => {
+    // A store or RPC outage must not be read as "nothing was submitted":
+    // that is precisely the assumption that produces a double migration.
+    const server = makeServer({
+      getTransaction: vi.fn(async () => {
+        throw new Error("rpc unavailable");
+      }),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+
+    const result = await run(
+      await store({ hash: "UNKNOWN_HASH", updatedAtMs: Date.now() })
+    );
+
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      { reason: expect.stringContaining("could not be verified") },
+    ]);
+  });
+
+  it("releases the claim when the migration is abandoned before anything is signed", async () => {
+    // The stale-adapter guard aborts before the transaction is built.
+    // Leaving the claim behind would lock the vault out of migrating for
+    // the claim's whole window over a transaction that never existed.
+    stellarMocks.simulateView.mockResolvedValue("CSOMEOTHERADAPTER");
+    const stateStore = await store();
+    stellarMocks.getRpcServer.mockReturnValue(makeServer());
+
+    const result = await run(stateStore);
+
+    expect(result.skipped).toMatchObject([
+      { reason: expect.stringContaining("adapter changed since discovery") },
+    ]);
+    expect(await stateStore.get(KEY)).toBeNull();
   });
 });

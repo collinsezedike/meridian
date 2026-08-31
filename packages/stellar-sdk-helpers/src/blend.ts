@@ -5,14 +5,18 @@ import { prepareSorobanTx } from "./tx";
 import type { StellarNetwork } from "./types";
 import type { PositionInfo } from "./positions";
 
-const BLEND_RPC_TIMEOUT_MS = 10_000;
+export const BLEND_RPC_TIMEOUT_MS = 10_000;
 
 // The Blend SDK does not accept an AbortSignal, so we race the call against a
 // manual timeout rejection. The underlying fetch will still complete, but the
 // caller gets a fast failure it can retry rather than waiting for Vercel's
-// function-level deadline.
-const withBlendTimeout = <T>(fn: () => Promise<T>, ms = BLEND_RPC_TIMEOUT_MS) =>
-  withRaceTimeout(fn, ms, "Blend RPC");
+// function-level deadline. Exported so other Blend-SDK call sites (see
+// rate-sources.ts) share this instead of redefining it, and stay in sync if
+// the timeout is ever tuned.
+export const withBlendTimeout = <T>(
+  fn: () => Promise<T>,
+  ms = BLEND_RPC_TIMEOUT_MS
+) => withRaceTimeout(fn, ms, "Blend RPC");
 
 export interface BlendPoolConfig {
   // Blend pool contract (C...) the request is submitted to.

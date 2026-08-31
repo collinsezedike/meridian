@@ -35,7 +35,9 @@ the user's wallet
 
 ## Withdraw flow
 
-Symmetric to deposit. The user specifies a share amount (mUSDC), the API builds a `vault.withdraw(caller, shares)` invocation, Freighter signs, and the vault redeems the proportional adapter position and returns USDC.
+Symmetric to deposit. The user specifies a share amount (mUSDC), the API builds a `vault.withdraw(caller, shares, min_usdc_out)` invocation, Freighter signs, and the vault redeems the proportional adapter position and returns USDC.
+
+`min_usdc_out` is a caller-supplied floor, not a fixed protocol parameter. The vault's adapter-share ratio is a shared, mutable value, so a concurrent withdrawal by another depositor can shift it between when the API quoted a payout and when this transaction lands. If the delivered amount would fall below the floor, the transaction reverts with a typed `MinAmountOutNotMet` error instead of silently paying out less than the user was shown.
 
 ## Rate selection
 
@@ -62,8 +64,19 @@ usdc_out = <the adapter's redemption of the caller's proportional share of adapt
 
 This means early depositors automatically benefit from yield without any claim or harvest action.
 
+## Automatic yield accrual and rebalancing
+
+Deposit and withdraw are the only actions a user ever takes. Two scheduled keeper jobs (GitHub Actions cron, hitting dedicated API routes) handle everything else:
+
+- **Accrual keeper** (every 15 minutes): refreshes the active adapter's cached yield figure, so `total_assets()` reflects interest actually earned rather than going stale between user interactions. Permissionless by design, a duplicate run is harmless.
+- **Migration keeper** (hourly): when a different supported protocol is offering meaningfully better yield, moves the vault's entire position to it via `migrate_adapter`, in one atomic, slippage-bounded transaction. Admin-gated, and cross-invocation deduplicated (via a shared claim/lease record) so a slow or retried run can't submit the same migration twice.
+
+Neither keeper changes what a user sees or does; they exist so a deposit made once keeps earning the best available rate without the user ever having to come back and move funds manually.
+
 ## Security properties
 
-- **No server-side keys.** The API returns unsigned XDR only. Private keys never leave Freighter.
-- **User-visible transaction contents.** Freighter shows the exact contract, function, and amount before the user signs — there is no hidden parameter deciding where funds go; that's determined entirely by the vault's current adapter, which is itself a matter of on-chain, auditable state (`vault.get_adapter()`).
+- **No server-side keys.** The API returns unsigned XDR only. Private keys never leave the user's wallet.
+- **User-visible transaction contents.** The wallet shows the exact contract, function, and amount before the user signs. There is no hidden parameter deciding where funds go; that's determined entirely by the vault's current adapter, which is itself a matter of on-chain, auditable state (`vault.get_adapter()`).
 - **On-chain state.** USDC balances, share balances, and the active adapter are all stored in Soroban contract storage, auditable by anyone.
+- **Slippage-bound withdrawals.** `withdraw()` takes a caller-supplied `min_usdc_out` floor, so a ratio shift from a concurrent withdrawal produces a typed revert instead of a silently reduced payout.
+- **Immutable contracts.** No vault or adapter contract exposes an upgrade entry point. Once deployed, contract logic can't be rewritten by anyone, including Meridian, the tradeoff is that a fix requires a fresh deployment (see [Contract immutability](https://github.com/drydocs/meridian/blob/main/docs/contracts.md#contract-immutability)), not an in-place patch.

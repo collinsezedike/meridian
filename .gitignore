@@ -17,3 +17,5 @@ packages/contracts/**/test_snapshots/
 apps/web/test-results/
 apps/web/playwright-report/
 apps/web/blob-report/
+.vercel
+.env*

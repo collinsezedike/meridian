@@ -1,6 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
+vi.mock("../_lib/middleware.js", async () => {
+  const actual = await vi.importActual<typeof import("../_lib/middleware.js")>(
+    "../_lib/middleware.js"
+  );
+  return {
+    ...actual,
+    checkRateLimit: vi.fn(
+      async (...args: Parameters<typeof actual.checkRateLimit>) =>
+        actual.checkRateLimit(...args)
+    ),
+  };
+});
+
 // Stub the workspace builders/readers — these tests exercise the HTTP handler
 // contract (method guards, field validation, status codes, payload shape), not
 // the Soroban transaction building, which is unit-tested in the helpers package.
@@ -96,7 +109,10 @@ import vaultsHandler from "../v1/vaults/index";
 import positionsHandler from "../v1/positions/[publicKey]";
 import keeperHandler from "../v1/keepers/accrue";
 import rebalanceHandler from "../v1/keepers/rebalance";
-import { resetRateLimitForTesting } from "../_lib/middleware.js";
+import {
+  checkRateLimit,
+  resetRateLimitForTesting,
+} from "../_lib/middleware.js";
 import {
   buildDepositTx,
   runBlendAccrualKeeper,
@@ -146,6 +162,30 @@ beforeEach(() => {
 });
 
 describe("POST /api/v1/tx/deposit", () => {
+  it("returns 503 when the upstream rate limiter fails", async () => {
+    vi.mocked(checkRateLimit).mockRejectedValueOnce(
+      new Error("Upstash timeout")
+    );
+
+    const res = makeRes();
+    await depositHandler(
+      fakeReq({
+        method: "POST",
+        body: {
+          walletAddress: PUBKEY,
+          vaultId: "blend-usdc-fixed",
+          amount: "10",
+        },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toEqual({
+      error: "Rate limiter unavailable; refusing to run",
+    });
+  });
+
   it("rejects non-POST methods with 405", async () => {
     const res = makeRes();
     await depositHandler(fakeReq({ method: "GET", body: {} }), res);

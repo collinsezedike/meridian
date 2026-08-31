@@ -6,7 +6,7 @@
 //! and error types used across all adapters (blend-adapter, defindex-adapter,
 //! etc.). Protocol-specific yield logic remains in each adapter's own crate.
 
-use soroban_sdk::{contracterror, symbol_short, Address, Env, Symbol};
+use soroban_sdk::{contracterror, panic_with_error, symbol_short, Address, Env, Error, Symbol};
 
 // ---------------------------------------------------------------------------
 // Storage keys
@@ -74,4 +74,29 @@ pub fn get_vault(env: &Env) -> Option<Address> {
 /// Panics if not set.
 pub fn get_usdc(env: &Env) -> Address {
     env.storage().instance().get(&USDC_KEY).unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Shared NotInitialized helper
+// ---------------------------------------------------------------------------
+
+/// Lets each adapter's own `ContractError` supply its `NotInitialized`
+/// variant to the shared `get_or_not_initialized` helper below, since each
+/// adapter defines that enum itself (with a different discriminant) rather
+/// than sharing one across crates.
+pub trait NotInitializedError {
+    fn not_initialized() -> Self;
+}
+
+/// Reads an instance-storage value, panicking with the caller's typed
+/// NotInitialized error instead of an opaque unwrap trap if it's unset. In
+/// practice this branch is unreachable on any contract deployed via
+/// `__constructor`, since every storage key this is used for is set before
+/// any other method is reachable; this exists as a defensive, correctly
+/// typed fallback rather than a path expected to actually fire.
+pub fn get_or_not_initialized<T, E>(env: &Env, value: Option<T>) -> T
+where
+    E: NotInitializedError + Into<Error>,
+{
+    value.unwrap_or_else(|| panic_with_error!(env, E::not_initialized()))
 }

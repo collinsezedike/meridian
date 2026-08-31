@@ -1,4 +1,10 @@
-import { Address, Contract, nativeToScVal, xdr } from "@stellar/stellar-sdk";
+import {
+  Address,
+  Contract,
+  nativeToScVal,
+  rpc,
+  xdr,
+} from "@stellar/stellar-sdk";
 import { simulateView, prepareSorobanTx } from "./tx";
 import type { StellarNetwork } from "./types";
 import type { PositionInfo } from "./positions";
@@ -20,6 +26,32 @@ export interface DefindexVaultConfig {
 
 function i128(value: bigint): xdr.ScVal {
   return nativeToScVal(value, { type: "i128" });
+}
+
+/**
+ * Quotes the underlying-asset value of `shares` DeFindex shares via
+ * get_asset_amounts_per_shares, returning the single-asset vault's one
+ * amount, or null when the simulation returned no usable value. Shared by
+ * buildDefindexWithdrawTx, fetchDefindexPosition, and rate-sources.ts's
+ * DeFindex share-price probe so the response parsing (the array check and
+ * toBigInt(amounts[0])) only needs to be right in one place.
+ */
+export async function getDefindexAssetAmountPerShares(
+  server: rpc.Server,
+  vaultId: string,
+  passphrase: string,
+  shares: bigint
+): Promise<bigint | null> {
+  const amounts = (await simulateView(
+    server,
+    vaultId,
+    passphrase,
+    "get_asset_amounts_per_shares",
+    i128(shares)
+  )) as Array<bigint | number> | null;
+  return Array.isArray(amounts) && amounts.length > 0
+    ? toBigInt(amounts[0])
+    : null;
 }
 
 /**
@@ -79,17 +111,13 @@ export async function buildDefindexWithdrawTx(
 
   // Quote the expected payout so we can compute a real floor.
   const server = getRpcServer(config.network.rpcUrl, 12_000);
-  const expectedAmounts = (await simulateView(
-    server,
-    config.vaultId,
-    config.network.passphrase,
-    "get_asset_amounts_per_shares",
-    i128(shares)
-  )) as Array<bigint | number> | null;
   const expectedAmount =
-    Array.isArray(expectedAmounts) && expectedAmounts.length > 0
-      ? toBigInt(expectedAmounts[0])
-      : 0n;
+    (await getDefindexAssetAmountPerShares(
+      server,
+      config.vaultId,
+      config.network.passphrase,
+      shares
+    )) ?? 0n;
   const minAmount = expectedAmount - (expectedAmount * slippageBps) / 10_000n;
 
   const contract = new Contract(config.vaultId);
@@ -129,15 +157,13 @@ export async function fetchDefindexPosition(
   );
   if (shares <= 0n) return [];
 
-  const amounts = (await simulateView(
-    server,
-    vaultId,
-    network.passphrase,
-    "get_asset_amounts_per_shares",
-    i128(shares)
-  )) as Array<bigint | number> | null;
   const underlying =
-    Array.isArray(amounts) && amounts.length > 0 ? toBigInt(amounts[0]) : 0n;
+    (await getDefindexAssetAmountPerShares(
+      server,
+      vaultId,
+      network.passphrase,
+      shares
+    )) ?? 0n;
 
   return [
     {

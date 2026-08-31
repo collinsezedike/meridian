@@ -7,6 +7,12 @@ export interface KnownPoolMeta {
   // vault contract address for DeFindex, coordinator vault address for Meridian.
   // Optional on mainnet until deployed.
   contractId?: string;
+  // Stellar Asset Contract address of the vault's underlying reserve asset
+  // (USDC/EURC). Read by the migration keeper's discovery to thread the right
+  // asset through each RateQuery, so a Blend pool is priced on the vault's own
+  // reserve rather than a hardcoded USDC address (#539). Optional on mainnet
+  // until a vault is deployed there.
+  assetId?: string;
 }
 
 export interface TestnetPoolMeta extends KnownPoolMeta {

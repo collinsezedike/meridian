@@ -13,7 +13,14 @@ const KNOWN_VAULT_IDS = new Set(
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (applyCors(req, res)) return;
-  if (!(await checkRateLimit(req, res))) return;
+  try {
+    if (!(await checkRateLimit(req, res))) return;
+  } catch (err) {
+    console.error("[vaults] rate limit check failed:", err);
+    return res
+      .status(503)
+      .json({ error: "Rate limiter unavailable; refusing to run" });
+  }
   const raw = req.query["vaultId"];
   const vaultId = typeof raw === "string" ? raw : undefined;
   if (!vaultId) return res.status(400).json({ error: "vaultId is required" });

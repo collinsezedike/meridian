@@ -15,6 +15,11 @@ export interface RawPosition {
   totalAssets: bigint;
   // Cost basis from get_principal. null when the deployed contract predates
   // principal tracking — earned then falls back to 0 rather than guessing.
+  // Zero alongside a positive share balance means the same thing: the vault
+  // has no basis recorded for this holder, which is the state of a position
+  // that arrived by mUSDC transfer (see the vault contract's
+  // `get_principal`). A depositor always has a positive basis while holding
+  // shares, so the two cases can't be confused.
   principal: bigint | null;
   entryTime: bigint;
 }
@@ -39,9 +44,14 @@ export function computePosition(
       ? (raw.shares * raw.totalAssets) / raw.totalShares
       : 0n;
 
+  // A holder with no recorded basis reports no yield, rather than counting
+  // the whole position as profit: mUSDC that arrived by transfer carries no
+  // cost basis with it, and treating a missing basis as a basis of zero
+  // would show the new holder their entire balance as earnings.
+  const hasBasis = raw.principal !== null && raw.principal > 0n;
   const earned =
-    raw.principal !== null && currentValue > raw.principal
-      ? currentValue - raw.principal
+    hasBasis && currentValue > raw.principal!
+      ? currentValue - raw.principal!
       : 0n;
 
   return [

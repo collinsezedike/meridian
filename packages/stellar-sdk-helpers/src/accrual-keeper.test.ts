@@ -99,6 +99,12 @@ import {
   type KeeperLogger,
 } from "./accrual-keeper";
 import type { KnownPoolMeta } from "./known-pools";
+import {
+  createInMemoryKeeperStateStore,
+  submissionStateKey,
+  type KeeperStateStore,
+  type SubmissionRecord,
+} from "./keeper-state";
 
 const NETWORK = {
   network: "testnet" as const,
@@ -112,6 +118,7 @@ const CONFIG: BlendAccrualKeeperConfig = {
   maxAttempts: 3,
   baseDelayMs: 1,
   rpcTimeoutMs: 100,
+  submissionTtlMs: 360_000,
 };
 
 const VAULT: KnownPoolMeta = {
@@ -143,6 +150,18 @@ const DEFINDEX_ADAPTER: DiscoveredAdapter = {
   adapterId: "CADAPTERDFX",
   protocol: "defindex",
 };
+
+// Counts only the warnings a test cares about: injecting `submitAccrual`
+// also warns once that dedup depends on the injected submitter forwarding
+// the hooks, which is unrelated to whatever a given test is asserting.
+function warningsMatching(log: KeeperLogger, fragment: string) {
+  return (log.warn as ReturnType<typeof vi.fn>).mock.calls.filter(([message]) =>
+    String(message).includes(fragment)
+  );
+}
+
+// Hash of the signed transaction, known before submission.
+const SIGNED_HASH = "deadbeef";
 
 function logger(): KeeperLogger {
   return {
@@ -180,9 +199,19 @@ beforeEach(() => {
     (sim: { kind?: string }) => sim.kind === "success"
   );
   stellarMocks.assembleTransaction.mockImplementation((tx: unknown) => ({
-    build: () => ({ tx, sign: stellarMocks.signPrepared }),
+    build: () => ({
+      tx,
+      sign: stellarMocks.signPrepared,
+      // The keeper records the signed transaction's own hash before it is
+      // ever sent, so the built transaction has to expose one.
+      hash: () => Buffer.from(SIGNED_HASH, "hex"),
+    }),
   }));
   stellarMocks.simulateView.mockReset();
+  // The pre-submit "the vault still uses this adapter" guard reads
+  // get_adapter() fresh on the default submission path; keep it matching
+  // BLEND_ADAPTER unless a test is specifically exercising a mismatch.
+  stellarMocks.simulateView.mockResolvedValue(BLEND_ADAPTER.adapterId);
   stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 999 });
 });
 
@@ -640,7 +669,16 @@ describe("runBlendAccrualKeeper", () => {
     });
 
     expect(submitAccrual).toHaveBeenCalledOnce();
-    expect(submitAccrual).toHaveBeenCalledWith(BLEND_ADAPTER, 1);
+    // The third argument is this run's submission-lease hooks: an injected
+    // submitter is expected to forward them to keep cross-invocation dedup.
+    expect(submitAccrual).toHaveBeenCalledWith(
+      BLEND_ADAPTER,
+      1,
+      expect.objectContaining({
+        onSigned: expect.any(Function),
+        onResolved: expect.any(Function),
+      })
+    );
     expect(result.successes).toEqual([
       {
         vaultId: "meridian-usdc",
@@ -732,7 +770,9 @@ describe("runBlendAccrualKeeper", () => {
     });
 
     expect(submitAccrual).toHaveBeenCalledTimes(2);
-    expect(log.warn).toHaveBeenCalledOnce();
+    expect(warningsMatching(log, "transient failure; retrying")).toHaveLength(
+      1
+    );
     expect(result.failures).toEqual([]);
     expect(result.successes[0]).toMatchObject({ hash: "HASH2", attempts: 2 });
   });
@@ -755,9 +795,13 @@ describe("runBlendAccrualKeeper", () => {
       submitAccrual,
     });
 
-    expect(submitAccrual).toHaveBeenNthCalledWith(1, BLEND_ADAPTER, 1);
-    expect(submitAccrual).toHaveBeenNthCalledWith(2, BLEND_ADAPTER, 2);
-    expect(submitAccrual).toHaveBeenNthCalledWith(3, BLEND_ADAPTER, 3);
+    const hooks = expect.objectContaining({
+      onSigned: expect.any(Function),
+      onResolved: expect.any(Function),
+    });
+    expect(submitAccrual).toHaveBeenNthCalledWith(1, BLEND_ADAPTER, 1, hooks);
+    expect(submitAccrual).toHaveBeenNthCalledWith(2, BLEND_ADAPTER, 2, hooks);
+    expect(submitAccrual).toHaveBeenNthCalledWith(3, BLEND_ADAPTER, 3, hooks);
     expect(sleep).toHaveBeenNthCalledWith(1, 1);
     expect(sleep).toHaveBeenNthCalledWith(2, 2);
     expect(result.successes[0]).toMatchObject({
@@ -1279,13 +1323,15 @@ describe("runBlendAccrualKeeper", () => {
     ]);
   });
 
-  it("retries try-again-later responses from the default transaction path", async () => {
+  it("rechecks the signed transaction after try-again-later instead of rebroadcasting", async () => {
+    // TRY_AGAIN_LATER is not "nothing happened": the node may already be
+    // processing this transaction. Building a second one would give it a
+    // different hash, and both could land.
     const sleep = vi.fn();
     const server = makeServer({
       sendTransaction: vi
         .fn()
-        .mockResolvedValueOnce({ status: "TRY_AGAIN_LATER" })
-        .mockResolvedValueOnce({ hash: "RETRY_HASH", status: "PENDING" }),
+        .mockResolvedValueOnce({ status: "TRY_AGAIN_LATER" }),
     });
     stellarMocks.getRpcServer.mockReturnValue(server);
     stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 654 });
@@ -1299,14 +1345,44 @@ describe("runBlendAccrualKeeper", () => {
       sleep,
     });
 
-    expect(server.sendTransaction).toHaveBeenCalledTimes(2);
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
     expect(sleep).toHaveBeenCalledWith(1);
+    expect(stellarMocks.waitForTransaction).toHaveBeenCalledWith(
+      server,
+      SIGNED_HASH,
+      { timeoutMs: 20000 }
+    );
     expect(result.successes).toMatchObject([
       {
-        hash: "RETRY_HASH",
+        hash: SIGNED_HASH,
         ledger: 654,
         attempts: 2,
       },
+    ]);
+  });
+
+  it("tracks the signed hash when the send call itself times out", async () => {
+    // The send may have reached the network before the client gave up.
+    const server = makeServer({
+      sendTransaction: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Soroban RPC timed out after 100ms")),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 655 });
+
+    const result = await runBlendAccrualKeeper(CONFIG, {
+      logger: logger(),
+      sleep: vi.fn(),
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+    });
+
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(result.successes).toMatchObject([
+      { hash: SIGNED_HASH, attempts: 2 },
     ]);
   });
 
@@ -1363,6 +1439,191 @@ describe("runBlendAccrualKeeper", () => {
         stage: "submit",
         attempts: 1,
         transient: true,
+      },
+    ]);
+  });
+});
+
+describe("runBlendAccrualKeeper cross-invocation dedup", () => {
+  const KEY = submissionStateKey(
+    "accrual",
+    "testnet",
+    BLEND_ADAPTER.vaultId,
+    BLEND_ADAPTER.adapterId
+  );
+
+  async function store(seed?: SubmissionRecord) {
+    const inner = createInMemoryKeeperStateStore();
+    if (seed) await inner.claim(KEY, seed, 600_000);
+    return inner;
+  }
+
+  function run(stateStore: KeeperStateStore, log = logger()) {
+    return runBlendAccrualKeeper(CONFIG, {
+      logger: log,
+      sleep: vi.fn(),
+      stateStore,
+      discoverAdapters: async () => ({
+        adapters: [BLEND_ADAPTER],
+        failures: [],
+      }),
+    });
+  }
+
+  it("skips an adapter whose prior accrue() is still unconfirmed instead of sending a second one", async () => {
+    // The record is the only thing that survives a killed invocation;
+    // without it the next cron tick would broadcast a duplicate while the
+    // first transaction is still landing.
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    const stateStore = await store({
+      hash: "INFLIGHT_HASH",
+      updatedAtMs: Date.now() - 1_000,
+    });
+
+    const result = await run(stateStore);
+
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(result.successes).toEqual([]);
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        adapterId: "CADAPTERBLEND",
+        reason: expect.stringContaining("still unconfirmed"),
+      },
+    ]);
+    // Left in place: it is still genuinely in flight.
+    expect(await stateStore.get(KEY)).not.toBeNull();
+  });
+
+  it("skips an adapter another run has claimed but not yet signed for", async () => {
+    // Two concurrent invocations (a scheduled run overlapping a manual
+    // workflow_dispatch) would otherwise both read "no record" and both
+    // broadcast; the claim is what makes the check exclusive.
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    const stateStore = await store({ hash: null, updatedAtMs: Date.now() });
+
+    const result = await run(stateStore);
+
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(result.skipped).toMatchObject([
+      { reason: expect.stringContaining("already preparing") },
+    ]);
+  });
+
+  it("clears a prior submission that actually landed and submits again", async () => {
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "SUCCESS", ledger: 12 })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    const stateStore = await store({
+      hash: "LANDED_HASH",
+      updatedAtMs: Date.now() - 1_000,
+    });
+
+    const result = await run(stateStore);
+
+    expect(result.successes).toMatchObject([{ hash: "HASH" }]);
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    // Cleared once resolved, and again once this run's own submission
+    // confirmed, so nothing is left to block the next tick.
+    expect(await stateStore.get(KEY)).toBeNull();
+  });
+
+  it("ages out a record whose transaction can no longer land, rather than blocking forever", async () => {
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    const stateStore = await store({
+      hash: "DEAD_HASH",
+      updatedAtMs: Date.now() - CONFIG.submissionTtlMs - 1_000,
+    });
+
+    const result = await run(stateStore);
+
+    expect(result.successes).toMatchObject([{ hash: "HASH" }]);
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("records the signed hash before the transaction is sent, not after", async () => {
+    // Recording after the send returns would miss the case that matters:
+    // a send that times out may already have reached the mempool.
+    let recordedAtSend: string | null | undefined;
+    const stateStore = await store();
+    const server = makeServer({
+      getTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+      sendTransaction: vi.fn(async () => {
+        recordedAtSend = (await stateStore.get(KEY))?.record.hash;
+        return { hash: "FRESH_HASH", status: "PENDING" };
+      }),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+
+    await run(stateStore);
+
+    expect(recordedAtSend).toBe(SIGNED_HASH);
+    expect(await stateStore.get(KEY)).toBeNull();
+  });
+
+  it("proceeds when the store cannot be read, rather than halting all accrual", async () => {
+    // Deliberately the opposite of the migration keeper: a duplicate
+    // accrue() re-syncs a cached value and costs one fee, while halting
+    // leaves every vault's TVL/APY stale for the length of the outage.
+    const inner = await store();
+    const stateStore: KeeperStateStore = {
+      ...inner,
+      get: async () => {
+        throw new Error("KV unavailable");
+      },
+    };
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    const log = logger();
+
+    const result = await run(stateStore, log);
+
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(result.successes).toHaveLength(1);
+    expect(
+      warningsMatching(log, "proceeding without cross-invocation dedup")
+    ).toHaveLength(1);
+  });
+
+  it("releases the claim when nothing was ever signed", async () => {
+    // A stale adapter aborts before the transaction is built; leaving the
+    // claim behind would lock the adapter out for the claim's whole window
+    // over a transaction that never existed.
+    stellarMocks.simulateView.mockResolvedValue("CADAPTERDEFINDEX_NEW");
+    const stateStore = await store();
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+
+    await run(stateStore);
+
+    expect(await stateStore.get(KEY)).toBeNull();
+  });
+
+  it("skips accruing an adapter the vault has already migrated away from", async () => {
+    // The accrue/migrate race folded into #515: accrue() on a detached
+    // adapter succeeds and does nothing, so it must not be reported as a
+    // success (nor as a failure, it is a benign race).
+    stellarMocks.simulateView.mockResolvedValue("CADAPTERDEFINDEX_NEW");
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+
+    const result = await run(await store());
+
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(result.successes).toEqual([]);
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        adapterId: "CADAPTERBLEND",
+        reason: expect.stringContaining("adapter changed since discovery"),
       },
     ]);
   });
