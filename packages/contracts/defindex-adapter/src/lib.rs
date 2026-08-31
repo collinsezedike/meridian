@@ -426,6 +426,21 @@ mod tests {
     }
 
     #[test]
+    fn total_shares_reads_the_dfx_vault_s_live_balance() {
+        let (env, vault, usdc_id, adapter, _dfx) = setup();
+        assert_eq!(adapter.total_shares(), 0);
+
+        let amount = 100_0000000_i128;
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        // total_shares() reads the DeFindex vault's own balance() live,
+        // independent of anything the vault separately tracks -- it must
+        // agree with the dfToken credit deposit() itself just returned.
+        assert_eq!(adapter.total_shares(), shares);
+    }
+
+    #[test]
     fn withdraw_transfers_usdc_to_recipient() {
         let (env, vault, usdc_id, adapter, _dfx) = setup();
         let amount = 100_0000000_i128;

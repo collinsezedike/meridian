@@ -658,6 +658,21 @@ mod tests {
     }
 
     #[test]
+    fn total_shares_reads_the_pool_s_live_collateral_balance() {
+        let (env, vault, usdc_id, adapter, _pool) = setup();
+        assert_eq!(adapter.total_shares(), 0);
+
+        let amount = 100_0000000_i128;
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        // total_shares() reads Blend's own collateral map live, independent
+        // of anything the vault separately tracks -- it must agree with the
+        // bToken credit deposit() itself just returned.
+        assert_eq!(adapter.total_shares(), shares);
+    }
+
+    #[test]
     fn deposit_credits_strictly_positive_b_tokens() {
         // Pin the semantics of REQUEST_SUPPLY_COLLATERAL: deposit() must
         // credit real, strictly-positive bTokens into Blend's collateral map.
