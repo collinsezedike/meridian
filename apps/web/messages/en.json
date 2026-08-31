@@ -86,5 +86,10 @@
     "error": "Failed to load admin history",
     "empty": "No admin actions recorded yet",
     "viewTx": "View tx"
+  },
+
+  "errorBoundary": {
+    "title": "Something went wrong. Please reload the page.",
+    "reload": "Reload"
   }
 }
