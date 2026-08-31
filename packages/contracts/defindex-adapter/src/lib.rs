@@ -166,7 +166,12 @@ impl MeridianDefindexAdapter {
         let client = DefindexVaultClient::new(&env, &dfx);
         let shares_before = client.balance(&adapter);
         let min_amount = min_after_slippage(amount);
-        let _ = client.deposit(&vec![&env, amount], &vec![&env, min_amount], &adapter, &true);
+        let _ = client.deposit(
+            &vec![&env, amount],
+            &vec![&env, min_amount],
+            &adapter,
+            &true,
+        );
         let shares_after = client.balance(&adapter);
 
         shares_after - shares_before
