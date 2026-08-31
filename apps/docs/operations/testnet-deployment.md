@@ -120,7 +120,7 @@ This last step is deliberately manual. `set_adapter` resets the vault's adapter-
 
 ## Getting testnet USDC
 
-Blend's testnet pool uses USDC issued by Blend's own controlled test key, not Circle's testnet USDC — the two are different Stellar assets that happen to share an asset code. Fund a testnet wallet from [Blend's public faucet](https://testnet.blend.capital) or via its API endpoint (`fundFromBlendFaucet()` in `apps/web/src/hooks/useVaultActions.ts` calls this automatically when a depositing wallet has no USDC balance). In practice the default faucet call reliably grants BLND/wETH/wBTC but has not reliably granted USDC in testing — if a deposit fails with a missing-trustline or insufficient-balance error, you may need to fund the wallet directly through Blend's own faucet UI.
+Blend's testnet pool uses USDC issued by Blend's own controlled test key, not Circle's testnet USDC — the two are different Stellar assets that happen to share an asset code. Fund a testnet wallet from [Blend's public faucet](https://testnet.blend.capital) or via its API endpoint (`fundFromBlendFaucet()` in `apps/web/src/hooks/useBlendFaucet.ts` calls this automatically when a depositing wallet has no USDC balance). In practice the default faucet call reliably grants BLND/wETH/wBTC but has not reliably granted USDC in testing — if a deposit fails with a missing-trustline or insufficient-balance error, you may need to fund the wallet directly through Blend's own faucet UI.
 
 ## Vault migration history
 
