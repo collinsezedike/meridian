@@ -7,6 +7,7 @@
     "disconnect": "Déconnecter",
     "copyAddress": "Copier l'adresse",
     "copied": "Copié",
+    "copyFailed": "Échec de la copie de l'adresse",
     "walletDisconnected": "Portefeuille déconnecté",
     "walletConnected": "Portefeuille connecté",
     "chooseWallet": "Choisir un portefeuille",

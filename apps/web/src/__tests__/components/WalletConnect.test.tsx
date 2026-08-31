@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { WalletConnect } from "../../components/onboarding/WalletConnect";
 import { useWalletStore } from "../../store/wallet";
+import { useToastStore } from "../../store/toast";
 import { useWalletConnect } from "../../hooks/useWalletConnect";
 
 const handleConnect = vi.fn();
