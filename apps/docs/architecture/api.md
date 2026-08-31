@@ -107,7 +107,7 @@ Builds an unsigned Soroban withdraw transaction.
 
 ### `POST /api/v1/tx/add-trustline`
 
-Builds an unsigned transaction that adds the mUSDC trustline to the caller's account. Must be submitted before a first deposit.
+Builds an unsigned transaction that adds a trustline for each classic Stellar asset the caller doesn't already hold — USDC always, and mUSDC too on any network where `MUSDC_ISSUER` is still set (only true before a #578 cutover: mUSDC is now a custom SEP-41 token, not a classic asset, so it needs no trustline on a network deployed against the new contract). Must be submitted before a first deposit, on whichever assets it covers. Throws if every required trustline already exists.
 
 **Request**
 

@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # Deploy a full, freshly-wired Meridian coordinator vault stack to Stellar
-# testnet: vault and a BlendAdapter, initialized and linked together. Use
-# this to stand up a brand new environment. To push new adapter code to
-# an ALREADY-LIVE vault without redeploying the vault itself, use
-# scripts/redeploy-blend-adapter.sh instead.
+# testnet: vault, a BlendAdapter, and the mUSDC share token, initialized and
+# linked together. Use this to stand up a brand new environment. To push new
+# adapter code to an ALREADY-LIVE vault without redeploying the vault itself,
+# use scripts/redeploy-blend-adapter.sh instead.
 #
 # Usage: bash scripts/deploy-testnet.sh
 
@@ -75,6 +75,7 @@ stellar contract build
 WASM_DIR="target/wasm32v1-none/release"
 WASM_VAULT="$WASM_DIR/meridian_vault.wasm"
 WASM_BLEND_ADAPTER="$WASM_DIR/meridian_blend_adapter.wasm"
+WASM_MUSDC_TOKEN="$WASM_DIR/meridian_musdc_token.wasm"
 
 upload() {
   stellar contract upload --network "$NETWORK" --source "$DEPLOYER" --wasm "$1"
@@ -91,6 +92,8 @@ echo "Uploading vault WASM..."
 VAULT_HASH=$(upload "$WASM_VAULT")
 echo "Uploading blend-adapter WASM..."
 BLEND_ADAPTER_HASH=$(upload "$WASM_BLEND_ADAPTER")
+echo "Uploading mUSDC token WASM..."
+MUSDC_TOKEN_HASH=$(upload "$WASM_MUSDC_TOKEN")
 
 echo "Deploying vault..."
 VAULT_ID=$(deploy "$VAULT_HASH")
@@ -104,11 +107,17 @@ BLEND_ADAPTER_ID=$(deploy "$BLEND_ADAPTER_HASH" \
   -- --vault "$VAULT_ID" --pool "$BLEND_POOL_ID" --usdc "$USDC_ID")
 echo "blend-adapter contract ID: $BLEND_ADAPTER_ID"
 
-echo "Deploying mUSDC share token (Stellar Asset Contract)..."
-MUSDC_ID=$(stellar contract asset deploy \
-  --network "$NETWORK" \
-  --source "$DEPLOYER" \
-  --asset "MUSDC:$DEPLOYER_ADDRESS")
+# mUSDC (#578) is a custom SEP-41 token, not a Stellar Asset Contract: it
+# carries a transfer callback into the vault so cost basis and entry time
+# split correctly between sender and receiver on a transfer, which a bare
+# SAC has no hook to support. Its admin ($VAULT_ID) is passed as a
+# constructor argument for the same reason as blend-adapter's own wiring
+# above: initialize() has no identity to authorize against yet, so a
+# deploy-then-initialize gap would be front-runnable the same way #505's
+# adapter gap was.
+echo "Deploying mUSDC token (admin=$VAULT_ID)..."
+MUSDC_ID=$(deploy "$MUSDC_TOKEN_HASH" \
+  -- --admin "$VAULT_ID" --decimals 7 --name "Meridian USDC" --symbol mUSDC)
 echo "mUSDC contract ID: $MUSDC_ID"
 
 # Whichever key signs initialize(), it has to be the one that controls
@@ -158,11 +167,6 @@ else
   echo "    --send=no --id $VAULT_ID -- get_admin"
   echo ""
 fi
-
-echo "Setting the vault as mUSDC's admin so it can mint/burn shares..."
-stellar contract invoke \
-  --network "$NETWORK" --source "$DEPLOYER" --id "$MUSDC_ID" \
-  -- set_admin --new-admin "$VAULT_ID"
 
 echo ""
 echo "Done. Add these to your .env:"
