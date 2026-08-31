@@ -106,17 +106,32 @@ Adapter contracts have no in-place upgrade path. To get new adapter code (a bug 
 VAULT_ID=$VAULT_CONTRACT_ID DEPLOYER=my-deployer bash scripts/redeploy-blend-adapter.sh
 ```
 
-This builds and deploys a new `BlendAdapter`, wired to the same vault/pool/USDC through its constructor arguments, and then **prints, but does not run**, the final `set_adapter` command:
+This builds and deploys a new `BlendAdapter`, wired to the same vault/pool/USDC through its constructor arguments, and then **prints, but does not run**, the final swap command. Which command it prints depends on whether the vault already has depositors, so check that first:
 
 ```bash
-stellar contract invoke --network testnet --source $ADMIN \
+stellar contract invoke --network testnet --source my-deployer \
+  --id $VAULT_CONTRACT_ID -- get_total_shares
+```
+
+### Vault with depositors (`get_total_shares > 0`) — `migrate_adapter`
+
+```bash
+stellar contract invoke --network testnet --source $DEPLOYER \
+  --id $VAULT_ID -- migrate_adapter --new-adapter $NEW_ADAPTER_ID --max-slippage-bps 100
+```
+
+`migrate_adapter` moves the vault's entire position from the old adapter to the new one atomically, comparing the value that lands on the new adapter against the old adapter's value before extraction and reverting if the difference exceeds `--max-slippage-bps` (basis points, max `10000`). Per-depositor bookkeeping is denominated in vault shares, not adapter shares, so it is left untouched — **no depositor has to withdraw first**. It fails with `SameAdapter` if the new adapter is the one already installed, and with `NoAdapterPosition` if the vault holds no adapter position at all (which is the zero-depositor case below).
+
+### Fresh vault, no depositors yet (`get_total_shares == 0`) — `set_adapter`
+
+```bash
+stellar contract invoke --network testnet --source $DEPLOYER \
   --id $VAULT_ID -- set_adapter --new-adapter $NEW_ADAPTER_ID
 ```
 
-This last step is deliberately manual. `set_adapter` resets the vault's adapter-share accounting to zero — if any funds are currently deposited through the vault's _current_ adapter, they become unreachable through the vault's normal withdraw flow the moment you swap. Before running the printed command:
+`set_adapter` is simpler but it only resets the vault's adapter-share accounting (`ADPT_SH`) to zero and moves no funds. On a vault that _does_ hold a position, anything deposited through the current adapter becomes unreachable through the vault's normal withdraw flow the moment you swap — which is why `migrate_adapter` exists and is the correct choice there.
 
-1. Confirm no funds are at risk: `vault.get_adapter()` → that adapter's `total_assets()`. If it's non-zero, withdraw first.
-2. Run the printed command using the vault's actual `ADMIN` key, not `DEPLOYER` — this call requires `admin.require_auth()`.
+Both commands are deliberately left for you to run by hand, and both require `admin.require_auth()` — the `--source` key must be the vault's actual admin. The script prints them with `--source $DEPLOYER`, so if your deployer key is not the vault admin, substitute the admin key before running.
 
 ## Getting testnet USDC
 
