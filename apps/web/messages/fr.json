@@ -18,7 +18,6 @@
     "apy": "Rendement annuel",
     "tvl": "TVL",
     "route": "Route",
-    "protocol": "Protocole",
     "noLiveRateData": "Aucune donnée de rendement disponible.",
     "yourPosition": "Votre position",
     "earned": "Gains",
@@ -26,7 +25,6 @@
     "amount": "Montant",
     "balance": "Solde",
     "position": "Vous n'avez aucune position active à retirer.",
-    "shares": "Parts",
     "waiting": "En attente de signature...",
     "positionsError": "Impossible de charger votre position. Les dépôts et retraits fonctionnent toujours."
   },

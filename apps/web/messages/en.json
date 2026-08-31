@@ -18,7 +18,6 @@
     "apy": "APY",
     "tvl": "TVL",
     "route": "Route",
-    "protocol": "Protocol",
     "noLiveRateData": "No live rate data.",
     "yourPosition": "Your Position",
     "earned": "Earned",
@@ -26,7 +25,6 @@
     "amount": "Amount",
     "balance": "Balance",
     "position": "You have no active position to withdraw from.",
-    "shares": "Shares",
     "waiting": "Waiting for signature...",
     "positionsError": "Couldn't load your position. Deposits and withdrawals still work."
   },
