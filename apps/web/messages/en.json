@@ -25,6 +25,7 @@
     "connectUSDC": "Connect your Freighter wallet to deposit USDC and start earning yield automatically.",
     "amount": "Amount",
     "balance": "Balance",
+    "max": "Max",
     "position": "You have no active position to withdraw from.",
     "shares": "Shares",
     "waiting": "Waiting for signature...",

@@ -25,6 +25,7 @@
     "connectUSDC": "Connectez votre portefeuille Freighter pour déposer des USDC et commencer à générer du rendement automatiquement.",
     "amount": "Montant",
     "balance": "Solde",
+    "max": "Max",
     "position": "Vous n'avez aucune position active à retirer.",
     "shares": "Parts",
     "waiting": "En attente de signature...",

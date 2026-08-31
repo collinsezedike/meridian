@@ -41,7 +41,7 @@ export function WithdrawTab({
                 onClick={() => onAmountChange(position!.shares.toFixed(7))}
                 className="text-xs text-emerald-500 hover:text-emerald-400 transition-colors duration-150"
               >
-                Max: {position!.shares.toFixed(2)}
+                {t("vaultPanel.max")}: {position!.shares.toFixed(2)}
               </button>
             </div>
             <AmountInput
