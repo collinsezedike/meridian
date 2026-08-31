@@ -230,11 +230,26 @@ impl MeridianBlendAdapter {
 
         let adapter = env.current_contract_address();
 
+        let client = BlendPoolClient::new(&env, &pool);
+        let index = client.get_reserve(&usdc).config.index;
+        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
+        let b_tokens_before = client
+            .get_positions(&adapter)
+            .collateral
+            .get(index)
+            .unwrap_or(0);
+
         // Blend's pool pulls `amount` USDC from us (the spender) via its own
         // internal token.transfer call, not one we make directly. Self-auth via
         // direct invocation only covers calls WE make; it does not extend to
         // this nested transfer the pool triggers on our behalf several frames
-        // down the stack, so we must pre-authorize it explicitly.
+        // down the stack, so we must pre-authorize it explicitly. This has to
+        // be the LAST thing before `submit()`, with no other cross-contract
+        // call in between: the tracker this creates is torn down the moment
+        // any sub-invocation returns and its own call stack empties back out
+        // (see `InvokerContractAuthorizationTracker`/`pop_frame`), so an
+        // intervening call like `get_reserve()`/`get_positions()` above
+        // silently expires it before `submit()` ever gets to consume it.
         env.authorize_as_current_contract(vec![
             &env,
             InvokerContractAuthEntry::Contract(SubContractInvocation {
@@ -246,15 +261,6 @@ impl MeridianBlendAdapter {
                 sub_invocations: Vec::new(&env),
             }),
         ]);
-
-        let client = BlendPoolClient::new(&env, &pool);
-        let index = client.get_reserve(&usdc).config.index;
-        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
-        let b_tokens_before = client
-            .get_positions(&adapter)
-            .collateral
-            .get(index)
-            .unwrap_or(0);
 
         client.submit(
             &adapter,
@@ -432,7 +438,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         contract, contractimpl,
-        testutils::{Address as _, Events},
+        testutils::{Address as _, Events, MockAuth, MockAuthInvoke},
         token::{StellarAssetClient, TokenClient},
         Address, Env,
     };
@@ -626,6 +632,40 @@ mod tests {
         (env, vault, usdc_id, adapter, pool)
     }
 
+    /// Same registration as `setup()`, without `mock_all_auths_allowing_non_root_auth()`.
+    /// Shared by tests that need Blend's real, enforcing auth-tree check to
+    /// run (either to prove a call is rejected without authorization, or to
+    /// exercise the real call shape via `env.mock_auths`), since `setup()`'s
+    /// blanket auth-mocking would mask both.
+    fn setup_without_mock_auths() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        MeridianBlendAdapterClient<'static>,
+        MockBlendPoolClient<'static>,
+    ) {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let vault = Address::generate(&env);
+
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        let pool_id = env.register(MockBlendPool, ());
+        let pool = MockBlendPoolClient::new(&env, &pool_id);
+        pool.initialize(&SCALAR, &RESERVE_INDEX);
+
+        let adapter_id = env.register(
+            MeridianBlendAdapter,
+            (vault.clone(), pool_id.clone(), usdc_id.clone()),
+        );
+        let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
+
+        (env, admin, vault, usdc_id, adapter, pool)
+    }
+
     #[test]
     fn deposit_supplies_to_pool_and_tracks_total() {
         let (env, vault, usdc_id, adapter, _pool) = setup();
@@ -636,6 +676,60 @@ mod tests {
 
         assert_eq!(shares, amount);
         assert_eq!(adapter.total_assets(), amount);
+    }
+
+    // `setup()` runs under `mock_all_auths_allowing_non_root_auth()`, which
+    // switches the env into recording mode and accepts every `require_auth`
+    // unconditionally — it never actually walks the authorization tree, so it
+    // cannot catch a malformed `authorize_as_current_contract()` call. This
+    // test instead mocks only the two real signer-facing invocations (the
+    // vault funding the adapter, and the vault calling deposit) and lets
+    // Blend's real, enforcing auth-tree check run against everything
+    // `deposit()` triggers underneath, including the pool's own nested
+    // `usdc.transfer()` call, exactly like a live network would. Guards
+    // `authorize_as_current_contract()` above against silently regressing
+    // into a shape that only passes under the mocked test harness.
+    #[test]
+    fn deposit_authorization_tree_matches_the_real_pool_call_shape() {
+        let (env, admin, vault, usdc_id, adapter, _pool) = setup_without_mock_auths();
+
+        let mint_amount = 10_000_000_000_i128;
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &usdc_id,
+                fn_name: "mint",
+                args: (vault.clone(), mint_amount).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        StellarAssetClient::new(&env, &usdc_id).mint(&vault, &mint_amount);
+
+        let amount = 100_0000000_i128;
+
+        env.mock_auths(&[MockAuth {
+            address: &vault,
+            invoke: &MockAuthInvoke {
+                contract: &usdc_id,
+                fn_name: "transfer",
+                args: (vault.clone(), adapter.address.clone(), amount).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+
+        env.mock_auths(&[MockAuth {
+            address: &vault,
+            invoke: &MockAuthInvoke {
+                contract: &adapter.address,
+                fn_name: "deposit",
+                args: (amount,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let shares = adapter.deposit(&amount);
+
+        assert_eq!(shares, amount);
     }
 
     #[test]
@@ -889,19 +983,7 @@ mod tests {
     fn deposit_requires_vault_auth() {
         // No mock_all_auths here: vault.require_auth() inside deposit() must
         // panic since nothing has authorized the stored vault address.
-        let env = Env::default();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let usdc_id = env
-            .register_stellar_asset_contract_v2(admin.clone())
-            .address();
-        let pool_id = env.register(MockBlendPool, ());
-        MockBlendPoolClient::new(&env, &pool_id).initialize(&SCALAR, &RESERVE_INDEX);
-        let adapter_id = env.register(
-            MeridianBlendAdapter,
-            (vault.clone(), pool_id.clone(), usdc_id.clone()),
-        );
-        let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
+        let (_env, _admin, _vault, _usdc_id, adapter, _pool) = setup_without_mock_auths();
 
         adapter.deposit(&100_0000000_i128);
     }
@@ -909,19 +991,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn withdraw_requires_vault_auth() {
-        let env = Env::default();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let usdc_id = env
-            .register_stellar_asset_contract_v2(admin.clone())
-            .address();
-        let pool_id = env.register(MockBlendPool, ());
-        MockBlendPoolClient::new(&env, &pool_id).initialize(&SCALAR, &RESERVE_INDEX);
-        let adapter_id = env.register(
-            MeridianBlendAdapter,
-            (vault.clone(), pool_id.clone(), usdc_id.clone()),
-        );
-        let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
+        let (env, _admin, _vault, _usdc_id, adapter, _pool) = setup_without_mock_auths();
 
         let recipient = Address::generate(&env);
         adapter.withdraw(&100_0000000_i128, &recipient);
