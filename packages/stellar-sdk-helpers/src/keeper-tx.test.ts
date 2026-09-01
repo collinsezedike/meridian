@@ -72,10 +72,49 @@ describe("keeper-tx", () => {
       );
     });
 
+    it("isTransientKeeperError ignores status-code digits embedded in a longer number", () => {
+      // A ledger sequence or amount that merely contains "503" is not a
+      // status code; misreading it would retry a permanent failure forever.
+      expect(isTransientKeeperError(new Error("ledger 15034 rejected"))).toBe(
+        false
+      );
+      expect(isTransientKeeperError(new Error("amount 4290000 too low"))).toBe(
+        false
+      );
+    });
+
+    it("isTransientKeeperError matches every retryable status code on its own", () => {
+      for (const code of [429, 500, 502, 503, 504]) {
+        expect(isTransientKeeperError(new Error(`HTTP ${code}`))).toBe(true);
+      }
+    });
+
+    it("isTransientKeeperError matches transient keywords regardless of case", () => {
+      expect(isTransientKeeperError(new Error("Request TIMEOUT"))).toBe(true);
+      expect(isTransientKeeperError(new Error("Timed Out waiting"))).toBe(true);
+    });
+
+    it("isDefinitiveOnChainFailure does not match a still-unknown timeout outcome", () => {
+      // Distinct from a confirmed failure: the client gave up waiting, but
+      // the transaction may still land, so it must not be treated the same
+      // as a confirmed on-chain failure.
+      expect(
+        isDefinitiveOnChainFailure(
+          new Error("Timed out waiting for transaction abc123 to confirm")
+        )
+      ).toBe(false);
+    });
+
     it("expectString validates strings", () => {
       expect(expectString("valid", "method", "contract")).toBe("valid");
       expect(() => expectString(123, "method", "contract")).toThrow(
         "method() on contract did not return a string (got number)"
+      );
+      expect(() => expectString(null, "method", "contract")).toThrow(
+        "(got object)"
+      );
+      expect(() => expectString(undefined, "method", "contract")).toThrow(
+        "(got undefined)"
       );
     });
 
