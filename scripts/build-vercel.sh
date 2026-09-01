@@ -16,14 +16,8 @@ esbuild "$ROOT/packages/api-core/src/index.ts" \
   --bundle --platform=node --format=esm --packages=external \
   --outfile="$ROOT/packages/api-core/dist/index.js"
 
-# esbuild above only emits JS. package.json#types for these three packages
-# points at dist/index.d.ts (not src/index.ts) so Vercel's isolated
-# per-function build for api/**/*.ts — which traces/typechecks each file on
-# its own, separately from this script — resolves real, on-disk declaration
-# files instead of reaching into node_modules for live .ts source it may not
-# retain. Each package's own tsconfig already sets declaration+outDir, so
-# --emitDeclarationOnly here adds the missing .d.ts without touching the
-# .js esbuild already produced.
+# esbuild above only emits JS; package.json#types now points at
+# dist/index.d.ts, so generate that too.
 echo "▶ Emitting type declarations for Vercel's function build…"
 tsc --project "$ROOT/packages/shared/tsconfig.json" --emitDeclarationOnly
 tsc --project "$ROOT/packages/stellar-sdk-helpers/tsconfig.json" --emitDeclarationOnly
