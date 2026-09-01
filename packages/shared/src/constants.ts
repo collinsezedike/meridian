@@ -53,13 +53,14 @@ export const CONTRACT_ADDRESSES = {
     usdc: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
     // Stellar Asset Contract for Circle's testnet EURC (issuer: GB3Q6QDZYTHWT7...).
     eurc: "CCUUDM434BMZMYWYDITHFXHDMIVTGGD6T2I5UKNX5BSLXLW7HVR4MCGZ",
-    musdc: "CCSYXC4SDCPTGENHM6CSQY4HMSZOPOY5TJW4QYYLE5RDBUBJX4N7ZHV5",
-    // Redeployed for #514: the previous vault (CBQYEHWIRJWIPWCJFQZAOP3VAZHRWFGAUS5GZHWFDDYKMFHJ5S3YS2Q5)
-    // predates `migrate_adapter` and was never redeployed since #464/#507
-    // added it. See apps/docs/operations/testnet-deployment.md's "Vault
-    // migration history" for the old address, why it's stale, and the
-    // pre-cutover withdrawal window for anyone still holding a position there.
-    vault: "CBOE7JPROCMUKQ4NJWPKCLBBQGHLTGV4X3463DHK4D7KX6KWXGZETAJL",
+    musdc: "CDMPSG5HRSSPADIR5JKZM5CWTZFN3AAJEJV5K5QXOXVOZHAWJ7EKZB7H",
+    // Redeployed to sync #604's deposit() min_shares_out parameter and
+    // #606's begin_migration/two-phase migration additions onto a live
+    // contract; the previous vault (CBOE7JPROCMUKQ4NJWPKCLBBQGHLTGV4X3463DHK4D7KX6KWXGZETAJL)
+    // predated both. See apps/docs/operations/testnet-deployment.md's
+    // "Vault migration history" for the old address and its (empty)
+    // pre-cutover balance.
+    vault: "CC3WA7SSJOI7WJPLWEGHSK3GRD3PSQXAIOQTXQEHBXYIIVJFZR4ZVAYP",
   },
   mainnet: {
     blend: {
