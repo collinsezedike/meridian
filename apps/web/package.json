@@ -15,6 +15,7 @@
     "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
+    "@creit.tech/xbull-wallet-connect": "^0.4.0",
     "@lobstrco/signer-extension-api": "^2.1.0",
     "@meridian/shared": "workspace:*",
     "@meridian/stellar-sdk-helpers": "workspace:*",
