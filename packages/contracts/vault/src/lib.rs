@@ -17,6 +17,16 @@ const ADAPTER: Symbol = symbol_short!("ADAPTER");
 const TOTAL_SH: Symbol = symbol_short!("TOTAL_SH");
 const ADPT_SH: Symbol = symbol_short!("ADPT_SH");
 const PAUSED: Symbol = symbol_short!("PAUSED");
+const MIG_SNAP: Symbol = symbol_short!("MIG_SNAP");
+const MIG_ACTIVE: Symbol = symbol_short!("MIG_ACT");
+// Sentinel stored in MIG_ACTIVE when a migration snapshot is live.
+// 0 = inactive, 1 = active. Uses i128 because Soroban instance
+// storage serialisation for bool may behave unexpectedly.
+
+/// Minimum number of ledgers that must elapse between `begin_migration`
+/// and `migrate_adapter` so the new adapter's valuation has time to
+/// stabilise. At ~5 s per Stellar ledger close, 12 ledgers ≈ 1 minute.
+const MIN_LEDGER_GAP: u32 = 12;
 
 // Virtual shares/assets offset (OpenZeppelin ERC-4626 mitigation against the
 // first-depositor inflation attack). Share price is computed against
@@ -89,6 +99,17 @@ pub trait MusdcAdminInterface {
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/// A snapshot of the target adapter's valuation, recorded by
+/// `begin_migration` and verified by `migrate_adapter` after a minimum
+/// ledger-gap cooldown.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MigrationSnapshot {
+    pub adapter: Address,
+    pub total_assets: i128,
+    pub ledger_seq: u32,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -174,6 +195,22 @@ pub enum ContractError {
     AdapterReportedNoAssets = 17,
     /// `deposit` output fell below caller-specified minimum bound (`min_shares_out`).
     SlippageExceeded = 18,
+    /// `migrate_adapter` was called without a prior `begin_migration`
+    /// call for the same target adapter.
+    MigrationNotInitialized = 19,
+    /// `migrate_adapter` was called before the minimum ledger-gap
+    /// cooldown since `begin_migration` had elapsed.
+    MigrationCooldownNotMet = 20,
+    /// The new adapter's `total_assets()` drifted too far from the
+    /// snapshot recorded by `begin_migration`, indicating possible
+    /// manipulation or instability.
+    MigrationStabilityDrift = 21,
+    /// `begin_migration` was called against a target adapter reporting a
+    /// negative `total_assets()`. A negative snapshot value defeats the
+    /// stability check it feeds: the tolerance-scaled floor stays negative
+    /// too, so any non-negative pre-deposit balance clears it regardless of
+    /// how much the target is drained during the cooldown.
+    MigrationSnapshotAssetsInvalid = 22,
 }
 
 // ---------------------------------------------------------------------------
@@ -768,41 +805,98 @@ impl MeridianVault {
             .ok_or(ContractError::NotInitialized)
     }
 
-    /// Admin-only. Moves the vault's entire position from the current adapter
-    /// to `new_adapter` in one atomic transaction, without requiring
-    /// depositors to withdraw first. Unlike `set_adapter`, this is safe to
-    /// call with shares outstanding.
+    /// Phase 1 of a two-phase migration. Snapshots the target adapter's
+    /// `total_assets()` and the current ledger sequence so that a later
+    /// `migrate_adapter` call can verify the valuation has been stable for
+    /// at least `MIN_LEDGER_GAP` ledgers (~1 minute). This prevents an
+    /// observer from griefing or masking a migration by front-running a
+    /// transiently-shifted valuation (issue #567).
     ///
-    /// Withdraws everything from the old adapter into the vault, deposits it
-    /// into `new_adapter`, and requires the new adapter's reported
-    /// `total_assets()` to be at least `(10_000 - max_slippage_bps) / 10_000`
-    /// of the pre-migration value, or the whole call fails and nothing moves
-    /// (Soroban transactions are atomic, so a failed invariant check leaves
-    /// no partial state). `TOTAL_SH`, every holder's mUSDC balance, and every
-    /// depositor's `Principal` and `Entry` are untouched: they're denominated
-    /// in vault mUSDC shares, not adapter shares, so they remain valid across
-    /// an adapter swap. Fails with `InvalidSlippageBps` if `max_slippage_bps`
-    /// is not in `0..=10_000`; `10_000` itself is a valid, if extreme,
-    /// choice, an admin explicitly accepting no protection against value
-    /// loss, e.g. when recovering from an old adapter already known to be
+    /// Can be called repeatedly for the same or different adapters; each
+    /// call overwrites the previous snapshot. The admin must then wait for
+    /// the ledger gap to elapse before calling `migrate_adapter`.
+    pub fn begin_migration(env: Env, new_adapter: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+
+        let old_adapter_addr = Self::get_adapter(env.clone())?;
+        if new_adapter == old_adapter_addr {
+            return Err(ContractError::SameAdapter);
+        }
+
+        let new_adapter_client = AdapterClient::new(&env, &new_adapter);
+        new_adapter_client.refresh();
+        let snapshot_assets = new_adapter_client.total_assets();
+        if snapshot_assets < 0 {
+            return Err(ContractError::MigrationSnapshotAssetsInvalid);
+        }
+        let snapshot_ledger = env.ledger().sequence();
+
+        let snapshot = MigrationSnapshot {
+            adapter: new_adapter,
+            total_assets: snapshot_assets,
+            ledger_seq: snapshot_ledger,
+        };
+        env.storage().instance().set(&MIG_SNAP, &snapshot);
+        env.storage().instance().set(&MIG_ACTIVE, &1_i128);
+
+        Ok(())
+    }
+
+    /// Returns the current migration snapshot, if one has been recorded by
+    /// `begin_migration`. Off-chain callers can use this to verify the
+    /// cooldown is progressing.
+    pub fn get_migration_snapshot(env: Env) -> Result<MigrationSnapshot, ContractError> {
+        Self::require_migration_snapshot(&env)
+    }
+
+    /// Phase 2 of a two-phase migration. Must be preceded by
+    /// `begin_migration(new_adapter)` and at least `MIN_LEDGER_GAP`
+    /// ledgers must have elapsed. Moves the vault's entire position from
+    /// the current adapter to `new_adapter` in one atomic transaction,
+    /// without requiring depositors to withdraw first. Unlike
+    /// `set_adapter`, this is safe to call with shares outstanding.
+    ///
+    /// Withdraws everything from the old adapter into the vault, deposits
+    /// it into `new_adapter`, and performs two independent checks:
+    ///
+    /// 1. **Slippage**: `new_adapter.total_assets()` must be at least
+    ///    `(10_000 - max_slippage_bps) / 10_000` of the old adapter's
+    ///    pre-migration value.
+    ///
+    /// 2. **Stability**: `new_adapter.total_assets()` must be at least
+    ///    `(10_000 - max_slippage_bps) / 10_000` of the snapshot value
+    ///    recorded by `begin_migration`, proving the valuation has been
+    ///    stable across the ledger-gap cooldown.
+    ///
+    /// If either check fails the whole call reverts and nothing moves
+    /// (Soroban transactions are atomic). On success the snapshot is
+    /// cleared. `TOTAL_SH`, every holder's mUSDC balance, and every
+    /// depositor's `Principal` and `Entry` are untouched: they're
+    /// denominated in vault mUSDC shares, not adapter shares, so they
+    /// remain valid across an adapter swap.
+    ///
+    /// Fails with `InvalidSlippageBps` if `max_slippage_bps` is not in
+    /// `0..=10_000`; `10_000` itself is a valid, if extreme, choice —
+    /// an admin explicitly accepting no protection against value loss,
+    /// e.g. when recovering from an old adapter already known to be
     /// broken.
     ///
-    /// This does not protect against a malicious or compromised admin key:
-    /// the admin chooses `new_adapter`, and a fake adapter could report
-    /// whatever `total_assets()` it likes to pass the slippage check and
-    /// then keep the funds. The invariant guards against accidental value
-    /// loss (slippage, a buggy new adapter), not against the admin key
-    /// itself, that is a key-custody problem, not something this function
-    /// can close.
+    /// This does not protect against a malicious or compromised admin
+    /// key: the admin chooses `new_adapter`, and a fake adapter could
+    /// report whatever `total_assets()` it likes to pass the slippage
+    /// check and then keep the funds. The invariant guards against
+    /// accidental value loss (slippage, a buggy new adapter), not
+    /// against the admin key itself — that is a key-custody problem.
     ///
     /// The invariant's real strength also depends on how honestly
     /// `new_adapter.total_assets()` reflects what it actually holds.
     /// `BlendAdapter::total_assets()` self-reports based on the amount
-    /// `deposit()` was called with, not an independent on-chain measurement,
-    /// so for a `BlendAdapter` target this check mainly catches loss on the
-    /// withdrawal leg from the old adapter (measured independently before
-    /// and after), not a `BlendAdapter` that silently fails to actually
-    /// supply the funds to its pool while still returning success.
+    /// `deposit()` was called with, not an independent on-chain
+    /// measurement, so for a `BlendAdapter` target this check mainly
+    /// catches loss on the withdrawal leg from the old adapter (measured
+    /// independently before and after), not a `BlendAdapter` that
+    /// silently fails to actually supply the funds to its pool while
+    /// still returning success.
     pub fn migrate_adapter(
         env: Env,
         new_adapter: Address,
@@ -822,6 +916,17 @@ impl MeridianVault {
         let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
         if total_adapter_shares <= 0 {
             return Err(ContractError::NoAdapterPosition);
+        }
+
+        // Verify a prior begin_migration snapshot exists for this adapter
+        // and that the ledger-gap cooldown has elapsed.
+        let snapshot = Self::require_migration_snapshot(&env)?;
+        if snapshot.adapter != new_adapter {
+            return Err(ContractError::MigrationNotInitialized);
+        }
+        let current_ledger = env.ledger().sequence();
+        if current_ledger < snapshot.ledger_seq + MIN_LEDGER_GAP {
+            return Err(ContractError::MigrationCooldownNotMet);
         }
 
         let usdc = Self::usdc(&env)?;
@@ -871,6 +976,7 @@ impl MeridianVault {
             .checked_sub(new_adapter_value_before)
             .ok_or(ContractError::Overflow)?;
 
+        // Check 1: slippage against the old adapter's pre-migration value.
         let min_acceptable = value_before
             .checked_mul(10_000i128 - max_slippage_bps as i128)
             .ok_or(ContractError::Overflow)?
@@ -880,10 +986,31 @@ impl MeridianVault {
             return Err(ContractError::MigrationValueDrift);
         }
 
+        // Check 2: stability — the new adapter's balance *before this
+        // migration's own deposit lands* must be within tolerance of the
+        // snapshot taken at begin_migration time, proving the adapter was
+        // not drained or manipulated during the ledger-gap cooldown.
+        // Deliberately checked against new_adapter_value_before, not
+        // value_after: value_after necessarily includes the funds this
+        // migration itself just delivered, so checking it against the
+        // snapshot would always pass regardless of how much the adapter's
+        // pre-existing balance drifted, defeating the whole point of the
+        // stability check.
+        let min_acceptable_from_snapshot = snapshot
+            .total_assets
+            .checked_mul(10_000i128 - max_slippage_bps as i128)
+            .ok_or(ContractError::Overflow)?
+            .checked_div(10_000i128)
+            .ok_or(ContractError::Overflow)?;
+        if new_adapter_value_before < min_acceptable_from_snapshot {
+            return Err(ContractError::MigrationStabilityDrift);
+        }
+
         env.storage().instance().set(&ADAPTER, &new_adapter);
         env.storage()
             .instance()
             .set(&ADPT_SH, &new_adapter_client.total_shares());
+        env.storage().instance().set(&MIG_ACTIVE, &0_i128);
         Ok(())
     }
 
@@ -899,6 +1026,21 @@ impl MeridianVault {
             .ok_or(ContractError::NotInitialized)?;
         admin.require_auth();
         Ok(())
+    }
+
+    /// Returns the active migration snapshot recorded by `begin_migration`,
+    /// or `MigrationNotInitialized` if none is active. Shared by
+    /// `get_migration_snapshot` and `migrate_adapter`'s precondition check
+    /// so the two can't drift apart.
+    fn require_migration_snapshot(env: &Env) -> Result<MigrationSnapshot, ContractError> {
+        let active: i128 = env.storage().instance().get(&MIG_ACTIVE).unwrap_or(0);
+        if active == 0 {
+            return Err(ContractError::MigrationNotInitialized);
+        }
+        env.storage()
+            .instance()
+            .get(&MIG_SNAP)
+            .ok_or(ContractError::MigrationNotInitialized)
     }
 
     fn usdc(env: &Env) -> Result<Address, ContractError> {
@@ -1251,6 +1393,76 @@ mod tests {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // ManipulableMockAdapter: an adapter whose self-reported total_assets()
+    // can be set independently of its actual USDC balance, letting tests
+    // simulate a transiently-inflated valuation (issue #567 scenario).
+    // -----------------------------------------------------------------------
+    mod manipulable_mock {
+        use super::*;
+
+        const MM_USDC: Symbol = symbol_short!("MM_USDC");
+        const MM_SH: Symbol = symbol_short!("MM_SH");
+        const MM_FIXED: Symbol = symbol_short!("MM_FIXED");
+
+        #[contract]
+        pub struct ManipulableMockAdapter;
+
+        #[contractimpl]
+        impl ManipulableMockAdapter {
+            pub fn initialize(env: Env, usdc: Address) {
+                env.storage().instance().set(&MM_USDC, &usdc);
+                env.storage().instance().set(&MM_SH, &0_i128);
+                env.storage().instance().set(&MM_FIXED, &0_i128);
+            }
+
+            /// Override the self-reported total_assets() value. This lets
+            /// tests simulate the adapter being manipulated (e.g. a
+            /// front-run inflating the reported valuation).
+            pub fn set_total_assets(env: Env, value: i128) {
+                env.storage().instance().set(&MM_FIXED, &value);
+            }
+
+            // Credits `amount` onto whatever total_assets() currently reports
+            // (which set_total_assets() may have manipulated away from the
+            // adapter's real balance) rather than leaving it untouched: a
+            // real adapter's total_assets() does go up by the deposited
+            // amount, so a deposit() that doesn't move it here would make
+            // value_after (the vault's delta-over-baseline read) always
+            // compute to zero, regardless of what a test is trying to
+            // simulate. Manipulation is layered on top via set_total_assets,
+            // not by suppressing this.
+            pub fn deposit(env: Env, amount: i128) -> i128 {
+                let prev: i128 = env.storage().instance().get(&MM_SH).unwrap_or(0);
+                env.storage().instance().set(&MM_SH, &(prev + amount));
+                let prev_fixed: i128 = env.storage().instance().get(&MM_FIXED).unwrap_or(0);
+                env.storage()
+                    .instance()
+                    .set(&MM_FIXED, &(prev_fixed + amount));
+                amount
+            }
+
+            pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
+                // USDC address is always set in initialize(), so this is safe.
+                let usdc: Address =
+                    get_or_not_initialized(&env, env.storage().instance().get(&MM_USDC));
+                mock_proportional_withdraw(&env, &usdc, &MM_SH, shares, &recipient)
+            }
+
+            pub fn total_assets(env: Env) -> i128 {
+                // Returns the manually set value, which can diverge from
+                // the actual USDC balance — exactly the scenario #567
+                // describes.
+                env.storage().instance().get(&MM_FIXED).unwrap_or(0)
+            }
+
+            pub fn refresh(_env: Env) {
+                // No-op: total_assets is manually set by the test.
+            }
+        }
+    }
+    use manipulable_mock::{ManipulableMockAdapter, ManipulableMockAdapterClient};
 
     // -----------------------------------------------------------------------
     // CachedMockAdapter: mimics BlendAdapter's caching behavior. total_assets()
@@ -2128,6 +2340,13 @@ mod tests {
         let total_shares_before = vault.get_total_shares();
         let position_before = vault.get_position(&user);
 
+        // Phase 1: snapshot the target adapter's valuation.
+        vault.begin_migration(&new_adapter_id);
+
+        // Advance past the ledger-gap cooldown.
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MIN_LEDGER_GAP);
+
         let result = vault.try_migrate_adapter(&new_adapter_id, &0);
         assert_eq!(result, Ok(Ok(())));
 
@@ -2171,6 +2390,11 @@ mod tests {
 
         let zero_share_adapter_id = env.register(ZeroShareMockAdapter, ());
         ZeroShareMockAdapterClient::new(&env, &zero_share_adapter_id).initialize(&usdc);
+
+        // Phase 1: snapshot the target adapter's valuation.
+        vault.begin_migration(&zero_share_adapter_id);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MIN_LEDGER_GAP);
 
         let result = vault.try_migrate_adapter(&zero_share_adapter_id, &10_000);
         assert_eq!(result, Err(Ok(ContractError::DepositTooSmall)));
@@ -2244,6 +2468,11 @@ mod tests {
         let lossy_adapter_id = env.register(LossyMockAdapter, ());
         LossyMockAdapterClient::new(&env, &lossy_adapter_id).initialize(&usdc);
 
+        // Phase 1: snapshot the target adapter's valuation.
+        vault.begin_migration(&lossy_adapter_id);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MIN_LEDGER_GAP);
+
         // The lossy adapter loses half of whatever it's deposited, well
         // outside a 1% (100 bps) slippage tolerance.
         let result = vault.try_migrate_adapter(&lossy_adapter_id, &100);
@@ -2252,6 +2481,225 @@ mod tests {
         // Nothing moved: the old adapter still holds the full position.
         assert_eq!(vault.get_adapter(), adapter);
         assert_eq!(vault.get_total_assets(), amount);
+    }
+
+    // -----------------------------------------------------------------------
+    // Two-phase migration stability tests (issue #567)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn migrate_adapter_requires_prior_begin_migration() {
+        let (env, _admin, user, usdc, _musdc, _adapter, vault) = setup();
+        vault.deposit(&user, &100_0000000_i128, &0);
+
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc);
+
+        // Calling migrate_adapter without begin_migration must fail.
+        let result = vault.try_migrate_adapter(&new_adapter_id, &0);
+        assert_eq!(result, Err(Ok(ContractError::MigrationNotInitialized)));
+    }
+
+    #[test]
+    fn migrate_adapter_fails_before_cooldown_elapses() {
+        let (env, _admin, user, usdc, _musdc, _adapter, vault) = setup();
+        vault.deposit(&user, &100_0000000_i128, &0);
+
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc);
+
+        vault.begin_migration(&new_adapter_id);
+
+        // Advance only half the required cooldown.
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MIN_LEDGER_GAP / 2);
+
+        let result = vault.try_migrate_adapter(&new_adapter_id, &0);
+        assert_eq!(result, Err(Ok(ContractError::MigrationCooldownNotMet)));
+
+        // Nothing moved.
+        assert_eq!(vault.get_total_assets(), 100_0000000_i128);
+    }
+
+    #[test]
+    fn begin_migration_fails_for_same_adapter() {
+        let (_env, _admin, user, _usdc, _musdc, adapter, vault) = setup();
+        vault.deposit(&user, &100_0000000_i128, &0);
+
+        let result = vault.try_begin_migration(&adapter);
+        assert_eq!(result, Err(Ok(ContractError::SameAdapter)));
+    }
+
+    #[test]
+    fn begin_migration_rejects_a_target_reporting_negative_total_assets() {
+        let (env, _admin, user, usdc, _musdc, _adapter, vault) = setup();
+        vault.deposit(&user, &100_0000000_i128, &0);
+
+        let manip_id = env.register(ManipulableMockAdapter, ());
+        ManipulableMockAdapterClient::new(&env, &manip_id).initialize(&usdc);
+        ManipulableMockAdapterClient::new(&env, &manip_id).set_total_assets(&-1);
+
+        let result = vault.try_begin_migration(&manip_id);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::MigrationSnapshotAssetsInvalid))
+        );
+
+        // Nothing was recorded: a later begin_migration for a well-behaved
+        // adapter must not see a stale invalid snapshot.
+        let snapshot_result = vault.try_get_migration_snapshot();
+        assert_eq!(
+            snapshot_result,
+            Err(Ok(ContractError::MigrationNotInitialized))
+        );
+    }
+
+    #[test]
+    fn get_migration_snapshot_fails_without_begin() {
+        let (_env, _admin, _user, _usdc, _musdc, _adapter, vault) = setup();
+        let result = vault.try_get_migration_snapshot();
+        assert_eq!(result, Err(Ok(ContractError::MigrationNotInitialized)));
+    }
+
+    #[test]
+    fn begin_migration_records_snapshot_and_getter_returns_it() {
+        let (env, _admin, user, usdc, _musdc, _adapter, vault) = setup();
+        vault.deposit(&user, &100_0000000_i128, &0);
+
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc);
+
+        env.ledger().with_mut(|li| li.sequence_number = 100);
+        let result = vault.try_begin_migration(&new_adapter_id);
+        assert_eq!(result, Ok(Ok(())));
+
+        let snapshot = vault.get_migration_snapshot();
+        assert_eq!(snapshot.adapter, new_adapter_id);
+        assert_eq!(snapshot.ledger_seq, 100);
+        // New adapter has 0 assets (no deposits yet), so snapshot is 0.
+        assert_eq!(snapshot.total_assets, 0);
+    }
+
+    #[test]
+    fn begin_migration_overwrites_previous_snapshot() {
+        let (env, _admin, user, usdc, _musdc, _adapter, vault) = setup();
+        vault.deposit(&user, &100_0000000_i128, &0);
+
+        let adapter_a = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &adapter_a).initialize(&usdc);
+        let adapter_b = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &adapter_b).initialize(&usdc);
+
+        env.ledger().with_mut(|li| li.sequence_number = 10);
+        vault.begin_migration(&adapter_a);
+
+        env.ledger().with_mut(|li| li.sequence_number = 20);
+        vault.begin_migration(&adapter_b);
+
+        let snapshot = vault.get_migration_snapshot();
+        assert_eq!(snapshot.adapter, adapter_b);
+        assert_eq!(snapshot.ledger_seq, 20);
+
+        // Migrating to adapter_a should now fail (snapshot is for adapter_b).
+        let result = vault.try_migrate_adapter(&adapter_a, &0);
+        assert_eq!(result, Err(Ok(ContractError::MigrationNotInitialized)));
+    }
+
+    #[test]
+    fn migrate_adapter_fails_when_stability_drift_detected() {
+        use lossy_mock::{LossyMockAdapter, LossyMockAdapterClient};
+
+        let (env, _admin, user, usdc, _musdc, adapter, vault) = setup();
+        let amount = 100_0000000_i128;
+        vault.deposit(&user, &amount, &0);
+
+        let lossy_adapter_id = env.register(LossyMockAdapter, ());
+        LossyMockAdapterClient::new(&env, &lossy_adapter_id).initialize(&usdc);
+
+        vault.begin_migration(&lossy_adapter_id);
+
+        // Advance past the cooldown.
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MIN_LEDGER_GAP);
+
+        // Use the manipulable adapter: inflate its reported total_assets
+        // above what it actually holds, simulating a front-run manipulation.
+        let manip_id = env.register(ManipulableMockAdapter, ());
+        ManipulableMockAdapterClient::new(&env, &manip_id).initialize(&usdc);
+
+        // Inflate: adapter reports 200 USDC but holds nothing.
+        ManipulableMockAdapterClient::new(&env, &manip_id).set_total_assets(&(amount * 2));
+
+        vault.begin_migration(&manip_id);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MIN_LEDGER_GAP);
+
+        // Deflate: manipulation ends, adapter now reports only the vault's
+        // deposit (which lands during migrate_adapter). Use 10 bps slippage
+        // so the stability check (comparing against the inflated snapshot)
+        // triggers.
+        ManipulableMockAdapterClient::new(&env, &manip_id).set_total_assets(&amount);
+
+        let result = vault.try_migrate_adapter(&manip_id, &100);
+        assert_eq!(result, Err(Ok(ContractError::MigrationStabilityDrift)));
+
+        // Nothing moved.
+        assert_eq!(vault.get_adapter(), adapter);
+        assert_eq!(vault.get_total_assets(), amount);
+    }
+
+    #[test]
+    fn stale_snapshot_survives_failed_migration() {
+        // In Soroban, returning an error rolls back ALL storage changes,
+        // so the snapshot persists after a failed migration. This is safe
+        // because the stability and slippage checks still apply on every
+        // retry. This test verifies the snapshot survives and is reusable.
+        let (env, _admin, user, usdc, _musdc, _adapter, vault) = setup();
+        let amount = 100_0000000_i128;
+        vault.deposit(&user, &amount, &0);
+
+        let manip_id = env.register(ManipulableMockAdapter, ());
+        ManipulableMockAdapterClient::new(&env, &manip_id).initialize(&usdc);
+
+        // Inflate the snapshot.
+        ManipulableMockAdapterClient::new(&env, &manip_id).set_total_assets(&(amount * 2));
+        vault.begin_migration(&manip_id);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MIN_LEDGER_GAP);
+
+        // Deflate so the stability check fails.
+        ManipulableMockAdapterClient::new(&env, &manip_id).set_total_assets(&amount);
+        let migration_result = vault.try_migrate_adapter(&manip_id, &100);
+        assert_eq!(
+            migration_result,
+            Err(Ok(ContractError::MigrationStabilityDrift))
+        );
+
+        // Snapshot persists (Soroban error = rollback all storage).
+        // It's still usable: the admin can re-attempt with the same
+        // snapshot or call begin_migration to refresh it.
+        let snapshot = vault.get_migration_snapshot();
+        assert_eq!(snapshot.adapter, manip_id);
+    }
+
+    #[test]
+    fn snapshot_cleared_on_successful_migration() {
+        let (env, _admin, user, usdc, _musdc, _adapter, vault) = setup();
+        vault.deposit(&user, &100_0000000_i128, &0);
+
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc);
+
+        vault.begin_migration(&new_adapter_id);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MIN_LEDGER_GAP);
+
+        let result = vault.try_migrate_adapter(&new_adapter_id, &0);
+        assert_eq!(result, Ok(Ok(())));
+
+        // Snapshot must be cleared after successful migration.
+        let result = vault.try_get_migration_snapshot();
+        assert_eq!(result, Err(Ok(ContractError::MigrationNotInitialized)));
     }
 
     #[test]
@@ -2272,6 +2720,10 @@ mod tests {
         // is fooled into passing.
         let residue = 60_0000000_i128;
         StellarAssetClient::new(&env, &usdc).mint(&lossy_adapter_id, &residue);
+
+        vault.begin_migration(&lossy_adapter_id);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += MIN_LEDGER_GAP);
 
         // The lossy adapter loses half of whatever it's deposited. With a 0
         // bps tolerance this must be rejected on the real delivered value

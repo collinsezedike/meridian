@@ -169,6 +169,28 @@ describe("summarizeAction", () => {
     ).toBe("Adapter migrated");
   });
 
+  it("summarizes begin_migration with the target adapter address", () => {
+    expect(
+      summarizeAction("begin_migration", [
+        { type: "Address", value: "C..." },
+        { type: "Sym", value: "begin_migration" },
+        {
+          type: "Address",
+          value: "CNEWADAPTER34567890ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCD",
+        },
+      ])
+    ).toBe("Migration cooldown started for CNEWADAP...ABCD");
+  });
+
+  it("falls back to a generic message when begin_migration's address param is missing", () => {
+    expect(
+      summarizeAction("begin_migration", [
+        { type: "Address", value: "C..." },
+        { type: "Sym", value: "begin_migration" },
+      ])
+    ).toBe("Migration cooldown started");
+  });
+
   it("summarizes transfer_admin with a nominee address", () => {
     expect(
       summarizeAction("transfer_admin", [

@@ -16,6 +16,7 @@ export type AdminActionType =
   | "set_paused"
   | "set_adapter"
   | "migrate_adapter"
+  | "begin_migration"
   | "transfer_admin"
   | "accept_admin";
 
@@ -24,6 +25,7 @@ const ADMIN_FUNCTIONS = new Set<AdminActionType>([
   "set_paused",
   "set_adapter",
   "migrate_adapter",
+  "begin_migration",
   "transfer_admin",
   "accept_admin",
 ]);
@@ -94,6 +96,12 @@ export function summarizeAction(
       return typeof adapter === "string"
         ? `Migrated adapter to ${adapter.slice(0, 8)}...${adapter.slice(-4)}`
         : "Adapter migrated";
+    }
+    case "begin_migration": {
+      const adapter = params[2]?.value;
+      return typeof adapter === "string"
+        ? `Migration cooldown started for ${adapter.slice(0, 8)}...${adapter.slice(-4)}`
+        : "Migration cooldown started";
     }
     case "transfer_admin": {
       const nominee = params[2]?.value;
