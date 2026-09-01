@@ -5,7 +5,7 @@ import { fetchBalances, horizonUrlFor } from "../../lib/horizonAccount";
 const PUBLIC_KEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 
 describe("horizonUrlFor", () => {
-  it("returns the Horizon mainnet URL for \"mainnet\"", () => {
+  it('returns the Horizon mainnet URL for "mainnet"', () => {
     expect(horizonUrlFor("mainnet")).toBe("https://horizon.stellar.org");
   });
 
@@ -35,9 +35,7 @@ describe("fetchBalances", () => {
   });
 
   it("resolves to the parsed balances on a successful response", async () => {
-    const balances = [
-      { asset_type: "native", balance: "100.0000000" },
-    ];
+    const balances = [{ asset_type: "native", balance: "100.0000000" }];
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
       json: async () => ({ balances }),
