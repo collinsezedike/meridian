@@ -16,6 +16,13 @@ vi.mock("react-i18next", () => ({
     t: (key: string) => key,
     i18n: { language: "en" },
   }),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  withTranslation: () => (WrappedComponent: any) => {
+    function Wrapped(props: Record<string, unknown>) {
+      return <WrappedComponent {...props} t={(key: string) => key} />;
+    }
+    return Wrapped;
+  },
 }));
 
 describe("AdminDashboard", () => {

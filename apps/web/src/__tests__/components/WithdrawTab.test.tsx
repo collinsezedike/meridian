@@ -71,6 +71,14 @@ describe("WithdrawTab", () => {
     expect(onAmountChange).toHaveBeenCalledWith("50.0000000");
   });
 
+  it("renders the Max label through the translation key", () => {
+    renderWithdrawTab();
+
+    expect(screen.getByTestId("vault-withdraw-max").textContent).toBe(
+      "vaultPanel.max: 50.00"
+    );
+  });
+
   it("calls onSubmit when the withdraw button is clicked", () => {
     renderWithdrawTab({ amount: "10" });
 

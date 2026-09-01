@@ -106,8 +106,13 @@ Response `200`: same shape as deposit — `{ "xdr": "...", "fee": "..." }`.
 ### Error responses
 
 Both endpoints return `400` with `{ "error": "<message>" }` for validation failures
-(bad public key, malformed amount, missing fields), `503` if the vault contract is not
-configured, and `500` with the simulation/build error message otherwise.
+(bad public key, malformed amount, missing fields), and `500` with the
+simulation/build error message for anything else that throws — including a vault whose
+contract address is not configured, which surfaces as
+`Vault not configured: <vaultId>. Add it to KNOWN_POOLS with a contractId.`
+There is no `503` on these two endpoints: `handleDepositRequest`/`handleWithdrawRequest`
+in [`packages/api-core/src/tx.ts`](../packages/api-core/src/tx.ts) wrap the whole build
+call in one `try/catch` that always answers `500`.
 
 ## What the frontend must do between receiving the XDR and submitting
 

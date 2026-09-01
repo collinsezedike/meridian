@@ -158,10 +158,12 @@ Meridian is a pnpm monorepo managed with Turborepo:
 meridian/
   apps/
     web/        -- Vite + React frontend (Freighter wallet, yield dashboard)
-    api/        -- Fastify API (yield aggregation, Soroban tx building)
+    api-local/  -- Fastify API, local dev only (yield aggregation, Soroban tx building)
     docs/       -- Documentation site
     landing/    -- Landing page
+  api/          -- Vercel serverless functions (api/v1/...), the production API
   packages/
+    api-core/   -- Framework-agnostic route handlers shared by both servers
     contracts/  -- Soroban smart contracts (Rust)
     shared/     -- Shared utilities used by both api and web
     stellar-sdk-helpers/ -- Typed wrappers around @stellar/stellar-sdk

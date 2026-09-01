@@ -436,6 +436,27 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
+    fn deposit_panics_with_typed_error_when_dfx_vault_is_unset() {
+        // The deposit()-side counterpart to
+        // withdraw_panics_with_typed_error_when_dfx_vault_is_unset above:
+        // __constructor always sets DFX_VAULT on any real deployment, so
+        // this state is unreachable in practice; this test clears it
+        // directly after construction to prove deposit() still fails with
+        // the typed NotInitialized panic rather than an opaque unwrap trap
+        // if that invariant is ever violated by a future change.
+        let (env, _vault, _usdc, adapter, _dfx) = setup();
+
+        env.as_contract(&adapter.address, || {
+            env.storage().instance().remove(&DFX_VAULT);
+        });
+
+        // The NotInitialized check runs before any token movement, so no
+        // USDC funding is needed to reach it.
+        adapter.deposit(&100_0000000_i128);
+    }
+
+    #[test]
     fn get_protocol_returns_defindex() {
         let (env, _vault, _usdc, adapter, _dfx) = setup();
         assert_eq!(adapter.get_protocol(), Symbol::new(&env, "defindex"));

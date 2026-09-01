@@ -20,15 +20,14 @@
     "apy": "APY",
     "tvl": "TVL",
     "route": "Route",
-    "protocol": "Protocol",
     "noLiveRateData": "No live rate data.",
     "yourPosition": "Your Position",
     "earned": "Earned",
     "connectUSDC": "Connect your Freighter wallet to deposit USDC and start earning yield automatically.",
     "amount": "Amount",
     "balance": "Balance",
+    "max": "Max",
     "position": "You have no active position to withdraw from.",
-    "shares": "Shares",
     "waiting": "Waiting for signature...",
     "positionsError": "Couldn't load your position. Deposits and withdrawals still work."
   },
@@ -87,5 +86,10 @@
     "error": "Failed to load admin history",
     "empty": "No admin actions recorded yet",
     "viewTx": "View tx"
+  },
+
+  "errorBoundary": {
+    "title": "Something went wrong. Please reload the page.",
+    "reload": "Reload"
   }
 }
