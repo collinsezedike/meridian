@@ -51,7 +51,15 @@ jobs:
         # restores the exact same bytes a from-scratch build would produce.
         id: stellar-cli-version
         run: |
-          VERSION=$(curl -sSf https://crates.io/api/v1/crates/stellar-cli | jq -r '.crate.max_stable_version')
+          # crates.io's API rejects requests with no User-Agent (403), which
+          # silently empties VERSION inside this command substitution rather
+          # than failing the step - the check below turns that into a loud
+          # failure instead of a permanently-broken cache key.
+          VERSION=$(curl -sSf -H "User-Agent: meridian-ci (github.com/drydocs/meridian)" https://crates.io/api/v1/crates/stellar-cli | jq -r '.crate.max_stable_version')
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error::Failed to resolve stellar-cli version from crates.io"
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Cache Stellar CLI binary
         id: cache-stellar-cli
