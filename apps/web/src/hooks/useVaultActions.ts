@@ -26,7 +26,8 @@ export function useVaultActions() {
   async function deposit(
     amount: string,
     vaultId: string,
-    asset: string
+    asset: string,
+    minSharesOut?: string
   ): Promise<boolean> {
     if (!publicKey || !passphrase) return false;
     setIsDepositing(true);
@@ -54,6 +55,7 @@ export function useVaultActions() {
         walletAddress: publicKey,
         vaultId,
         amount,
+        min_shares_out: minSharesOut,
       });
       await signAndSubmit(xdr);
       queryClient.invalidateQueries({ queryKey: ["positions", publicKey] });
@@ -75,7 +77,8 @@ export function useVaultActions() {
   async function withdraw(
     shares: string,
     vaultId: string,
-    asset: string
+    asset: string,
+    minUsdcOut?: string
   ): Promise<boolean> {
     if (!publicKey || !passphrase) return false;
     setIsWithdrawing(true);
@@ -96,6 +99,7 @@ export function useVaultActions() {
         walletAddress: publicKey,
         vaultId,
         shares,
+        min_usdc_out: minUsdcOut,
       });
 
       await signAndSubmit(xdr);

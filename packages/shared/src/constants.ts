@@ -14,13 +14,22 @@ export const USDC_ISSUER: Record<string, string> = {
   mainnet: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
 };
 
-// mUSDC is the vault's share token. Issuer = the DEPLOYER address used for
-// that deployment's `scripts/deploy-testnet.sh` run (the script mints mUSDC
-// as `MUSDC:$DEPLOYER_ADDRESS`, then hands admin control of the asset to the
-// vault contract via set_admin). Frozen at mint time: unlike the vault's own
-// admin, a classic Stellar asset's issuer can't be rotated after the fact,
-// so this changes only when mUSDC itself is redeployed (i.e. together with
-// CONTRACT_ADDRESSES.testnet.{vault,musdc} on a vault redeployment).
+// mUSDC's classic-asset issuer, for networks where mUSDC still predates the
+// #578 cutover to a custom SEP-41 token contract (see
+// apps/docs/architecture/vault-contract.md#transferable-shares). An empty
+// string is not "not deployed yet" here so much as it is the *permanent*
+// state for any mUSDC deployed as a SEP-41 contract: that mUSDC has no
+// issuer and no classic trustline at all, ever — every consumer of this
+// constant (buildAddTrustlineTx, hasRequiredTrustlines,
+// allowedTrustlineIssuers, assertFaucetPayment) already treats an empty
+// value as "skip mUSDC entirely", which is exactly correct post-cutover.
+// `mainnet` was already blank for this reason (no SAC mUSDC was ever
+// deployed there); `testnet`'s current value is the OLD, still-live SAC's
+// issuer and should be blanked out as part of the operational cutover to
+// the new contract (deploying via the updated `scripts/deploy-testnet.sh`
+// and updating `CONTRACT_ADDRESSES.testnet.{vault,musdc}` alongside it),
+// not before — this file describes what's actually live, not what the code
+// supports.
 export const MUSDC_ISSUER: Record<string, string> = {
   testnet: "GBLYQ5EHXMMULOA7KA4KK2S5Q5GTTWYFVSC3FKLXRLH34EJX35BIAL35",
   mainnet: "",

@@ -230,11 +230,26 @@ impl MeridianBlendAdapter {
 
         let adapter = env.current_contract_address();
 
+        let client = BlendPoolClient::new(&env, &pool);
+        let index = client.get_reserve(&usdc).config.index;
+        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
+        let b_tokens_before = client
+            .get_positions(&adapter)
+            .collateral
+            .get(index)
+            .unwrap_or(0);
+
         // Blend's pool pulls `amount` USDC from us (the spender) via its own
         // internal token.transfer call, not one we make directly. Self-auth via
         // direct invocation only covers calls WE make; it does not extend to
         // this nested transfer the pool triggers on our behalf several frames
-        // down the stack, so we must pre-authorize it explicitly.
+        // down the stack, so we must pre-authorize it explicitly. This has to
+        // be the LAST thing before `submit()`, with no other cross-contract
+        // call in between: the tracker this creates is torn down the moment
+        // any sub-invocation returns and its own call stack empties back out
+        // (see `InvokerContractAuthorizationTracker`/`pop_frame`), so an
+        // intervening call like `get_reserve()`/`get_positions()` above
+        // silently expires it before `submit()` ever gets to consume it.
         env.authorize_as_current_contract(vec![
             &env,
             InvokerContractAuthEntry::Contract(SubContractInvocation {
@@ -246,15 +261,6 @@ impl MeridianBlendAdapter {
                 sub_invocations: Vec::new(&env),
             }),
         ]);
-
-        let client = BlendPoolClient::new(&env, &pool);
-        let index = client.get_reserve(&usdc).config.index;
-        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
-        let b_tokens_before = client
-            .get_positions(&adapter)
-            .collateral
-            .get(index)
-            .unwrap_or(0);
 
         client.submit(
             &adapter,
@@ -371,7 +377,12 @@ impl MeridianBlendAdapter {
 
         let current_value = b_tokens_to_usdc(b_tokens, reserve.data.b_rate)?;
 
+        let prev: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
         env.storage().instance().set(&TOTAL_KEY, &current_value);
+
+        env.events()
+            .publish((symbol_short!("accrue"),), (prev, current_value));
+
         Ok(())
     }
 
@@ -404,6 +415,25 @@ impl MeridianBlendAdapter {
         env.storage().instance().get(&TOTAL_KEY).unwrap_or(0)
     }
 
+    /// Returns the adapter's current bToken share balance, read directly from
+    /// Blend's ledger rather than self-tracked.
+    pub fn total_shares(env: Env) -> i128 {
+        let pool: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&POOL_KEY),
+        );
+        let usdc = get_usdc(&env);
+        let adapter = env.current_contract_address();
+
+        let client = BlendPoolClient::new(&env, &pool);
+        let reserve = client.get_reserve(&usdc);
+        client
+            .get_positions(&adapter)
+            .collateral
+            .get(reserve.config.index)
+            .unwrap_or(0)
+    }
+
     /// Returns the Blend pool this adapter supplies to.
     pub fn get_pool(env: Env) -> Address {
         adapter_common::get_or_not_initialized::<_, ContractError>(
@@ -427,7 +457,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         contract, contractimpl,
-        testutils::Address as _,
+        testutils::{Address as _, Events, MockAuth, MockAuthInvoke},
         token::{StellarAssetClient, TokenClient},
         Address, Env,
     };
@@ -621,6 +651,40 @@ mod tests {
         (env, vault, usdc_id, adapter, pool)
     }
 
+    /// Same registration as `setup()`, without `mock_all_auths_allowing_non_root_auth()`.
+    /// Shared by tests that need Blend's real, enforcing auth-tree check to
+    /// run (either to prove a call is rejected without authorization, or to
+    /// exercise the real call shape via `env.mock_auths`), since `setup()`'s
+    /// blanket auth-mocking would mask both.
+    fn setup_without_mock_auths() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        MeridianBlendAdapterClient<'static>,
+        MockBlendPoolClient<'static>,
+    ) {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let vault = Address::generate(&env);
+
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        let pool_id = env.register(MockBlendPool, ());
+        let pool = MockBlendPoolClient::new(&env, &pool_id);
+        pool.initialize(&SCALAR, &RESERVE_INDEX);
+
+        let adapter_id = env.register(
+            MeridianBlendAdapter,
+            (vault.clone(), pool_id.clone(), usdc_id.clone()),
+        );
+        let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
+
+        (env, admin, vault, usdc_id, adapter, pool)
+    }
+
     #[test]
     fn deposit_supplies_to_pool_and_tracks_total() {
         let (env, vault, usdc_id, adapter, _pool) = setup();
@@ -631,6 +695,75 @@ mod tests {
 
         assert_eq!(shares, amount);
         assert_eq!(adapter.total_assets(), amount);
+    }
+
+    // `setup()` runs under `mock_all_auths_allowing_non_root_auth()`, which
+    // switches the env into recording mode and accepts every `require_auth`
+    // unconditionally — it never actually walks the authorization tree, so it
+    // cannot catch a malformed `authorize_as_current_contract()` call. This
+    // test instead mocks only the two real signer-facing invocations (the
+    // vault funding the adapter, and the vault calling deposit) and lets
+    // Blend's real, enforcing auth-tree check run against everything
+    // `deposit()` triggers underneath, including the pool's own nested
+    // `usdc.transfer()` call, exactly like a live network would. Guards
+    // `authorize_as_current_contract()` above against silently regressing
+    // into a shape that only passes under the mocked test harness.
+    #[test]
+    fn deposit_authorization_tree_matches_the_real_pool_call_shape() {
+        let (env, admin, vault, usdc_id, adapter, _pool) = setup_without_mock_auths();
+
+        let mint_amount = 10_000_000_000_i128;
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &usdc_id,
+                fn_name: "mint",
+                args: (vault.clone(), mint_amount).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        StellarAssetClient::new(&env, &usdc_id).mint(&vault, &mint_amount);
+
+        let amount = 100_0000000_i128;
+
+        env.mock_auths(&[MockAuth {
+            address: &vault,
+            invoke: &MockAuthInvoke {
+                contract: &usdc_id,
+                fn_name: "transfer",
+                args: (vault.clone(), adapter.address.clone(), amount).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+
+        env.mock_auths(&[MockAuth {
+            address: &vault,
+            invoke: &MockAuthInvoke {
+                contract: &adapter.address,
+                fn_name: "deposit",
+                args: (amount,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let shares = adapter.deposit(&amount);
+
+        assert_eq!(shares, amount);
+    }
+
+    #[test]
+    fn total_shares_reads_the_pool_s_live_collateral_balance() {
+        let (env, vault, usdc_id, adapter, _pool) = setup();
+        assert_eq!(adapter.total_shares(), 0);
+
+        let amount = 100_0000000_i128;
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        // total_shares() reads Blend's own collateral map live, independent
+        // of anything the vault separately tracks -- it must agree with the
+        // bToken credit deposit() itself just returned.
+        assert_eq!(adapter.total_shares(), shares);
     }
 
     #[test]
@@ -786,6 +919,20 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
+    fn withdraw_panics_on_overflow() {
+        let (env, vault, usdc_id, adapter, pool) = setup();
+        let amount = 2_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        pool.set_rate(&i128::MAX);
+        let recipient = Address::generate(&env);
+        adapter.withdraw(&shares, &recipient);
+    }
+
+    #[test]
     fn withdraw_returns_usdc_and_reduces_total() {
         let (env, vault, usdc_id, adapter, _pool) = setup();
         let amount = 100_0000000_i128;
@@ -884,19 +1031,7 @@ mod tests {
     fn deposit_requires_vault_auth() {
         // No mock_all_auths here: vault.require_auth() inside deposit() must
         // panic since nothing has authorized the stored vault address.
-        let env = Env::default();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let usdc_id = env
-            .register_stellar_asset_contract_v2(admin.clone())
-            .address();
-        let pool_id = env.register(MockBlendPool, ());
-        MockBlendPoolClient::new(&env, &pool_id).initialize(&SCALAR, &RESERVE_INDEX);
-        let adapter_id = env.register(
-            MeridianBlendAdapter,
-            (vault.clone(), pool_id.clone(), usdc_id.clone()),
-        );
-        let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
+        let (_env, _admin, _vault, _usdc_id, adapter, _pool) = setup_without_mock_auths();
 
         adapter.deposit(&100_0000000_i128);
     }
@@ -904,21 +1039,50 @@ mod tests {
     #[test]
     #[should_panic]
     fn withdraw_requires_vault_auth() {
-        let env = Env::default();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let usdc_id = env
-            .register_stellar_asset_contract_v2(admin.clone())
-            .address();
-        let pool_id = env.register(MockBlendPool, ());
-        MockBlendPoolClient::new(&env, &pool_id).initialize(&SCALAR, &RESERVE_INDEX);
-        let adapter_id = env.register(
-            MeridianBlendAdapter,
-            (vault.clone(), pool_id.clone(), usdc_id.clone()),
-        );
-        let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
+        let (env, _admin, _vault, _usdc_id, adapter, _pool) = setup_without_mock_auths();
 
         let recipient = Address::generate(&env);
         adapter.withdraw(&100_0000000_i128, &recipient);
+    }
+
+    #[test]
+    fn accrue_publishes_event_on_success() {
+        let (env, vault, usdc_id, adapter, pool) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        let new_rate = SCALAR + SCALAR / 10;
+        pool.set_rate(&new_rate);
+
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
+
+        let events = env.events().all();
+        let accrue_event = events
+            .into_iter()
+            .find(|e| {
+                if e.0 == adapter.address && e.1.len() == 1 {
+                    if let Ok(topic) =
+                        soroban_sdk::TryIntoVal::<_, soroban_sdk::Symbol>::try_into_val(
+                            &e.1.get(0).unwrap(),
+                            &env,
+                        )
+                    {
+                        topic == symbol_short!("accrue")
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            })
+            .expect("accrue event not found");
+
+        let expected_prev = amount;
+        let expected_new = amount + amount / 10;
+        let data: (i128, i128) =
+            soroban_sdk::TryIntoVal::try_into_val(&accrue_event.2, &env).unwrap();
+        assert_eq!(data, (expected_prev, expected_new));
     }
 }

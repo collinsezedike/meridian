@@ -196,6 +196,42 @@ vault; if a second Meridian vault is ever added to `KNOWN_POOLS`, this
 would need to become per-vault-scoped first (tracked on #511 alongside the
 rate source work, since both matter most once a second vault is likely).
 
+## Two-Phase Migration (`begin_migration` / `migrate_adapter`)
+
+`migrate_adapter` requires an active `begin_migration` snapshot for the same
+target adapter, at least `MIN_LEDGER_GAP` ledgers old (~1 minute), before it
+will run. This closes a front-running window (issue #567): without it, an
+attacker could transiently inflate a candidate adapter's reported valuation
+right as a migration lands, then drain it once the funds arrive.
+
+The keeper does not track this phase itself; the on-chain snapshot recorded
+by `begin_migration` (readable via `get_migration_snapshot`) is the only
+state it needs. On each run, before attempting `migrate_adapter` for the
+chosen candidate:
+
+1. Read `get_migration_snapshot()`. If it traps (no active migration) or its
+   `adapter` doesn't match the candidate, this run's target has no live
+   cooldown in progress.
+2. In that case, submit `begin_migration(candidate)` instead of
+   `migrate_adapter`, and stop for this vault — the result records this as
+   `skipped`, not `failed`. The submission lease taken for this run is
+   released immediately (`releaseIfUnsent`) rather than held for the
+   `submissionTtlMs` window, so it doesn't block a subsequent run from
+   picking the vault back up.
+3. If the snapshot does match the candidate, proceed to `migrate_adapter` as
+   before. The keeper does not duplicate the contract's ledger-gap math to
+   decide whether the cooldown has elapsed: if it hasn't, `migrate_adapter`
+   itself rejects the call with `MigrationCooldownNotMet` during simulation
+   (no fee, nothing sent), which is reported as a `failures` entry and
+   naturally retried on a later scheduled run. This is deliberately simple
+   rather than precise — `MIN_LEDGER_GAP` is ~1 minute and this keeper runs
+   on an hourly schedule, so the cooldown has always long since elapsed by
+   the run after `begin_migration` fired.
+
+A migration to a given candidate therefore normally spans two scheduled
+runs: one that calls `begin_migration`, and the next that calls
+`migrate_adapter` once the on-chain snapshot is old enough.
+
 ## Retry And Failure Handling
 
 Discovery and submission follow the same shape as the accrue keeper (see

@@ -28,36 +28,46 @@ function resolveVaultEntry(vaultId: string, network: StellarNetwork) {
  * Build an unsigned deposit transaction for the coordinator vault identified
  * by `vaultId`. All deposits route through the coordinator regardless of the
  * underlying protocol; the active adapter handles protocol-specific logic.
+ * `minSharesOut` is the minimum mUSDC shares the caller is willing to receive;
+ * the vault rejects the call with `SlippageExceeded` if minted shares fall below it.
+ * Defaults to `"0"` (no slippage protection) when omitted.
  */
 export async function buildDepositTx(
   vaultId: string,
   walletAddress: string,
   amount: string,
-  network: StellarNetwork
+  network: StellarNetwork,
+  minSharesOut: string = "0"
 ): Promise<{ xdr: string; fee: string }> {
   const entry = resolveVaultEntry(vaultId, network);
   return buildCoordinatorDepositTx(
     { contractId: entry.contractId, network },
     walletAddress,
-    toStroops(amount)
+    toStroops(amount),
+    toStroops(minSharesOut)
   );
 }
 
 /**
  * Build an unsigned withdrawal transaction for the coordinator vault identified
- * by `vaultId`. `shares` is the mUSDC share count to burn.
+ * by `vaultId`. `shares` is the mUSDC share count to burn. `minUsdcOut` is the
+ * minimum USDC the caller is willing to receive; the vault rejects the call
+ * with `MinAmountOutNotMet` if the redeemed amount falls below it. Defaults to
+ * `"0"` (no slippage protection) when omitted.
  */
 export async function buildWithdrawTx(
   vaultId: string,
   walletAddress: string,
   shares: string,
-  network: StellarNetwork
+  network: StellarNetwork,
+  minUsdcOut: string = "0"
 ): Promise<{ xdr: string; fee: string }> {
   const entry = resolveVaultEntry(vaultId, network);
   return buildCoordinatorWithdrawTx(
     { contractId: entry.contractId, network },
     walletAddress,
-    toStroops(shares)
+    toStroops(shares),
+    toStroops(minUsdcOut)
   );
 }
 

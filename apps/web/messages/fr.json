@@ -21,15 +21,14 @@
     "apy": "Rendement annuel",
     "tvl": "TVL",
     "route": "Route",
-    "protocol": "Protocole",
     "noLiveRateData": "Aucune donnée de rendement disponible.",
     "yourPosition": "Votre position",
     "earned": "Gains",
     "connectUSDC": "Connectez votre portefeuille Freighter pour déposer des USDC et commencer à générer du rendement automatiquement.",
     "amount": "Montant",
     "balance": "Solde",
+    "max": "Max",
     "position": "Vous n'avez aucune position active à retirer.",
-    "shares": "Parts",
     "waiting": "En attente de signature...",
     "positionsError": "Impossible de charger votre position. Les dépôts et retraits fonctionnent toujours."
   },
@@ -52,5 +51,46 @@
     "connecting": "Connexion...",
     "installWallet": "Installer {{name}}",
     "retry": "Réessayer"
+  },
+
+  "admin": {
+    "title": "Tableau de bord admin",
+    "connectPrompt": "Connectez un portefeuille administrateur autorisé pour voir le tableau de bord.",
+    "notAuthorized": "Ce portefeuille n'est pas autorisé à voir le tableau de bord admin.",
+    "keeperHealth": {
+      "title": "État des keepers",
+      "accrual": "Keeper d'accumulation",
+      "migration": "Keeper de migration",
+      "healthy": "Sain",
+      "stalled": "Bloqué",
+      "lastRun": "Dernière exécution",
+      "never": "Jamais",
+      "interval": "Toutes les {{interval}}",
+      "overdueBy": "En retard de {{duration}}",
+      "loadError": "Impossible de charger l'état des keepers."
+    },
+    "vaultState": {
+      "title": "État du coffre",
+      "adapter": "Adaptateur",
+      "totalShares": "Parts totales",
+      "totalAssets": "Actifs totaux",
+      "status": "Statut",
+      "active": "Actif",
+      "paused": "En pause",
+      "loadError": "Impossible de charger l'état du coffre."
+    }
+  },
+
+  "adminHistory": {
+    "title": "Historique des actions admin",
+    "subtitle": "Journal chronologique des appels d'administration du coffre",
+    "error": "Échec du chargement de l'historique admin",
+    "empty": "Aucune action admin enregistrée pour l'instant",
+    "viewTx": "Voir tx"
+  },
+
+  "errorBoundary": {
+    "title": "Une erreur s'est produite. Veuillez recharger la page.",
+    "reload": "Recharger"
   }
 }

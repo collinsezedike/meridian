@@ -957,6 +957,109 @@ export async function runMigrationKeeper(
     const lease = acquired.lease;
     const submissionHooks = lease.hooks;
 
+    // migrate_adapter (#567) now requires an active begin_migration
+    // snapshot for the same target adapter, at least MIN_LEDGER_GAP
+    // ledgers old. Rather than duplicate the contract's ledger-gap math
+    // here, this only checks whether a matching snapshot exists; if the
+    // cooldown hasn't elapsed yet, the contract itself rejects the call
+    // with MigrationCooldownNotMet during simulation (no fee, nothing
+    // sent), which falls through to the existing failure handling below
+    // and is retried on a later run — comfortably fine given
+    // MIN_LEDGER_GAP is ~1 minute and this keeper runs far less often
+    // than that.
+    //
+    // Skipped entirely when deps.submitMigration is injected: that's a
+    // full override of the on-chain submission mechanism (see its use
+    // below), and this on-chain precheck would otherwise reach the real
+    // network/mocks regardless of the injected override, same as
+    // assertAdapterUnchanged inside submitMigrationTransaction only runs
+    // on the real path.
+    let hasMatchingSnapshot = deps.submitMigration != null;
+    let snapshotReadFailed = false;
+    if (!hasMatchingSnapshot) {
+      try {
+        const snapshot = (await simulateView(
+          server as never,
+          vault.vaultContractId,
+          config.network.passphrase,
+          "get_migration_snapshot"
+        )) as { adapter: string } | null;
+        hasMatchingSnapshot = snapshot?.adapter === best.adapterId;
+      } catch (err) {
+        // A genuine "no snapshot" (or one for a different adapter) traps
+        // with MigrationNotInitialized, which is not a transient failure by
+        // isTransientKeeperError's classification — that's the case this
+        // falls through to begin_migration for. A real RPC/network failure
+        // reading the snapshot must NOT be treated the same way: assuming
+        // "no snapshot" and firing begin_migration would reset a possibly
+        // already cooldown-elapsed snapshot's ledger_seq back to now,
+        // pushing a ready-to-migrate vault's migration back a full
+        // MIN_LEDGER_GAP for no reason. Report it as a retryable failure
+        // instead, same as this file's other on-chain read checks.
+        hasMatchingSnapshot = false;
+        snapshotReadFailed = isTransientKeeperError(err);
+      }
+    }
+
+    if (snapshotReadFailed) {
+      failures.push({
+        vaultId: vault.vaultId,
+        vaultContractId: vault.vaultContractId,
+        adapterId: best.adapterId,
+        protocol: best.protocol,
+        stage: "submit",
+        attempts: 1,
+        transient: true,
+        error:
+          "could not read the migration snapshot; skipped rather than risk resetting an existing cooldown",
+      });
+      await lease.releaseIfUnsent();
+      continue;
+    }
+
+    if (!hasMatchingSnapshot) {
+      try {
+        await submitKeeperOperation(
+          vault.vaultContractId,
+          "begin_migration",
+          [Address.fromString(best.adapterId).toScVal()],
+          {
+            network: config.network,
+            secretKey: config.secretKey,
+            rpcTimeoutMs: config.rpcTimeoutMs,
+            confirmationTimeoutMs: CONFIRMATION_TIMEOUT_MS,
+          },
+          server
+        );
+        logger.info(
+          "[migration-keeper] begin_migration submitted; migrate_adapter deferred to a later run once the ledger-gap cooldown elapses",
+          {
+            vaultId: vault.vaultId,
+            toAdapterId: best.adapterId,
+            toProtocol: best.protocol,
+          }
+        );
+        skipped.push({
+          vaultId: vault.vaultId,
+          reason:
+            "begin_migration submitted; waiting for the ledger-gap cooldown before migrate_adapter",
+        });
+      } catch (err) {
+        failures.push({
+          vaultId: vault.vaultId,
+          vaultContractId: vault.vaultContractId,
+          adapterId: best.adapterId,
+          protocol: best.protocol,
+          stage: "submit",
+          attempts: 1,
+          transient: isTransientKeeperError(err),
+          error: redactedErrorMessage(err),
+        });
+      }
+      await lease.releaseIfUnsent();
+      continue;
+    }
+
     let priorHash: string | undefined;
     try {
       const result = await withKeeperRetry(

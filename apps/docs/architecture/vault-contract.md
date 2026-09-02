@@ -9,9 +9,9 @@ The `MeridianVault` contract is a Soroban smart contract written in Rust, locate
 | USDC  | Deposit and withdrawal currency. Pulled from the user on deposit, returned on withdraw.                            |
 | mUSDC | Share token. Minted to the user on deposit, burned on withdraw. Represents proportional ownership of vault assets. |
 
-Both are standard Stellar assets managed via the `TokenClient`/`StellarAssetClient` interfaces. The vault must be set as the admin of the mUSDC asset to mint and burn autonomously (the deploy scripts do this automatically — see [Testnet Deployment](../operations/testnet-deployment.md)).
+USDC is a standard Stellar asset, managed via `TokenClient`. mUSDC (#578) is a **custom SEP-41 token** — `packages/contracts/musdc-token/src/lib.rs`, a separate contract this vault deploys and controls, not a Stellar Asset Contract (SAC). This is what lets it carry a transfer callback into the vault (see [Transferable shares](#transferable-shares) below); a bare SAC's `transfer` is fixed, built-in behavior with no hook a vault could add one to. The vault is set as mUSDC's admin at mUSDC's own deployment (a constructor argument, not a separate `set_admin` call — see [Testnet Deployment](../operations/testnet-deployment.md)) so it can mint and burn autonomously, and reads/writes it exactly like any other SEP-41 token via `TokenClient`.
 
-mUSDC is a **freely transferable** share token, and the vault treats it as one: share ownership is read from the token on every call that depends on it, never from a vault-side balance map. See [Transferable shares](#transferable-shares) for what that does and does not carry with a transfer.
+mUSDC is a **freely transferable** share token, and the vault treats it as one: share ownership is read from the token on every call that depends on it, never from a vault-side balance map. See [Transferable shares](#transferable-shares) for what a transfer does and does not carry with it.
 
 ## Interface
 
@@ -19,9 +19,11 @@ mUSDC is a **freely transferable** share token, and the vault treats it as one: 
 
 Called once at deployment. Sets the admin, USDC contract address, mUSDC contract address, and the initial yield adapter address. Requires `admin.require_auth()`. Fails with `AlreadyInitialized` if called again.
 
-### `deposit(caller, amount) -> Result<i128, ContractError>`
+Unlike the adapters (see [Adapter Contracts](#adapter-contracts) below), the vault does not use a `__constructor` — it still follows the two-step `deploy` then `initialize` pattern, so a deployed-but-uninitialized vault is claimable by whoever calls `initialize` first. See the deploy scripts for how this window is closed in practice.
 
-Transfers `amount` USDC from the caller into the vault, forwards it to the active adapter, and mints proportional mUSDC shares. Fails with `DepositsPaused` if `set_paused(true)` is in effect, `ZeroAmount` if `amount <= 0`, or `DepositTooSmall` if the amount rounds down to zero shares at the current price.
+### `deposit(caller, amount, min_shares_out) -> Result<i128, ContractError>`
+
+Transfers `amount` USDC from the caller into the vault, forwards it to the active adapter, and mints proportional mUSDC shares. Fails with `DepositsPaused` if `set_paused(true)` is in effect, `ZeroAmount` if `amount <= 0`, `DepositTooSmall` if the amount rounds down to zero shares at the current price, or `SlippageExceeded` if the minted shares would fall below `min_shares_out`. Callers wishing to opt out of minimum-output enforcement pass `0`.
 
 ```
 shares_minted = amount * (total_shares + OFFSET) / (adapter_total_assets + OFFSET)
@@ -35,9 +37,9 @@ Stamps `Entry(caller)` with the current ledger timestamp on the caller's first d
 
 **Known constraint — dust-position entry-time gaming:** "first deposit" here means `Balance(caller)` was `0` going in, not "no history." A partial withdrawal that leaves a non-zero dust balance (e.g. 1 stroop) does not clear `Entry(caller)` — only a full exit does (see `withdraw()` below) — so a much later, much larger top-up on that dust position is not a first deposit and inherits the original entry timestamp instead of getting a fresh one. This has no effect today: no entry point reads `Entry`/`get_entry_time` for anything but display. It becomes directly exploitable the moment any duration-gated feature (a fee discount, a loyalty multiplier, vesting) is built against raw `entry_time`. Do not build such a feature against the raw value without first switching the write path to a size-weighted average timestamp on top-up, so a large late deposit meaningfully pulls `entry_time` forward rather than inheriting the original stamp wholesale.
 
-### `withdraw(caller, shares) -> Result<i128, ContractError>`
+### `withdraw(caller, shares, min_usdc_out) -> Result<i128, ContractError>`
 
-Burns `shares` mUSDC from the caller, redeems the proportional adapter position, and returns the resulting USDC. Fails with `ZeroAmount` if `shares <= 0`, `NoSharesOutstanding` if the vault has no shares outstanding at all, `InsufficientShares` if the caller doesn't hold enough mUSDC, or `WithdrawalTooSmall` if the redemption rounds down to zero USDC.
+Burns `shares` mUSDC from the caller, redeems the proportional adapter position, and returns the resulting USDC. Fails with `ZeroAmount` if `shares <= 0`, `NoSharesOutstanding` if the vault has no shares outstanding at all, `InsufficientShares` if the caller doesn't hold enough mUSDC, `WithdrawalTooSmall` if the redemption rounds down to zero USDC, or `MinAmountOutNotMet` if the USDC redeemed is less than `min_usdc_out`. Pass `0` for `min_usdc_out` to disable the slippage guard.
 
 The `InsufficientShares` check reads the caller's live mUSDC balance, the same balance the burn operates on, so the two can never disagree. The check is kept rather than left to the burn's own failure so callers get the typed error instead of a panic.
 
@@ -47,6 +49,10 @@ usdc_out = <whatever the adapter's withdraw() returns for that many adapter shar
 ```
 
 Reduces `Principal(caller)` proportionally to the caller's live balance, so a holder who transferred part of their position away still retires exactly the basis for the shares they burn. A full exit clears both `Entry(caller)` and `Principal(caller)`. Withdrawals are never blocked by `set_paused` — see [Authorization and safety rails](#authorization-and-safety-rails).
+
+### `on_transfer(from, to, amount, sender_balance_before, receiver_balance_before) -> Result<(), ContractError>`
+
+Called by the mUSDC token contract itself, immediately after it moves a transfer's balances, to split `Principal`/`Entry` pro-rata between sender and receiver (#578). Requires mUSDC's own `require_auth()` — see [Transferable shares](#transferable-shares) for the full split math and why that check can only be satisfied by a genuine transfer on the real mUSDC contract. Not something an off-chain caller or the frontend ever invokes directly.
 
 ### `get_position(address) -> i128`
 
@@ -58,7 +64,7 @@ Returns the ledger timestamp of the address's current deposit, or `0` if it hold
 
 ### `get_principal(address) -> i128`
 
-Returns the address's cost basis: the net USDC it has deposited and not yet withdrawn. Yield earned off-chain is computed as `current_share_value - principal`. Reported as `0` for an address holding no mUSDC, and for an address whose shares arrived by transfer (see [Transferable shares](#transferable-shares)).
+Returns the address's cost basis: the net USDC it has deposited and not yet withdrawn. Yield earned off-chain is computed as `current_share_value - principal`. Reported as `0` for an address holding no mUSDC. An address whose shares arrived by transfer now (#578) reports the pro-rata basis it inherited via `on_transfer`, not `0` — see [Transferable shares](#transferable-shares).
 
 ### `get_total_assets() -> i128`
 
@@ -76,13 +82,21 @@ Returns the currently active adapter contract address.
 
 Points the vault at a new adapter contract. **This is the only way to change which protocol a vault routes to, or to push new adapter code live** — adapter contracts have no in-place upgrade path (no `update_current_contract_wasm`). The contract itself rejects the call with `AdapterSwapUnsafe` while the vault still has shares outstanding (`get_total_shares() > 0`) **or** while the old adapter still holds a position (`ADPT_SH > 0`). Both counters are checked because they can desync: `ADPT_SH` can remain positive after `TOTAL_SH` reaches zero (see `migrate_adapter`'s `NoAdapterPosition` doc), so a `TOTAL_SH`-only check could silently strand real value at the old adapter. Use this only when the vault has no depositors yet, e.g. right after a fresh deploy. For a vault with real depositors, use `migrate_adapter` instead: unlike `set_adapter`, calling this on a live vault does not itself move any funds out of the old adapter first. `ADPT_SH` is deliberately not reset to zero on swap: the guard now guarantees it is already zero on success, and resetting it in a genuinely-empty-but-desynced vault would destroy the only evidence that a stranded position existed. See `scripts/redeploy-blend-adapter.sh` for the supported procedure.
 
+### `begin_migration(new_adapter)` (admin only)
+
+Phase 1 of a two-phase migration (#567). Snapshots `new_adapter`'s `total_assets()` and the current ledger sequence into instance storage (`MIG_SNAP`, `MIG_ACTIVE`). `migrate_adapter` refuses to run against `new_adapter` until at least `MIN_LEDGER_GAP` ledgers (12, ~1 minute) have elapsed since this call, so a transiently-manipulated valuation at submission time can't slip through: an observer would have to sustain the manipulation across the whole cooldown, not just the instant `migrate_adapter` executes. Fails with `SameAdapter` if `new_adapter` is the vault's current adapter, or `MigrationSnapshotAssetsInvalid` if `new_adapter.total_assets()` is negative — a negative snapshot would make `migrate_adapter`'s stability check's tolerance-scaled floor negative too, so it would pass regardless of how much the target is drained during the cooldown. Can be called repeatedly, for the same or a different adapter; each call overwrites the previous snapshot.
+
+### `get_migration_snapshot() -> Result<MigrationSnapshot, ContractError>`
+
+Returns the snapshot recorded by `begin_migration` (`{ adapter, total_assets, ledger_seq }`), or fails with `MigrationNotInitialized` if none is active. Off-chain callers (the migration keeper) use this to tell whether a cooldown is already in progress for a given candidate before deciding whether to call `begin_migration` or `migrate_adapter`.
+
 ### `migrate_adapter(new_adapter, max_slippage_bps) -> Result<(), ContractError>` (admin only)
 
-Moves the vault's entire position from the current adapter to `new_adapter` in one atomic transaction, without requiring depositors to withdraw first. Unlike `set_adapter`, this is safe to call with shares outstanding, it's the supported way to migrate a live vault (e.g. Blend to a higher-yielding DeFindex vault, or replacing a compromised adapter).
+Phase 2. Must be preceded by `begin_migration(new_adapter)`, with `MIN_LEDGER_GAP` ledgers elapsed since. Moves the vault's entire position from the current adapter to `new_adapter` in one atomic transaction, without requiring depositors to withdraw first. Unlike `set_adapter`, this is safe to call with shares outstanding, it's the supported way to migrate a live vault (e.g. Blend to a higher-yielding DeFindex vault, or replacing a compromised adapter).
 
-Fails up front with `InvalidSlippageBps` if `max_slippage_bps > 10_000`, or `SameAdapter` if `new_adapter` is the vault's current adapter, or `NoAdapterPosition` if the current adapter has no position (`ADPT_SH <= 0`) — distinct from `NoSharesOutstanding`, which checks `TOTAL_SH` (vault mUSDC shares) instead, and the two can desync.
+Fails up front with `InvalidSlippageBps` if `max_slippage_bps > 10_000`, `SameAdapter` if `new_adapter` is the vault's current adapter, `NoAdapterPosition` if the current adapter has no position (`ADPT_SH <= 0`) — distinct from `NoSharesOutstanding`, which checks `TOTAL_SH` (vault mUSDC shares) instead, and the two can desync — or `MigrationNotInitialized`/`MigrationCooldownNotMet` if no matching, sufficiently-aged `begin_migration` snapshot exists for `new_adapter`.
 
-Refreshes and reads the old adapter's `total_assets()` as the pre-migration value (an independent measurement taken before extraction, so it can catch loss on the withdrawal leg itself, not just the deposit leg), also baselines `new_adapter`'s `total_assets()` before landing any funds on it (so a pre-existing balance the target already held — e.g. residue stranded by the `set_adapter` wrong-counter case above — isn't later counted as value this migration delivered), withdraws the vault's entire adapter-share position into the vault itself, deposits it into `new_adapter`, and requires the new adapter to report a positive share count (`DepositTooSmall` otherwise, this is what stops the vault's own bookkeeping from ever being pointed at zero adapter shares while `TOTAL_SH` is still positive) and a post-migration `total_assets()` delta over that baseline no lower than `(10_000 - max_slippage_bps) / 10_000` of the pre-migration value (`MigrationValueDrift` otherwise). `10_000` itself is a valid, if extreme, choice of `max_slippage_bps`, an admin explicitly accepting no value-preservation protection, e.g. when recovering from an old adapter already known to be broken. Since Soroban transactions are atomic, a failed check leaves no partial state, nothing moves. On success, `ADAPTER` and `ADPT_SH` are updated; `TOTAL_SH`, every holder's mUSDC balance, and every depositor's `Principal`/`Entry` are untouched, since they're denominated in vault mUSDC shares, not adapter shares.
+Refreshes and reads the old adapter's `total_assets()` as the pre-migration value (an independent measurement taken before extraction, so it can catch loss on the withdrawal leg itself, not just the deposit leg), also baselines `new_adapter`'s `total_assets()` before landing any funds on it (so a pre-existing balance the target already held — e.g. residue stranded by the `set_adapter` wrong-counter case above — isn't later counted as value this migration delivered), withdraws the vault's entire adapter-share position into the vault itself, deposits it into `new_adapter`, and requires the new adapter to report a positive share count (`DepositTooSmall` otherwise, this is what stops the vault's own bookkeeping from ever being pointed at zero adapter shares while `TOTAL_SH` is still positive). Two independent checks then have to pass: a post-migration `total_assets()` delta over the pre-deposit baseline no lower than `(10_000 - max_slippage_bps) / 10_000` of the _pre-migration_ value (`MigrationValueDrift` otherwise), and the target's pre-deposit baseline itself no lower than `(10_000 - max_slippage_bps) / 10_000` of the `begin_migration` _snapshot_ value (`MigrationStabilityDrift` otherwise) — proving the target wasn't drained or manipulated during the cooldown. The second check deliberately reads the pre-deposit baseline, not the post-migration total: the post-migration total always includes the funds this call itself just delivered, so checking it against the snapshot would pass regardless of how much the target's pre-existing balance had been manipulated. `10_000` itself is a valid, if extreme, choice of `max_slippage_bps`, an admin explicitly accepting no value-preservation protection, e.g. when recovering from an old adapter already known to be broken. Since Soroban transactions are atomic, a failed check leaves no partial state, nothing moves — the `begin_migration` snapshot also survives a failed attempt and can be reused. On success, `ADAPTER`, `ADPT_SH`, and the migration snapshot are cleared; `TOTAL_SH`, every holder's mUSDC balance, and every depositor's `Principal`/`Entry` are untouched, since they're denominated in vault mUSDC shares, not adapter shares.
 
 **This does not protect against a malicious or compromised admin key.** The admin chooses `new_adapter`, and a fake adapter could report whatever `total_assets()` it likes to pass the slippage check and then keep the funds. The invariant guards against accidental value loss (slippage, a buggy new adapter), not against the admin key itself, that's a key-custody problem (see the shared testnet admin/deployer/mUSDC-issuer key warning in the deploy scripts), not something this function can close on its own.
 
@@ -122,21 +136,31 @@ The vault used to keep its own `Balance(address)` map alongside the token. Becau
 
 What a transfer carries:
 
-|                                     | Follows the token | Why                                       |
-| ----------------------------------- | ----------------- | ----------------------------------------- |
-| Share ownership / withdrawal rights | **Yes**           | Read from the mUSDC balance on every call |
-| Cost basis (`Principal`)            | No                | See below                                 |
-| Entry timestamp (`Entry`)           | No                | Belongs to a depositor, not to the shares |
+|                                     | Follows the token | Why                                                       |
+| ----------------------------------- | ----------------- | --------------------------------------------------------- |
+| Share ownership / withdrawal rights | **Yes**           | Read from the mUSDC balance on every call                 |
+| Cost basis (`Principal`)            | **Yes, pro-rata** | Split between sender and receiver on transfer (#578)      |
+| Entry timestamp (`Entry`)           | **Yes, weighted** | Inherited outright, or principal-weighted averaged (#578) |
 
-Cost basis and entry time are _history_, what was paid and when, not a current holding, so unlike the balance they cannot be derived after the fact from a snapshot. Moving them with a transfer means observing the transfer as it happens, and mUSDC is a Stellar Asset Contract: its `transfer` is the built-in implementation, with no hook and no source the vault could add one to. The vault is the SAC's _admin_ (it can mint and burn), which is not the same as controlling its code.
+Cost basis and entry time are _history_ — what was paid and when, not a current holding — so unlike the balance they can't be derived after the fact from a snapshot; moving them with a transfer means observing the transfer as it happens. Before #578, that observation was impossible: mUSDC was a Stellar Asset Contract, and a SAC's `transfer` is the built-in implementation, with no hook and no source the vault could add one to (the vault was the SAC's _admin_ — it could mint and burn — which is not the same as controlling its code). mUSDC is now a custom SEP-41 token the vault does control the code of (`packages/contracts/musdc-token/src/lib.rs`), and its `transfer`/`transfer_from` call back into the vault's `on_transfer` after moving balances, carrying both parties' pre-transfer balances so the vault can compute the split without an extra cross-contract read.
 
-The consequences are confined to reporting, and never to fund safety:
+`on_transfer`'s split, exactly matching the design proposed on #504:
 
-- An address that received mUSDC by transfer reports a basis of `0`, meaning "nothing recorded", so its displayed yield is its full share value. It can withdraw the full position.
-- An address that transferred its position away reports `0` for both basis and entry time, because it holds nothing. `get_principal`/`get_entry_time` clear the stale `Entry`/`Principal` records the first time either is called with the address at zero, rather than leaving them to resurface if the address's balance later becomes nonzero again from an unrelated deposit or transfer-in; `deposit()` does the same check on its own, so a re-deposit is never mixed with a stale basis from a position the caller already gave up, even if nothing read the address's position in between.
-- A partial transfer leaves the sender's remaining basis attached to their remaining shares, and retires it proportionally as they withdraw.
+- **Principal**: `principal_moved = sender_principal * amount / sender_balance_before`, subtracted from the sender and added to the receiver.
+- **Entry time**: a receiver with no existing position (`receiver_balance_before == 0`) inherits the sender's entry time outright. A receiver who already holds a position gets a principal-weighted average of their existing entry time and the sender's — `(receiver_entry * receiver_principal + sender_entry * principal_moved) / (receiver_principal + principal_moved)` — so a large incoming transfer meaningfully pulls entry_time forward instead of the receiver's own original stamp swallowing it wholesale.
+- A full transfer-out (`sender_balance_before - amount == 0`) clears the sender's `Entry`/`Principal` records entirely, mirroring `withdraw()`'s full-exit branch. A partial transfer-out leaves the sender's `Entry` untouched — like a partial `withdraw()`, it already reflects when they first deposited, not what they currently hold.
 
-Closing this properly means a share token whose code the vault controls, i.e. replacing the mUSDC SAC with a custom SEP-41 token that calls back into the vault on transfer so basis can be split pro-rata and entry time merged as a principal-weighted average. That is a new contract plus a redeployment and migration of the live share token, not a change to this one, and it is tracked separately rather than folded in here.
+Security-wise, `on_transfer` requires the mUSDC token's own `require_auth()`, which Soroban satisfies automatically only when mUSDC is the _direct_ caller of that exact invocation (a contract's own direct sub-calls are inherently authorized by that contract, no signature needed) — the same direction-reversed pattern `adapter-common::require_vault_auth` already uses for every adapter to verify a call actually came from the vault. This can never be triggered by anything other than a genuine transfer on the one real, configured mUSDC contract.
+
+**Wallet and DEX compatibility.** A custom Soroban-native SEP-41 token does not get the same classic-asset treatment mUSDC had as a SAC:
+
+- **No classic trustline.** mUSDC as a SAC could be added to a Stellar account via a classic `ChangeTrust` operation and shown by any wallet that lists trustlines. A Soroban-native token has no trustline at all — a holding is purely a balance entry inside the token contract's own storage, visible only to something that specifically queries that contract (`balance(address)`), not to generic trustline-scanning wallet UIs.
+- **No classic order book / path payments.** Classic Stellar's DEX and `PathPaymentStrictSend`/`StrictReceive` operations move classic trustline assets; they cannot touch a Soroban contract's internal balances at all. mUSDC can never appear as a classic order-book asset or a path-payment leg — only as the target of a Soroban `invoke_host_function` `transfer`/`transfer_from` call.
+- **Wallet UI support is inconsistent, not absent.** Freighter, LOBSTR, and xBull can all sign an arbitrary Soroban contract-invocation transaction generically (that's what deposit/withdraw already rely on), so a user can always transfer, approve, or otherwise interact with mUSDC the same way they already interact with the vault itself. What's inconsistent is _automatic balance display_: a wallet has to specifically support SEP-41 token discovery (or hardcode mUSDC's contract address) to show a balance in its UI without the user manually adding the token; this is evolving across wallets and was not verified against current wallet versions as part of this change.
+
+This is a real, load-bearing trade-off, not a formality: anything depending on mUSDC showing up automatically in a wallet balance list, being tradeable on the classic DEX, or reachable via a classic path payment stops working exactly as before. Nothing about depositing, withdrawing, or transferring mUSDC through the vault's own contract calls changes.
+
+**Migration for an already-live SAC mUSDC.** If a vault has already been deployed and initialized against the old SAC-based mUSDC before this change ships to that environment, the SAC and the new SEP-41 token are two different contracts with two different balances — there is no in-place upgrade. The migration path is: deploy the new mUSDC token and a new vault instance wired to it (mirroring how [Testnet Deployment](../operations/testnet-deployment.md) already documents a vault cutover with no automatic migration of positions), snapshot every SAC mUSDC holder's balance, mint the new token 1:1 to each holder against that snapshot, and point the frontend/API at the new vault and token addresses. Existing holders on the old vault withdraw there as normal; nothing forces a cutover deadline. As of this change landing, no environment has live third-party mUSDC transfers to migrate (testnet-only, not yet used as collateral anywhere), so this is documented as the path to follow before a listing or collateral integration, not something this PR executes.
 
 **Sequencing risk:** once mUSDC is accepted as collateral on any third-party lending market, an ordinary liquidation transfers mUSDC to a liquidator with no relationship to Meridian, turning the still-open transfer desync into unrecoverable third-party value destruction rather than a two-party problem. This adds pressure to complete the custom token migration (#504 scope) before such integrations go live.
 
@@ -196,7 +220,7 @@ USDC on Stellar uses 7 decimal places. 1 USDC = `10_000_000` stroops. All contra
 
 ## Authorization and safety rails
 
-`caller.require_auth()` is called at the start of both `deposit` and `withdraw`. Admin functions (`transfer_admin`, `set_paused`, `set_adapter`) call an internal `require_admin` helper that reads the stored admin address and calls `require_auth()` on it. `accept_admin` is the one exception: it calls `require_auth()` on the pending nominee instead, since its whole purpose is to require the _new_ admin's signature, not the current one's. See [BlendAdapter's auth note](#blendadapter) above for a subtler auth requirement specific to that adapter.
+`caller.require_auth()` is called at the start of both `deposit` and `withdraw`. Admin functions (`transfer_admin`, `set_paused`, `set_adapter`) call an internal `require_admin` helper that reads the stored admin address and calls `require_auth()` on it. `accept_admin` is one exception: it calls `require_auth()` on the pending nominee instead, since its whole purpose is to require the _new_ admin's signature, not the current one's. `on_transfer` (#578) is the other: it calls `require_auth()` on the stored mUSDC address, which only succeeds when mUSDC is the direct caller of that invocation — see [Transferable shares](#transferable-shares). See [BlendAdapter's auth note](#blendadapter) above for a subtler auth requirement specific to that adapter.
 
 Deposits, but never withdrawals, can be paused via `set_paused(true)` — this is deliberate, so a pause can never trap user funds.
 
@@ -204,23 +228,30 @@ Deposits, but never withdrawals, can be paused via `set_paused(true)` — this i
 
 `ContractError` (defined in `vault/src/lib.rs`) gives fallible entry points typed, stable error codes instead of panic strings:
 
-| Variant               | Code | Meaning                                                                                                                         |
-| --------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `AlreadyInitialized`  | 1    | `initialize` called on a contract that already has an admin.                                                                    |
-| `NotInitialized`      | 2    | A state-mutating call was made before `initialize`.                                                                             |
-| `DepositsPaused`      | 3    | `deposit` called while `set_paused(true)` is in effect.                                                                         |
-| `ZeroAmount`          | 4    | `deposit`/`withdraw` called with a non-positive amount/shares.                                                                  |
-| `DepositTooSmall`     | 5    | The deposited amount rounds down to zero shares, or `migrate_adapter` moved funds into a new adapter that credited zero shares. |
-| `NoSharesOutstanding` | 6    | `withdraw` called while the vault has no shares outstanding.                                                                    |
-| `InsufficientShares`  | 7    | The caller doesn't hold enough mUSDC to burn.                                                                                   |
-| `WithdrawalTooSmall`  | 8    | The shares burned round down to zero USDC.                                                                                      |
-| `Overflow`            | 9    | An intermediate arithmetic operation would overflow `i128`.                                                                     |
-| `AdapterSwapUnsafe`   | 10   | `set_adapter` was called while the vault still has shares outstanding.                                                          |
-| `SameAdapter`         | 11   | `migrate_adapter` was called with the vault's current adapter as the target.                                                    |
-| `MigrationValueDrift` | 12   | `migrate_adapter`'s post-migration value fell outside `max_slippage_bps` of the pre-migration value.                            |
-| `NoAdapterPosition`   | 13   | `migrate_adapter` was called while the current adapter has no position (`ADPT_SH <= 0`).                                        |
-| `InvalidSlippageBps`  | 14   | `migrate_adapter` was called with `max_slippage_bps > 10_000`.                                                                  |
-| `NoPendingAdmin`      | 16   | `accept_admin` was called with no `transfer_admin` nomination outstanding.                                                      |
+| Variant                          | Code | Meaning                                                                                                                                                                                           |
+| -------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AlreadyInitialized`             | 1    | `initialize` called on a contract that already has an admin.                                                                                                                                      |
+| `NotInitialized`                 | 2    | A state-mutating call was made before `initialize`.                                                                                                                                               |
+| `DepositsPaused`                 | 3    | `deposit` called while `set_paused(true)` is in effect.                                                                                                                                           |
+| `ZeroAmount`                     | 4    | `deposit`/`withdraw` called with a non-positive amount/shares.                                                                                                                                    |
+| `DepositTooSmall`                | 5    | The deposited amount rounds down to zero shares, or `migrate_adapter` moved funds into a new adapter that credited zero shares.                                                                   |
+| `NoSharesOutstanding`            | 6    | `withdraw` called while the vault has no shares outstanding.                                                                                                                                      |
+| `InsufficientShares`             | 7    | The caller doesn't hold enough mUSDC to burn.                                                                                                                                                     |
+| `WithdrawalTooSmall`             | 8    | The shares burned round down to zero USDC.                                                                                                                                                        |
+| `Overflow`                       | 9    | An intermediate arithmetic operation would overflow `i128`.                                                                                                                                       |
+| `AdapterSwapUnsafe`              | 10   | `set_adapter` was called while the vault still has shares outstanding.                                                                                                                            |
+| `SameAdapter`                    | 11   | `migrate_adapter` was called with the vault's current adapter as the target.                                                                                                                      |
+| `MigrationValueDrift`            | 12   | `migrate_adapter`'s post-migration value fell outside `max_slippage_bps` of the pre-migration value.                                                                                              |
+| `NoAdapterPosition`              | 13   | `migrate_adapter` was called while the current adapter has no position (`ADPT_SH <= 0`).                                                                                                          |
+| `InvalidSlippageBps`             | 14   | `migrate_adapter` was called with `max_slippage_bps > 10_000`.                                                                                                                                    |
+| `MinAmountOutNotMet`             | 15   | `withdraw` was called with a `min_usdc_out` guard and the redeemed USDC fell below it. Protects callers from unexpected slippage or a price move between simulation and execution.                |
+| `NoPendingAdmin`                 | 16   | `accept_admin` was called with no `transfer_admin` nomination outstanding.                                                                                                                        |
+| `AdapterReportedNoAssets`        | 17   | The adapter reported zero or negative total assets while the vault still has shares outstanding.                                                                                                  |
+| `SlippageExceeded`               | 18   | `deposit` output fell below caller-specified minimum bound (`min_shares_out`).                                                                                                                    |
+| `MigrationNotInitialized`        | 19   | `migrate_adapter` was called without a matching `begin_migration` snapshot for the target adapter.                                                                                                |
+| `MigrationCooldownNotMet`        | 20   | `migrate_adapter` was called before `MIN_LEDGER_GAP` ledgers had elapsed since `begin_migration`.                                                                                                 |
+| `MigrationStabilityDrift`        | 21   | `migrate_adapter`'s target adapter's pre-deposit balance fell outside `max_slippage_bps` of the `begin_migration` snapshot, indicating the target was drained or manipulated during the cooldown. |
+| `MigrationSnapshotAssetsInvalid` | 22   | `begin_migration` was called against a target adapter reporting a negative `total_assets()`.                                                                                                      |
 
 ## Contract storage
 

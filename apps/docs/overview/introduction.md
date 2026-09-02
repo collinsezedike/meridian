@@ -15,7 +15,7 @@ Which protocol a vault routes to can change after a deposit, without any action 
 ## What it does not do
 
 - Meridian never holds or controls private keys. The server builds an unsigned transaction and returns it to the browser; the user signs with Freighter.
-- Meridian does not custody funds in the traditional sense. The vault forwards deposited USDC to its active adapter, which deploys it directly to the underlying protocol (e.g. supplied as collateral in a Blend pool); mUSDC is a standard Stellar asset representing the resulting position.
+- Meridian does not custody funds in the traditional sense. The vault forwards deposited USDC to its active adapter, which deploys it directly to the underlying protocol (e.g. supplied as collateral in a Blend pool); mUSDC is a custom SEP-41 token representing the resulting position (not a classic Stellar asset — see [Wallet and DEX compatibility](../architecture/vault-contract.md#transferable-shares) for what that trade-off means).
 - Meridian does not guarantee yield. APY figures are live estimates from on-chain data and DeFiLlama. Past rates do not predict future rates.
 
 ## Status

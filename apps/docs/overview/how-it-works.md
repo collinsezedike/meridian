@@ -6,12 +6,12 @@
 User enters amount
        │
        ▼
-Frontend POSTs { walletAddress, vaultId, amount }
+Frontend POSTs { walletAddress, vaultId, amount, minSharesOut? }
 to POST /api/v1/tx/deposit
        │
        ▼
 API fetches account sequence from Soroban RPC
-builds invokeHostFunction calling vault.deposit(caller, amount)
+builds invokeHostFunction calling vault.deposit(caller, amount, min_shares_out)
 simulates transaction to get resource footprint and fee
 returns { xdr, fee }
        │
@@ -28,10 +28,10 @@ API forwards to Stellar RPC
 Transaction settles (~5 seconds)
 Vault forwards USDC to its active adapter, which deploys it to the
 underlying protocol (Blend or DeFindex), and mints mUSDC shares to
-the user's wallet
+the user's wallet (reverting if shares minted < min_shares_out)
 ```
 
-`vault.deposit(caller, amount)` has no protocol-selection parameter. Which protocol the deposit actually reaches is entirely determined by whichever adapter contract the vault currently has set — see [Vault Contract](../architecture/vault-contract.md#adapter-contracts).
+`vault.deposit(caller, amount, min_shares_out)` has no protocol-selection parameter. Which protocol the deposit actually reaches is entirely determined by whichever adapter contract the vault currently has set — see [Vault Contract](../architecture/vault-contract.md#adapter-contracts).
 
 ## Withdraw flow
 

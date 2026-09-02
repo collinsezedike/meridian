@@ -6,8 +6,22 @@ import { Toasts } from "./components/ui/Toasts";
 import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { useWalletStore } from "./store/wallet";
 import { useTranslation } from "react-i18next";
+import { AdminLogin } from "./pages/AdminLogin";
 
 const queryClient = new QueryClient();
+
+// No router dependency for a single extra route: the app has exactly two
+// pages, and pulling in react-router for one static path split would be a
+// heavier change than the admin dashboard itself (#615) needs.
+//
+// The app is served under /app/* (see the root vercel.json rewrite,
+// "/app/:path*" -> "/app/index.html"), so the admin route lives at
+// /app/admin — that existing rewrite already covers it, no routing config
+// change needed. A bare /admin (no /app prefix) is not covered by any
+// rewrite and never reaches the SPA in production.
+function isAdminRoute(): boolean {
+  return window.location.pathname.startsWith("/app/admin");
+}
 
 function Dashboard() {
   const { t, i18n } = useTranslation();
@@ -28,7 +42,7 @@ function Dashboard() {
             <WalletConnect />
             <button
               onClick={toggleLanguage}
-              className="text-sm border border-gray-700 rounded-lg px-3 py-1.5 text-gray-300 hover:border-gray-600 hover:text-white transition-colors duration-150"
+              className="text-sm border-gray-700 rounded-lg px-3 py-1.5 text-gray-300 hover:border-gray-600 hover:text-white transition-colors duration-150"
             >
               {i18n.language === "en" ? "FR" : "EN"}
             </button>
@@ -59,7 +73,7 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <Dashboard />
+      {isAdminRoute() ? <AdminLogin /> : <Dashboard />}
       <Toasts />
     </QueryClientProvider>
   );
