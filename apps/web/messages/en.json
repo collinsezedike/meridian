@@ -7,6 +7,7 @@
     "disconnect": "Disconnect",
     "copyAddress": "Copy Address",
     "copied": "Copied",
+    "copyFailed": "Failed to copy address",
     "walletDisconnected": "Wallet Disconnected",
     "walletConnected": "Wallet Connected",
     "chooseWallet": "Choose a wallet",

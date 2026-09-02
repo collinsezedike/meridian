@@ -100,3 +100,77 @@ where
 {
     value.unwrap_or_else(|| panic_with_error!(env, E::not_initialized()))
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{contract, testutils::Address as _, Address, Env};
+
+    // adapter-common has no #[contract] of its own — it's a shared library
+    // crate, not a deployable contract. Instance storage is always scoped to
+    // a specific contract, so exercising get_vault/store_vault_and_usdc/
+    // require_not_initialized needs a real registered contract address to
+    // run the calls under, via env.as_contract(). This dummy stands in for
+    // any real adapter for that purpose only; none of its own methods are
+    // exercised.
+    #[contract]
+    struct DummyAdapter;
+
+    fn setup() -> (Env, Address) {
+        let env = Env::default();
+        let contract_id = env.register(DummyAdapter, ());
+        (env, contract_id)
+    }
+
+    /// `get_vault` returns `None` before `store_vault_and_usdc` is called.
+    #[test]
+    fn get_vault_returns_none_before_init() {
+        let (env, contract_id) = setup();
+        env.as_contract(&contract_id, || {
+            assert_eq!(get_vault(&env), None);
+        });
+    }
+
+    /// `get_vault` returns `Some(vault)` after `store_vault_and_usdc` is called.
+    #[test]
+    fn get_vault_returns_some_after_store() {
+        let (env, contract_id) = setup();
+        let vault = Address::generate(&env);
+        let usdc = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            store_vault_and_usdc(&env, &vault, &usdc);
+            assert_eq!(get_vault(&env), Some(vault.clone()));
+        });
+    }
+
+    /// `require_not_initialized` returns `Ok(())` on a fresh environment.
+    #[test]
+    fn require_not_initialized_ok_before_init() {
+        let (env, contract_id) = setup();
+        env.as_contract(&contract_id, || {
+            assert_eq!(require_not_initialized(&env), Ok(()));
+        });
+    }
+
+    /// `require_not_initialized` returns `Err(AlreadyInitialized)` once
+    /// `VAULT_KEY` has been written via `store_vault_and_usdc`.
+    #[test]
+    fn require_not_initialized_errs_after_store() {
+        let (env, contract_id) = setup();
+        let vault = Address::generate(&env);
+        let usdc = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            store_vault_and_usdc(&env, &vault, &usdc);
+            assert_eq!(
+                require_not_initialized(&env),
+                Err(AdapterError::AlreadyInitialized)
+            );
+        });
+    }
+}
