@@ -122,6 +122,35 @@ pub trait BlendPoolInterface {
 }
 
 // ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdapterDepositEvent {
+    pub amount: i128,
+    pub shares_credited: i128,
+    pub total_assets: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdapterWithdrawEvent {
+    pub shares_redeemed: i128,
+    pub amount_out: i128,
+    pub total_assets: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefreshEvent {
+    pub previous_total_assets: i128,
+    pub total_assets: i128,
+    pub b_tokens: i128,
+    pub b_rate: i128,
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
@@ -205,6 +234,10 @@ impl MeridianBlendAdapter {
         store_vault_and_usdc(env, vault, usdc);
         env.storage().instance().set(&POOL_KEY, pool);
         env.storage().instance().set(&TOTAL_KEY, &0_i128);
+        env.events().publish(
+            (symbol_short!("init"), vault.clone(), pool.clone()),
+            usdc.clone(),
+        );
     }
 
     /// Called by the vault after transferring `amount` USDC to this adapter.
@@ -275,7 +308,16 @@ impl MeridianBlendAdapter {
         // initialize() sets this key to 0. This unwrap_or pattern is the idiomatic way to handle
         // optional storage values in Soroban.
         let prev: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
-        env.storage().instance().set(&TOTAL_KEY, &(prev + amount));
+        let total_assets = prev + amount;
+        env.storage().instance().set(&TOTAL_KEY, &total_assets);
+        env.events().publish(
+            (symbol_short!("deposit"), adapter),
+            AdapterDepositEvent {
+                amount,
+                shares_credited: b_tokens_credited,
+                total_assets,
+            },
+        );
 
         b_tokens_credited
     }
@@ -333,6 +375,14 @@ impl MeridianBlendAdapter {
             0
         };
         env.storage().instance().set(&TOTAL_KEY, &remaining);
+        env.events().publish(
+            (symbol_short!("withdraw"), recipient),
+            AdapterWithdrawEvent {
+                shares_redeemed: shares,
+                amount_out: delivered,
+                total_assets: remaining,
+            },
+        );
 
         delivered
     }
@@ -348,24 +398,7 @@ impl MeridianBlendAdapter {
     /// (`get_positions`) rather than self-tracking it, so there is no risk of
     /// drift between the stored total and Blend's actual accounting.
     pub fn accrue(env: Env) -> Result<(), ContractError> {
-        let pool: Address = env
-            .storage()
-            .instance()
-            .get(&POOL_KEY)
-            .ok_or(ContractError::NotInitialized)?;
-        let usdc = get_usdc(&env);
-        let adapter = env.current_contract_address();
-
-        let client = BlendPoolClient::new(&env, &pool);
-        let reserve = client.get_reserve(&usdc);
-        let positions = client.get_positions(&adapter);
-        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
-        let b_tokens = positions.collateral.get(reserve.config.index).unwrap_or(0);
-
-        let current_value = b_tokens_to_usdc(b_tokens, reserve.data.b_rate)?;
-
-        env.storage().instance().set(&TOTAL_KEY, &current_value);
-        Ok(())
+        Self::refresh_total(&env, symbol_short!("accrue"))
     }
 
     /// Refreshes the cached total_assets to include yield accrued since the
@@ -382,9 +415,38 @@ impl MeridianBlendAdapter {
     /// unwrap(), which panicked directly) rather than downgrading a real
     /// failure into a silent no-op success.
     pub fn refresh(env: Env) {
-        if let Err(err) = Self::accrue(env.clone()) {
+        if let Err(err) = Self::refresh_total(&env, symbol_short!("refresh")) {
             panic_with_error!(&env, err);
         }
+    }
+
+    fn refresh_total(env: &Env, action: Symbol) -> Result<(), ContractError> {
+        let pool: Address = env
+            .storage()
+            .instance()
+            .get(&POOL_KEY)
+            .ok_or(ContractError::NotInitialized)?;
+        let usdc = get_usdc(env);
+        let adapter = env.current_contract_address();
+
+        let client = BlendPoolClient::new(env, &pool);
+        let reserve = client.get_reserve(&usdc);
+        let positions = client.get_positions(&adapter);
+        let b_tokens = positions.collateral.get(reserve.config.index).unwrap_or(0);
+        let current_value = b_tokens_to_usdc(b_tokens, reserve.data.b_rate)?;
+        let previous_total_assets: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
+
+        env.storage().instance().set(&TOTAL_KEY, &current_value);
+        env.events().publish(
+            (action, adapter),
+            RefreshEvent {
+                previous_total_assets,
+                total_assets: current_value,
+                b_tokens,
+                b_rate: reserve.data.b_rate,
+            },
+        );
+        Ok(())
     }
 
     /// Returns the cached USDC value of the adapter's Blend position. Reflects
@@ -419,10 +481,10 @@ impl MeridianBlendAdapter {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        contract, contractimpl,
-        testutils::Address as _,
+        contract, contractimpl, symbol_short,
+        testutils::{Address as _, Events as _},
         token::{StellarAssetClient, TokenClient},
-        Address, Env,
+        Address, Env, IntoVal, TryFromVal,
     };
 
     // -----------------------------------------------------------------------
@@ -598,6 +660,10 @@ mod tests {
         let pool = MockBlendPoolClient::new(&env, &pool_id);
         pool.initialize(&SCALAR, &RESERVE_INDEX);
 
+        // Fund the vault (the caller of deposit) with USDC, then act as the
+        // vault transferring into the adapter, matching real vault behaviour.
+        StellarAssetClient::new(&env, &usdc_id).mint(&vault, &10_000_000_000_i128);
+
         // Registered with constructor arguments, which is how every real
         // deployment of this contract is now wired: there is no
         // deploy-then-initialize path left to exercise.
@@ -607,11 +673,20 @@ mod tests {
         );
         let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
 
-        // Fund the vault (the caller of deposit) with USDC, then act as the
-        // vault transferring into the adapter, matching real vault behaviour.
-        StellarAssetClient::new(&env, &usdc_id).mint(&vault, &10_000_000_000_i128);
-
         (env, vault, usdc_id, adapter, pool)
+    }
+
+    #[test]
+    fn constructor_publishes_event() {
+        let (env, vault, usdc, adapter, pool) = setup();
+        let topics = (symbol_short!("init"), vault, pool.address).into_val(&env);
+        let event = env
+            .events()
+            .all()
+            .iter()
+            .find(|event| event.0 == adapter.address && event.1 == topics)
+            .unwrap();
+        assert_eq!(Address::try_from_val(&env, &event.2).unwrap(), usdc);
     }
 
     #[test]
@@ -623,7 +698,20 @@ mod tests {
         let shares = adapter.deposit(&amount);
 
         assert_eq!(shares, amount);
-        assert_eq!(adapter.total_assets(), amount);
+        let (contract, topics, data) = env.events().all().last().unwrap();
+        assert_eq!(contract, adapter.address);
+        assert_eq!(
+            topics,
+            (symbol_short!("deposit"), adapter.address.clone()).into_val(&env)
+        );
+        assert_eq!(
+            AdapterDepositEvent::try_from_val(&env, &data).unwrap(),
+            AdapterDepositEvent {
+                amount,
+                shares_credited: amount,
+                total_assets: amount,
+            }
+        );
     }
 
     #[test]
@@ -655,7 +743,43 @@ mod tests {
         assert_eq!(adapter.total_assets(), amount);
 
         assert_eq!(adapter.try_accrue(), Ok(Ok(())));
+        let (contract, topics, data) = env.events().all().last().unwrap();
+        assert_eq!(contract, adapter.address);
+        assert_eq!(
+            topics,
+            (symbol_short!("accrue"), adapter.address.clone()).into_val(&env)
+        );
+        assert_eq!(
+            RefreshEvent::try_from_val(&env, &data).unwrap(),
+            RefreshEvent {
+                previous_total_assets: amount,
+                total_assets: amount + amount / 10,
+                b_tokens: amount,
+                b_rate: new_rate,
+            }
+        );
         assert_eq!(adapter.total_assets(), amount + amount / 10);
+    }
+
+    #[test]
+    fn refresh_publishes_event() {
+        let (env, _vault, _usdc, adapter, _pool) = setup();
+        adapter.refresh();
+        let (contract, topics, data) = env.events().all().last().unwrap();
+        assert_eq!(contract, adapter.address);
+        assert_eq!(
+            topics,
+            (symbol_short!("refresh"), adapter.address.clone()).into_val(&env)
+        );
+        assert_eq!(
+            RefreshEvent::try_from_val(&env, &data).unwrap(),
+            RefreshEvent {
+                previous_total_assets: 0,
+                total_assets: 0,
+                b_tokens: 0,
+                b_rate: SCALAR,
+            }
+        );
     }
 
     #[test]
@@ -773,6 +897,20 @@ mod tests {
         let usdc_out = adapter.withdraw(&amount, &recipient);
 
         assert_eq!(usdc_out, amount);
+        let (contract, topics, data) = env.events().all().last().unwrap();
+        assert_eq!(contract, adapter.address);
+        assert_eq!(
+            topics,
+            (symbol_short!("withdraw"), recipient.clone()).into_val(&env)
+        );
+        assert_eq!(
+            AdapterWithdrawEvent::try_from_val(&env, &data).unwrap(),
+            AdapterWithdrawEvent {
+                shares_redeemed: amount,
+                amount_out: amount,
+                total_assets: 0,
+            }
+        );
         assert_eq!(adapter.total_assets(), 0);
         assert_eq!(TokenClient::new(&env, &usdc_id).balance(&recipient), amount);
     }

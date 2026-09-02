@@ -63,6 +63,48 @@ pub trait YieldAdapterInterface {
 // Types
 // ---------------------------------------------------------------------------
 
+/// Data emitted after a successful vault deposit. The caller is indexed in
+/// the event topics; this payload contains both deltas and resulting global
+/// counters so an indexer can update its projection without another RPC read.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DepositEvent {
+    pub amount: i128,
+    pub shares_minted: i128,
+    pub adapter_shares_minted: i128,
+    pub total_shares: i128,
+    pub total_adapter_shares: i128,
+    pub principal: i128,
+}
+
+/// Data emitted after a successful vault withdrawal. The caller is indexed in
+/// the topics; the payload records the assets and shares removed plus all
+/// resulting position/global counters.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawEvent {
+    pub shares_burned: i128,
+    pub adapter_shares_burned: i128,
+    pub usdc_out: i128,
+    pub principal_removed: i128,
+    pub remaining_shares: i128,
+    pub remaining_principal: i128,
+    pub total_shares: i128,
+    pub total_adapter_shares: i128,
+}
+
+/// Data emitted when a live position is migrated between adapters. Both
+/// adapter addresses are indexed in the topics.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationEvent {
+    pub withdrawn: i128,
+    pub new_adapter_shares: i128,
+    pub value_before: i128,
+    pub value_after: i128,
+    pub max_slippage_bps: u32,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -166,6 +208,8 @@ impl MeridianVault {
         env.storage().instance().set(&ADAPTER, &adapter);
         env.storage().instance().set(&TOTAL_SH, &0_i128);
         env.storage().instance().set(&ADPT_SH, &0_i128);
+        env.events()
+            .publish((symbol_short!("init"), admin, adapter), (usdc, musdc));
         Ok(())
     }
 
@@ -266,9 +310,24 @@ impl MeridianVault {
         // Accumulate cost basis so the UI can display yield earned.
         let principal_key = DataKey::Principal(caller.clone());
         let prev_principal: i128 = env.storage().persistent().get(&principal_key).unwrap_or(0);
+        let new_principal = prev_principal + amount;
+        let new_total_shares = total_shares + shares_to_mint;
+        let new_total_adapter_shares = total_adapter_shares + adapter_shares;
         env.storage()
             .persistent()
-            .set(&principal_key, &(prev_principal + amount));
+            .set(&principal_key, &new_principal);
+
+        env.events().publish(
+            (symbol_short!("deposit"), caller),
+            DepositEvent {
+                amount,
+                shares_minted: shares_to_mint,
+                adapter_shares_minted: adapter_shares,
+                total_shares: new_total_shares,
+                total_adapter_shares: new_total_adapter_shares,
+                principal: new_principal,
+            },
+        );
 
         Ok(shares_to_mint)
     }
@@ -374,15 +433,30 @@ impl MeridianVault {
             .ok_or(ContractError::Overflow)?
             .checked_div(caller_shares)
             .ok_or(ContractError::Overflow)?;
+        let remaining_principal = principal - principal_out;
         env.storage()
             .persistent()
-            .set(&principal_key, &(principal - principal_out));
+            .set(&principal_key, &remaining_principal);
 
         // A full exit clears the entry time and cost basis so a later re-deposit
         // starts fresh.
         if remaining == 0 {
             Self::clear_position_records(&env, &caller);
         }
+
+        env.events().publish(
+            (symbol_short!("withdraw"), caller),
+            WithdrawEvent {
+                shares_burned: shares,
+                adapter_shares_burned: adapter_shares_to_burn,
+                usdc_out,
+                principal_removed: principal_out,
+                remaining_shares: remaining,
+                remaining_principal,
+                total_shares: total_shares - shares,
+                total_adapter_shares: total_adapter_shares - adapter_shares_to_burn,
+            },
+        );
 
         Ok(usdc_out)
     }
@@ -484,8 +558,10 @@ impl MeridianVault {
     /// Admin-only emergency switch. While paused, new deposits are rejected.
     /// Withdrawals are deliberately left open so a pause can never trap funds.
     pub fn set_paused(env: Env, paused: bool) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        let admin = Self::require_admin(&env)?;
         env.storage().instance().set(&PAUSED, &paused);
+        env.events()
+            .publish((symbol_short!("paused"), admin), paused);
         Ok(())
     }
 
@@ -502,8 +578,10 @@ impl MeridianVault {
     /// key on the other end proves it can sign. Overwrites any prior,
     /// not-yet-accepted nomination.
     pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        let admin = Self::require_admin(&env)?;
         env.storage().instance().set(&PEND_ADM, &new_admin);
+        env.events()
+            .publish((symbol_short!("adm_nom"), admin, new_admin), ());
         Ok(())
     }
 
@@ -513,6 +591,11 @@ impl MeridianVault {
     /// working signing key. Fails with `NoPendingAdmin` if no
     /// `transfer_admin` nomination is outstanding.
     pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN)
+            .ok_or(ContractError::NotInitialized)?;
         let pending: Address = env
             .storage()
             .instance()
@@ -521,6 +604,8 @@ impl MeridianVault {
         pending.require_auth();
         env.storage().instance().set(&ADMIN, &pending);
         env.storage().instance().remove(&PEND_ADM);
+        env.events()
+            .publish((symbol_short!("set_admin"), old_admin, pending), ());
         Ok(())
     }
 
@@ -545,8 +630,13 @@ impl MeridianVault {
         if Self::get_total_shares(env.clone()) > 0 {
             return Err(ContractError::AdapterSwapUnsafe);
         }
+        let old_adapter = Self::get_adapter(env.clone())?;
         env.storage().instance().set(&ADAPTER, &new_adapter);
         env.storage().instance().set(&ADPT_SH, &0_i128);
+        env.events().publish(
+            (symbol_short!("set_adapt"), old_adapter, new_adapter),
+            0_i128,
+        );
         Ok(())
     }
 
@@ -672,6 +762,16 @@ impl MeridianVault {
 
         env.storage().instance().set(&ADAPTER, &new_adapter);
         env.storage().instance().set(&ADPT_SH, &new_shares);
+        env.events().publish(
+            (symbol_short!("migrate"), old_adapter_addr, new_adapter),
+            MigrationEvent {
+                withdrawn,
+                new_adapter_shares: new_shares,
+                value_before,
+                value_after,
+                max_slippage_bps,
+            },
+        );
         Ok(())
     }
 
@@ -679,14 +779,14 @@ impl MeridianVault {
     // Helpers
     // -----------------------------------------------------------------------
 
-    fn require_admin(env: &Env) -> Result<(), ContractError> {
+    fn require_admin(env: &Env) -> Result<Address, ContractError> {
         let admin: Address = env
             .storage()
             .instance()
             .get(&ADMIN)
             .ok_or(ContractError::NotInitialized)?;
         admin.require_auth();
-        Ok(())
+        Ok(admin)
     }
 
     fn usdc(env: &Env) -> Result<Address, ContractError> {
@@ -709,12 +809,16 @@ impl MeridianVault {
     /// `get_principal`, `get_entry_time`, `deposit`, and `withdraw`'s
     /// full-exit branch).
     fn clear_position_records(env: &Env, address: &Address) {
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Entry(address.clone()));
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Principal(address.clone()));
+        let entry_key = DataKey::Entry(address.clone());
+        let principal_key = DataKey::Principal(address.clone());
+        let changed = env.storage().persistent().has(&entry_key)
+            || env.storage().persistent().has(&principal_key);
+        env.storage().persistent().remove(&entry_key);
+        env.storage().persistent().remove(&principal_key);
+        if changed {
+            env.events()
+                .publish((symbol_short!("clear_pos"), address.clone()), ());
+        }
     }
 }
 
@@ -727,9 +831,9 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         contract, contractimpl, panic_with_error, symbol_short,
-        testutils::{Address as _, Ledger as _},
+        testutils::{Address as _, Events as _, Ledger as _},
         token::{StellarAssetClient, TokenClient},
-        Address, Env, Symbol,
+        Address, Env, IntoVal, Symbol, TryFromVal, Val, Vec,
     };
 
     // Reads an instance-storage value, panicking with the typed
@@ -1055,8 +1159,7 @@ mod tests {
         (env, admin, user, usdc_id, musdc_id, adapter_id, vault)
     }
 
-    // Returns (env, admin, user, usdc_id, musdc_id, adapter_id, vault)
-    fn setup() -> (
+    fn setup_before_initialize() -> (
         Env,
         Address,
         Address,
@@ -1066,41 +1169,92 @@ mod tests {
         MeridianVaultClient<'static>,
     ) {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let user = Address::generate(&env);
-
-        // Deploy mock USDC and mUSDC tokens.
         let usdc_id = env
             .register_stellar_asset_contract_v2(admin.clone())
             .address();
         let musdc_id = env
             .register_stellar_asset_contract_v2(admin.clone())
             .address();
-
         let adapter_id = env.register(MockAdapter, ());
         MockAdapterClient::new(&env, &adapter_id).initialize(&usdc_id);
-
+        StellarAssetClient::new(&env, &musdc_id).set_admin(&admin);
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &10_000_000_000_i128);
         let vault_id = env.register(MeridianVault, ());
         let vault = MeridianVaultClient::new(&env, &vault_id);
-        vault.initialize(&admin, &usdc_id, &musdc_id, &adapter_id);
-
-        StellarAssetClient::new(&env, &musdc_id).set_admin(&vault_id);
-
-        // Fund the user with 1000 USDC (7 decimal places: 1000 * 10^7).
-        StellarAssetClient::new(&env, &usdc_id).mint(&user, &10_000_000_000_i128);
 
         (env, admin, user, usdc_id, musdc_id, adapter_id, vault)
     }
 
+    fn setup() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        Address,
+        Address,
+        MeridianVaultClient<'static>,
+    ) {
+        let (env, admin, user, usdc_id, musdc_id, adapter_id, vault) = setup_before_initialize();
+        vault.initialize(&admin, &usdc_id, &musdc_id, &adapter_id);
+        StellarAssetClient::new(&env, &musdc_id).set_admin(&vault.address);
+        (env, admin, user, usdc_id, musdc_id, adapter_id, vault)
+    }
+
+    fn assert_last_event<T>(env: &Env, _contract: &Address, topics: Vec<Val>, data: T)
+    where
+        T: TryFromVal<Env, Val> + core::fmt::Debug + PartialEq,
+        <T as TryFromVal<Env, Val>>::Error: core::fmt::Debug,
+    {
+        let events = env.events().all();
+        let event = events
+            .iter()
+            .rev()
+            .find(|event| event.1 == topics)
+            .unwrap_or_else(|| panic!("event not found; count={}", events.len()));
+        assert_eq!(T::try_from_val(env, &event.2).unwrap(), data);
+    }
+
+    #[test]
+    fn initialize_publishes_event() {
+        let (env, admin, _user, usdc, musdc, adapter, vault) = setup_before_initialize();
+        vault.initialize(&admin, &usdc, &musdc, &adapter);
+        let expected_topics = (symbol_short!("init"), admin, adapter).into_val(&env);
+        let events = env.events().all();
+        let event = events
+            .iter()
+            .rev()
+            .find(|event| event.0 == vault.address && event.1 == expected_topics)
+            .unwrap_or_else(|| panic!("init event not found; count={}", events.len()));
+        assert_eq!(
+            <(Address, Address)>::try_from_val(&env, &event.2).unwrap(),
+            (usdc, musdc)
+        );
+    }
+
     #[test]
     fn deposit_mints_shares() {
-        let (_env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
+        let (env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
 
         let amount = 100_0000000_i128;
         let shares = vault.deposit(&user, &amount);
 
+        assert_last_event(
+            &env,
+            &vault.address,
+            (symbol_short!("deposit"), user.clone()).into_val(&env),
+            DepositEvent {
+                amount,
+                shares_minted: amount,
+                adapter_shares_minted: amount,
+                total_shares: amount,
+                total_adapter_shares: amount,
+                principal: amount,
+            },
+        );
         assert_eq!(shares, amount);
         assert_eq!(vault.get_position(&user), amount);
         assert_eq!(vault.get_total_shares(), amount);
@@ -1116,6 +1270,21 @@ mod tests {
         let shares = vault.get_position(&user);
         let usdc_out = vault.withdraw(&user, &shares, &0_i128);
 
+        assert_last_event(
+            &env,
+            &vault.address,
+            (symbol_short!("withdraw"), user.clone()).into_val(&env),
+            WithdrawEvent {
+                shares_burned: amount,
+                adapter_shares_burned: amount,
+                usdc_out: amount,
+                principal_removed: amount,
+                remaining_shares: 0,
+                remaining_principal: 0,
+                total_shares: 0,
+                total_adapter_shares: 0,
+            },
+        );
         assert_eq!(usdc_out, amount);
         assert_eq!(vault.get_position(&user), 0);
         assert_eq!(vault.get_total_shares(), 0);
@@ -1306,9 +1475,21 @@ mod tests {
 
     #[test]
     fn unpause_re_enables_deposits() {
-        let (_env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
+        let (env, admin, user, _usdc, _musdc, _adapter, vault) = setup();
         vault.set_paused(&true);
+        assert_last_event(
+            &env,
+            &vault.address,
+            (symbol_short!("paused"), admin.clone()).into_val(&env),
+            true,
+        );
         vault.set_paused(&false);
+        assert_last_event(
+            &env,
+            &vault.address,
+            (symbol_short!("paused"), admin).into_val(&env),
+            false,
+        );
         assert!(!vault.is_paused());
 
         let shares = vault.deposit(&user, &100_0000000_i128);
@@ -1322,11 +1503,23 @@ mod tests {
 
         let new_admin = Address::generate(&env);
         vault.transfer_admin(&new_admin);
+        assert_last_event(
+            &env,
+            &vault.address,
+            (symbol_short!("adm_nom"), admin.clone(), new_admin.clone()).into_val(&env),
+            (),
+        );
         // Nominating alone does not change who the admin is yet.
-        assert_eq!(vault.get_admin(), admin);
+        assert_eq!(vault.get_admin(), admin.clone());
         assert_eq!(vault.get_pending_admin(), Some(new_admin.clone()));
 
         vault.accept_admin();
+        assert_last_event(
+            &env,
+            &vault.address,
+            (symbol_short!("set_admin"), admin, new_admin.clone()).into_val(&env),
+            (),
+        );
         assert_eq!(vault.get_admin(), new_admin);
         // The pending nomination is cleared once accepted.
         assert_eq!(vault.get_pending_admin(), None);
@@ -1638,17 +1831,32 @@ mod tests {
 
     #[test]
     fn set_adapter_succeeds_with_no_shares_outstanding() {
-        let (env, _admin, _user, _usdc, _musdc, _adapter, vault) = setup();
+        let (env, _admin, _user, usdc, _musdc, old_adapter, vault) = setup();
         let new_adapter_id = env.register(MockAdapter, ());
-        MockAdapterClient::new(&env, &new_adapter_id).initialize(&_usdc);
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc);
         let result = vault.try_set_adapter(&new_adapter_id);
         assert_eq!(result, Ok(Ok(())));
-        assert_eq!(vault.get_adapter(), new_adapter_id);
+        let events = env.events().all();
+        let event = events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.0 == vault.address
+                    && event.1
+                        == (
+                            symbol_short!("set_adapt"),
+                            old_adapter.clone(),
+                            new_adapter_id.clone(),
+                        )
+                            .into_val(&env)
+            })
+            .unwrap_or_else(|| panic!("set_adapter event not found; count={}", events.len()));
+        assert_eq!(i128::try_from_val(&env, &event.2).unwrap(), 0_i128);
     }
 
     #[test]
     fn migrate_adapter_moves_position_and_preserves_bookkeeping() {
-        let (env, _admin, user, usdc, _musdc, _adapter, vault) = setup();
+        let (env, _admin, user, usdc, _musdc, old_adapter, vault) = setup();
         let amount = 100_0000000_i128;
         vault.deposit(&user, &amount);
 
@@ -1660,6 +1868,31 @@ mod tests {
 
         let result = vault.try_migrate_adapter(&new_adapter_id, &0);
         assert_eq!(result, Ok(Ok(())));
+        let events = env.events().all();
+        let event = events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.0 == vault.address
+                    && event.1
+                        == (
+                            symbol_short!("migrate"),
+                            old_adapter.clone(),
+                            new_adapter_id.clone(),
+                        )
+                            .into_val(&env)
+            })
+            .unwrap_or_else(|| panic!("migrate event not found; count={}", events.len()));
+        assert_eq!(
+            MigrationEvent::try_from_val(&env, &event.2).unwrap(),
+            MigrationEvent {
+                withdrawn: amount,
+                new_adapter_shares: amount,
+                value_before: amount,
+                value_after: amount,
+                max_slippage_bps: 0,
+            }
+        );
 
         assert_eq!(vault.get_adapter(), new_adapter_id);
         // Per-depositor bookkeeping is denominated in vault shares, not
