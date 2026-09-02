@@ -18,9 +18,16 @@ use soroban_sdk::{
 const POOL_KEY: Symbol = symbol_short!("POOL");
 const TOTAL_KEY: Symbol = symbol_short!("TOTAL");
 
-// Blend RequestType constants
-const REQUEST_SUPPLY: u32 = 2;
-const REQUEST_WITHDRAW: u32 = 3;
+// Blend RequestType constants, per
+// blend-contracts-v2/pool/src/request_type.rs (submitted against the pool's
+// `submit`). The "collateral" suffix is deliberate and load-bearing: this
+// adapter deposits into the collateral map, NOT Blend's plain supply map, and
+// deposit()/accrue() read bToken position from `Positions.collateral`. A
+// future Blend renumbering (or a plain "supply" request) would silently credit
+// an empty bucket and yield a zero-credit deposit; these are pinned here and
+// guarded by the deposit test asserting a strictly-positive credit delta.
+const REQUEST_SUPPLY_COLLATERAL: u32 = 2;
+const REQUEST_WITHDRAW_COLLATERAL: u32 = 3;
 
 // Fixed-point base Blend's own contracts use for `Reserve.data.b_rate` (the
 // bToken-to-underlying-asset exchange rate). This is a protocol-wide constant
@@ -151,6 +158,35 @@ pub struct RefreshEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdapterDepositEvent {
+    pub amount: i128,
+    pub shares_credited: i128,
+    pub total_assets: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdapterWithdrawEvent {
+    pub shares_redeemed: i128,
+    pub amount_out: i128,
+    pub total_assets: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefreshEvent {
+    pub previous_total_assets: i128,
+    pub total_assets: i128,
+    pub b_tokens: i128,
+    pub b_rate: i128,
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
@@ -238,6 +274,10 @@ impl MeridianBlendAdapter {
             (symbol_short!("init"), vault.clone(), pool.clone()),
             usdc.clone(),
         );
+        env.events().publish(
+            (symbol_short!("init"), vault.clone(), pool.clone()),
+            usdc.clone(),
+        );
     }
 
     /// Called by the vault after transferring `amount` USDC to this adapter.
@@ -256,11 +296,26 @@ impl MeridianBlendAdapter {
 
         let adapter = env.current_contract_address();
 
+        let client = BlendPoolClient::new(&env, &pool);
+        let index = client.get_reserve(&usdc).config.index;
+        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
+        let b_tokens_before = client
+            .get_positions(&adapter)
+            .collateral
+            .get(index)
+            .unwrap_or(0);
+
         // Blend's pool pulls `amount` USDC from us (the spender) via its own
         // internal token.transfer call, not one we make directly. Self-auth via
         // direct invocation only covers calls WE make; it does not extend to
         // this nested transfer the pool triggers on our behalf several frames
-        // down the stack, so we must pre-authorize it explicitly.
+        // down the stack, so we must pre-authorize it explicitly. This has to
+        // be the LAST thing before `submit()`, with no other cross-contract
+        // call in between: the tracker this creates is torn down the moment
+        // any sub-invocation returns and its own call stack empties back out
+        // (see `InvokerContractAuthorizationTracker`/`pop_frame`), so an
+        // intervening call like `get_reserve()`/`get_positions()` above
+        // silently expires it before `submit()` ever gets to consume it.
         env.authorize_as_current_contract(vec![
             &env,
             InvokerContractAuthEntry::Contract(SubContractInvocation {
@@ -273,15 +328,6 @@ impl MeridianBlendAdapter {
             }),
         ]);
 
-        let client = BlendPoolClient::new(&env, &pool);
-        let index = client.get_reserve(&usdc).config.index;
-        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
-        let b_tokens_before = client
-            .get_positions(&adapter)
-            .collateral
-            .get(index)
-            .unwrap_or(0);
-
         client.submit(
             &adapter,
             &adapter,
@@ -289,7 +335,7 @@ impl MeridianBlendAdapter {
             &vec![
                 &env,
                 Request {
-                    request_type: REQUEST_SUPPLY,
+                    request_type: REQUEST_SUPPLY_COLLATERAL,
                     address: usdc,
                     amount,
                 },
@@ -308,6 +354,16 @@ impl MeridianBlendAdapter {
         // initialize() sets this key to 0. This unwrap_or pattern is the idiomatic way to handle
         // optional storage values in Soroban.
         let prev: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
+        let total_assets = prev + amount;
+        env.storage().instance().set(&TOTAL_KEY, &total_assets);
+        env.events().publish(
+            (symbol_short!("deposit"), adapter),
+            AdapterDepositEvent {
+                amount,
+                shares_credited: b_tokens_credited,
+                total_assets,
+            },
+        );
         let total_assets = prev + amount;
         env.storage().instance().set(&TOTAL_KEY, &total_assets);
         env.events().publish(
@@ -355,7 +411,7 @@ impl MeridianBlendAdapter {
             &vec![
                 &env,
                 Request {
-                    request_type: REQUEST_WITHDRAW,
+                    request_type: REQUEST_WITHDRAW_COLLATERAL,
                     address: usdc,
                     amount: request_amount,
                 },
@@ -383,6 +439,14 @@ impl MeridianBlendAdapter {
                 total_assets: remaining,
             },
         );
+        env.events().publish(
+            (symbol_short!("withdraw"), recipient),
+            AdapterWithdrawEvent {
+                shares_redeemed: shares,
+                amount_out: delivered,
+                total_assets: remaining,
+            },
+        );
 
         delivered
     }
@@ -399,6 +463,30 @@ impl MeridianBlendAdapter {
     /// drift between the stored total and Blend's actual accounting.
     pub fn accrue(env: Env) -> Result<(), ContractError> {
         Self::refresh_total(&env, symbol_short!("accrue"))
+        Self::refresh_total(&env, symbol_short!("accrue"))
+        let pool: Address = env
+            .storage()
+            .instance()
+            .get(&POOL_KEY)
+            .ok_or(ContractError::NotInitialized)?;
+        let usdc = get_usdc(&env);
+        let adapter = env.current_contract_address();
+
+        let client = BlendPoolClient::new(&env, &pool);
+        let reserve = client.get_reserve(&usdc);
+        let positions = client.get_positions(&adapter);
+        // Map.get() safely returns Option, defaulting to 0 if the index doesn't exist.
+        let b_tokens = positions.collateral.get(reserve.config.index).unwrap_or(0);
+
+        let current_value = b_tokens_to_usdc(b_tokens, reserve.data.b_rate)?;
+
+        let prev: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
+        env.storage().instance().set(&TOTAL_KEY, &current_value);
+
+        env.events()
+            .publish((symbol_short!("accrue"),), (prev, current_value));
+
+        Ok(())
     }
 
     /// Refreshes the cached total_assets to include yield accrued since the
@@ -416,8 +504,38 @@ impl MeridianBlendAdapter {
     /// failure into a silent no-op success.
     pub fn refresh(env: Env) {
         if let Err(err) = Self::refresh_total(&env, symbol_short!("refresh")) {
+        if let Err(err) = Self::refresh_total(&env, symbol_short!("refresh")) {
             panic_with_error!(&env, err);
         }
+    }
+
+    fn refresh_total(env: &Env, action: Symbol) -> Result<(), ContractError> {
+        let pool: Address = env
+            .storage()
+            .instance()
+            .get(&POOL_KEY)
+            .ok_or(ContractError::NotInitialized)?;
+        let usdc = get_usdc(env);
+        let adapter = env.current_contract_address();
+
+        let client = BlendPoolClient::new(env, &pool);
+        let reserve = client.get_reserve(&usdc);
+        let positions = client.get_positions(&adapter);
+        let b_tokens = positions.collateral.get(reserve.config.index).unwrap_or(0);
+        let current_value = b_tokens_to_usdc(b_tokens, reserve.data.b_rate)?;
+        let previous_total_assets: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
+
+        env.storage().instance().set(&TOTAL_KEY, &current_value);
+        env.events().publish(
+            (action, adapter),
+            RefreshEvent {
+                previous_total_assets,
+                total_assets: current_value,
+                b_tokens,
+                b_rate: reserve.data.b_rate,
+            },
+        );
+        Ok(())
     }
 
     fn refresh_total(env: &Env, action: Symbol) -> Result<(), ContractError> {
@@ -459,6 +577,25 @@ impl MeridianBlendAdapter {
         env.storage().instance().get(&TOTAL_KEY).unwrap_or(0)
     }
 
+    /// Returns the adapter's current bToken share balance, read directly from
+    /// Blend's ledger rather than self-tracked.
+    pub fn total_shares(env: Env) -> i128 {
+        let pool: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&POOL_KEY),
+        );
+        let usdc = get_usdc(&env);
+        let adapter = env.current_contract_address();
+
+        let client = BlendPoolClient::new(&env, &pool);
+        let reserve = client.get_reserve(&usdc);
+        client
+            .get_positions(&adapter)
+            .collateral
+            .get(reserve.config.index)
+            .unwrap_or(0)
+    }
+
     /// Returns the Blend pool this adapter supplies to.
     pub fn get_pool(env: Env) -> Address {
         adapter_common::get_or_not_initialized::<_, ContractError>(
@@ -483,7 +620,12 @@ mod tests {
     use soroban_sdk::{
         contract, contractimpl, symbol_short,
         testutils::{Address as _, Events as _},
+        contract, contractimpl, symbol_short,
+        testutils::{Address as _, Events as _},
+        contract, contractimpl,
+        testutils::{Address as _, Events, MockAuth, MockAuthInvoke},
         token::{StellarAssetClient, TokenClient},
+        Address, Env, IntoVal, TryFromVal,
         Address, Env, IntoVal, TryFromVal,
     };
 
@@ -544,14 +686,14 @@ mod tests {
             let mut collateral: i128 = env.storage().instance().get(&M_COLLAT).unwrap_or(0);
 
             for req in requests.iter() {
-                if req.request_type == REQUEST_SUPPLY {
+                if req.request_type == REQUEST_SUPPLY_COLLATERAL {
                     TokenClient::new(&env, &req.address).transfer(
                         &from,
                         &env.current_contract_address(),
                         &req.amount,
                     );
                     collateral += req.amount * scalar / rate;
-                } else if req.request_type == REQUEST_WITHDRAW {
+                } else if req.request_type == REQUEST_WITHDRAW_COLLATERAL {
                     collateral -= req.amount * scalar / rate;
                     TokenClient::new(&env, &req.address).transfer(
                         &env.current_contract_address(),
@@ -664,6 +806,10 @@ mod tests {
         // vault transferring into the adapter, matching real vault behaviour.
         StellarAssetClient::new(&env, &usdc_id).mint(&vault, &10_000_000_000_i128);
 
+        // Fund the vault (the caller of deposit) with USDC, then act as the
+        // vault transferring into the adapter, matching real vault behaviour.
+        StellarAssetClient::new(&env, &usdc_id).mint(&vault, &10_000_000_000_i128);
+
         // Registered with constructor arguments, which is how every real
         // deployment of this contract is now wired: there is no
         // deploy-then-initialize path left to exercise.
@@ -674,6 +820,53 @@ mod tests {
         let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
 
         (env, vault, usdc_id, adapter, pool)
+    }
+
+    #[test]
+    fn constructor_publishes_event() {
+        let (env, vault, usdc, adapter, pool) = setup();
+        let topics = (symbol_short!("init"), vault, pool.address).into_val(&env);
+        let event = env
+            .events()
+            .all()
+            .iter()
+            .find(|event| event.0 == adapter.address && event.1 == topics)
+            .unwrap();
+        assert_eq!(Address::try_from_val(&env, &event.2).unwrap(), usdc);
+    }
+
+    /// Same registration as `setup()`, without `mock_all_auths_allowing_non_root_auth()`.
+    /// Shared by tests that need Blend's real, enforcing auth-tree check to
+    /// run (either to prove a call is rejected without authorization, or to
+    /// exercise the real call shape via `env.mock_auths`), since `setup()`'s
+    /// blanket auth-mocking would mask both.
+    fn setup_without_mock_auths() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        MeridianBlendAdapterClient<'static>,
+        MockBlendPoolClient<'static>,
+    ) {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let vault = Address::generate(&env);
+
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        let pool_id = env.register(MockBlendPool, ());
+        let pool = MockBlendPoolClient::new(&env, &pool_id);
+        pool.initialize(&SCALAR, &RESERVE_INDEX);
+
+        let adapter_id = env.register(
+            MeridianBlendAdapter,
+            (vault.clone(), pool_id.clone(), usdc_id.clone()),
+        );
+        let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
+
+        (env, admin, vault, usdc_id, adapter, pool)
     }
 
     #[test]
@@ -712,6 +905,106 @@ mod tests {
                 total_assets: amount,
             }
         );
+        let (contract, topics, data) = env.events().all().last().unwrap();
+        assert_eq!(contract, adapter.address);
+        assert_eq!(
+            topics,
+            (symbol_short!("deposit"), adapter.address.clone()).into_val(&env)
+        );
+        assert_eq!(
+            AdapterDepositEvent::try_from_val(&env, &data).unwrap(),
+            AdapterDepositEvent {
+                amount,
+                shares_credited: amount,
+                total_assets: amount,
+            }
+        );
+    }
+
+    // `setup()` runs under `mock_all_auths_allowing_non_root_auth()`, which
+    // switches the env into recording mode and accepts every `require_auth`
+    // unconditionally — it never actually walks the authorization tree, so it
+    // cannot catch a malformed `authorize_as_current_contract()` call. This
+    // test instead mocks only the two real signer-facing invocations (the
+    // vault funding the adapter, and the vault calling deposit) and lets
+    // Blend's real, enforcing auth-tree check run against everything
+    // `deposit()` triggers underneath, including the pool's own nested
+    // `usdc.transfer()` call, exactly like a live network would. Guards
+    // `authorize_as_current_contract()` above against silently regressing
+    // into a shape that only passes under the mocked test harness.
+    #[test]
+    fn deposit_authorization_tree_matches_the_real_pool_call_shape() {
+        let (env, admin, vault, usdc_id, adapter, _pool) = setup_without_mock_auths();
+
+        let mint_amount = 10_000_000_000_i128;
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &usdc_id,
+                fn_name: "mint",
+                args: (vault.clone(), mint_amount).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        StellarAssetClient::new(&env, &usdc_id).mint(&vault, &mint_amount);
+
+        let amount = 100_0000000_i128;
+
+        env.mock_auths(&[MockAuth {
+            address: &vault,
+            invoke: &MockAuthInvoke {
+                contract: &usdc_id,
+                fn_name: "transfer",
+                args: (vault.clone(), adapter.address.clone(), amount).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+
+        env.mock_auths(&[MockAuth {
+            address: &vault,
+            invoke: &MockAuthInvoke {
+                contract: &adapter.address,
+                fn_name: "deposit",
+                args: (amount,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let shares = adapter.deposit(&amount);
+
+        assert_eq!(shares, amount);
+    }
+
+    #[test]
+    fn total_shares_reads_the_pool_s_live_collateral_balance() {
+        let (env, vault, usdc_id, adapter, _pool) = setup();
+        assert_eq!(adapter.total_shares(), 0);
+
+        let amount = 100_0000000_i128;
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        // total_shares() reads Blend's own collateral map live, independent
+        // of anything the vault separately tracks -- it must agree with the
+        // bToken credit deposit() itself just returned.
+        assert_eq!(adapter.total_shares(), shares);
+    }
+
+    #[test]
+    fn deposit_credits_strictly_positive_b_tokens() {
+        // Pin the semantics of REQUEST_SUPPLY_COLLATERAL: deposit() must
+        // credit real, strictly-positive bTokens into Blend's collateral map.
+        // A future Blend renumbering that maps the constant to a plain
+        // "supply" request (or any behaviour that credits an empty bucket)
+        // would surface here as a zero-credit deposit and fail this test,
+        // rather than silently breaking the adapter's share accounting.
+        let (env, vault, usdc_id, adapter, _pool) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        assert!(shares > 0, "deposit must credit strictly-positive bTokens");
     }
 
     #[test]
@@ -758,7 +1051,43 @@ mod tests {
                 b_rate: new_rate,
             }
         );
+        let (contract, topics, data) = env.events().all().last().unwrap();
+        assert_eq!(contract, adapter.address);
+        assert_eq!(
+            topics,
+            (symbol_short!("accrue"), adapter.address.clone()).into_val(&env)
+        );
+        assert_eq!(
+            RefreshEvent::try_from_val(&env, &data).unwrap(),
+            RefreshEvent {
+                previous_total_assets: amount,
+                total_assets: amount + amount / 10,
+                b_tokens: amount,
+                b_rate: new_rate,
+            }
+        );
         assert_eq!(adapter.total_assets(), amount + amount / 10);
+    }
+
+    #[test]
+    fn refresh_publishes_event() {
+        let (env, _vault, _usdc, adapter, _pool) = setup();
+        adapter.refresh();
+        let (contract, topics, data) = env.events().all().last().unwrap();
+        assert_eq!(contract, adapter.address);
+        assert_eq!(
+            topics,
+            (symbol_short!("refresh"), adapter.address.clone()).into_val(&env)
+        );
+        assert_eq!(
+            RefreshEvent::try_from_val(&env, &data).unwrap(),
+            RefreshEvent {
+                previous_total_assets: 0,
+                total_assets: 0,
+                b_tokens: 0,
+                b_rate: SCALAR,
+            }
+        );
     }
 
     #[test]
@@ -886,6 +1215,20 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
+    fn withdraw_panics_on_overflow() {
+        let (env, vault, usdc_id, adapter, pool) = setup();
+        let amount = 2_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        pool.set_rate(&i128::MAX);
+        let recipient = Address::generate(&env);
+        adapter.withdraw(&shares, &recipient);
+    }
+
+    #[test]
     fn withdraw_returns_usdc_and_reduces_total() {
         let (env, vault, usdc_id, adapter, _pool) = setup();
         let amount = 100_0000000_i128;
@@ -897,6 +1240,20 @@ mod tests {
         let usdc_out = adapter.withdraw(&amount, &recipient);
 
         assert_eq!(usdc_out, amount);
+        let (contract, topics, data) = env.events().all().last().unwrap();
+        assert_eq!(contract, adapter.address);
+        assert_eq!(
+            topics,
+            (symbol_short!("withdraw"), recipient.clone()).into_val(&env)
+        );
+        assert_eq!(
+            AdapterWithdrawEvent::try_from_val(&env, &data).unwrap(),
+            AdapterWithdrawEvent {
+                shares_redeemed: amount,
+                amount_out: amount,
+                total_assets: 0,
+            }
+        );
         let (contract, topics, data) = env.events().all().last().unwrap();
         assert_eq!(contract, adapter.address);
         assert_eq!(
@@ -998,19 +1355,7 @@ mod tests {
     fn deposit_requires_vault_auth() {
         // No mock_all_auths here: vault.require_auth() inside deposit() must
         // panic since nothing has authorized the stored vault address.
-        let env = Env::default();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let usdc_id = env
-            .register_stellar_asset_contract_v2(admin.clone())
-            .address();
-        let pool_id = env.register(MockBlendPool, ());
-        MockBlendPoolClient::new(&env, &pool_id).initialize(&SCALAR, &RESERVE_INDEX);
-        let adapter_id = env.register(
-            MeridianBlendAdapter,
-            (vault.clone(), pool_id.clone(), usdc_id.clone()),
-        );
-        let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
+        let (_env, _admin, _vault, _usdc_id, adapter, _pool) = setup_without_mock_auths();
 
         adapter.deposit(&100_0000000_i128);
     }
@@ -1018,21 +1363,50 @@ mod tests {
     #[test]
     #[should_panic]
     fn withdraw_requires_vault_auth() {
-        let env = Env::default();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let usdc_id = env
-            .register_stellar_asset_contract_v2(admin.clone())
-            .address();
-        let pool_id = env.register(MockBlendPool, ());
-        MockBlendPoolClient::new(&env, &pool_id).initialize(&SCALAR, &RESERVE_INDEX);
-        let adapter_id = env.register(
-            MeridianBlendAdapter,
-            (vault.clone(), pool_id.clone(), usdc_id.clone()),
-        );
-        let adapter = MeridianBlendAdapterClient::new(&env, &adapter_id);
+        let (env, _admin, _vault, _usdc_id, adapter, _pool) = setup_without_mock_auths();
 
         let recipient = Address::generate(&env);
         adapter.withdraw(&100_0000000_i128, &recipient);
+    }
+
+    #[test]
+    fn accrue_publishes_event_on_success() {
+        let (env, vault, usdc_id, adapter, pool) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        let new_rate = SCALAR + SCALAR / 10;
+        pool.set_rate(&new_rate);
+
+        assert_eq!(adapter.try_accrue(), Ok(Ok(())));
+
+        let events = env.events().all();
+        let accrue_event = events
+            .into_iter()
+            .find(|e| {
+                if e.0 == adapter.address && e.1.len() == 1 {
+                    if let Ok(topic) =
+                        soroban_sdk::TryIntoVal::<_, soroban_sdk::Symbol>::try_into_val(
+                            &e.1.get(0).unwrap(),
+                            &env,
+                        )
+                    {
+                        topic == symbol_short!("accrue")
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            })
+            .expect("accrue event not found");
+
+        let expected_prev = amount;
+        let expected_new = amount + amount / 10;
+        let data: (i128, i128) =
+            soroban_sdk::TryIntoVal::try_into_val(&accrue_event.2, &env).unwrap();
+        assert_eq!(data, (expected_prev, expected_new));
     }
 }

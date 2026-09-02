@@ -3,6 +3,21 @@ import type { ApiVault, PositionInfo } from "@meridian/stellar-sdk-helpers";
 export type { ApiVault };
 export type ApiPosition = PositionInfo;
 
+export interface KeeperHealthEntry {
+  id: "accrual" | "migration";
+  intervalMs: number;
+  lastSuccessMs: number | null;
+  healthy: boolean;
+}
+
+export interface VaultState {
+  protocol: string;
+  adapterId: string;
+  totalShares: number;
+  totalAssets: number;
+  paused: boolean;
+}
+
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -52,6 +67,7 @@ export const api = {
     walletAddress: string;
     vaultId: string;
     amount: string;
+    min_shares_out?: string;
   }) =>
     apiFetch<{ xdr: string; fee: string }>("/api/v1/tx/deposit", {
       method: "POST",
@@ -61,6 +77,7 @@ export const api = {
     walletAddress: string;
     vaultId: string;
     shares: string;
+    min_usdc_out?: string;
   }) =>
     apiFetch<{ xdr: string; fee: string }>("/api/v1/tx/withdraw", {
       method: "POST",
@@ -71,4 +88,24 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  getKeeperHealth: () =>
+    apiFetch<{ keepers: KeeperHealthEntry[]; checkedAt: string }>(
+      "/api/v1/keepers/health"
+    ),
+  getVaultState: () => apiFetch<VaultState>("/api/v1/admin/vault-state"),
+  getAdminHistory: (vaultId: string) =>
+    apiFetch<{
+      vaultId: string;
+      contractId: string;
+      actions: Array<{
+        id: string;
+        type: string;
+        timestamp: string;
+        transactionHash: string;
+        sourceAccount: string;
+        summary: string;
+        details: Record<string, unknown>;
+      }>;
+      updatedAt: string;
+    }>(`/api/v1/admin/history?vaultId=${encodeURIComponent(vaultId)}`),
 };

@@ -2,9 +2,10 @@
 
 ## Web (`apps/web`)
 
-| Variable       | Required | Default | Description                                                                                                                       |
-| -------------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `VITE_API_URL` | No       | `""`    | Base URL of the API server. Empty means same origin. In local dev, Vite proxies `/api` to `localhost:3001` so this is not needed. |
+| Variable               | Required | Default | Description                                                                                                                                                                                                                                                                                                           |
+| ---------------------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_API_URL`         | No       | `""`    | Base URL of the API server. Empty means same origin. In local dev, Vite proxies `/api` to `localhost:3001` so this is not needed.                                                                                                                                                                                     |
+| `VITE_ADMIN_ADDRESSES` | No       | `""`    | Comma-separated Stellar public keys allowed onto `/admin`. Client-side only, and inlined into the public build like every `VITE_` variable — a placeholder gate for the Keeper Health/Vault State panels until #614 lands real server-enforced admin auth. Never treat this as access control for anything sensitive. |
 
 ## API: serverless (`api/v1/`) and Fastify (`apps/api-local`)
 

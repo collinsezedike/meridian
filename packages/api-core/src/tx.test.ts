@@ -43,7 +43,30 @@ describe("handleDepositRequest", () => {
     expect(result.status).toBe(200);
     expect(result.body).toEqual({ xdr: "DEPOSIT_XDR", fee: "100" });
     expect(result.error).toBeUndefined();
-    expect(buildDepositTx).toHaveBeenCalledOnce();
+    expect(buildDepositTx).toHaveBeenCalledWith(
+      "blend-usdc-fixed",
+      PUBKEY,
+      "10",
+      expect.anything(),
+      "0"
+    );
+  });
+
+  it("passes min_shares_out when provided in deposit request", async () => {
+    const result = await handleDepositRequest({
+      walletAddress: PUBKEY,
+      vaultId: "blend-usdc-fixed",
+      amount: "10",
+      min_shares_out: "9.5",
+    });
+    expect(result.status).toBe(200);
+    expect(buildDepositTx).toHaveBeenCalledWith(
+      "blend-usdc-fixed",
+      PUBKEY,
+      "10",
+      expect.anything(),
+      "9.5"
+    );
   });
 
   it("surfaces builder errors as 500 and returns the raw error for logging", async () => {
@@ -72,13 +95,36 @@ describe("handleWithdrawRequest", () => {
     });
   });
 
-  it("builds the withdraw transaction", async () => {
+  it("builds the withdraw transaction, defaulting min_usdc_out to 0", async () => {
     const result = await handleWithdrawRequest({
       walletAddress: PUBKEY,
       vaultId: "blend-usdc-fixed",
       shares: "5",
     });
     expect(result.body).toEqual({ xdr: "WITHDRAW_XDR", fee: "100" });
+    expect(buildWithdrawTx).toHaveBeenCalledWith(
+      "blend-usdc-fixed",
+      PUBKEY,
+      "5",
+      expect.anything(),
+      "0"
+    );
+  });
+
+  it("forwards an explicit min_usdc_out to buildWithdrawTx", async () => {
+    await handleWithdrawRequest({
+      walletAddress: PUBKEY,
+      vaultId: "blend-usdc-fixed",
+      shares: "5",
+      min_usdc_out: "4.9",
+    });
+    expect(buildWithdrawTx).toHaveBeenCalledWith(
+      "blend-usdc-fixed",
+      PUBKEY,
+      "5",
+      expect.anything(),
+      "4.9"
+    );
   });
 
   it("surfaces builder errors as 500 and returns the raw error for logging", async () => {

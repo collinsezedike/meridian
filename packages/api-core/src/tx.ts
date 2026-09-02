@@ -24,12 +24,13 @@ export async function handleDepositRequest(
   }
 
   try {
-    const { walletAddress, vaultId, amount } = parsed.data;
+    const { walletAddress, vaultId, amount, min_shares_out } = parsed.data;
     const result = await buildDepositTx(
       vaultId,
       walletAddress,
       amount,
-      APP_NETWORK
+      APP_NETWORK,
+      min_shares_out
     );
     return { status: 200, body: result };
   } catch (err) {
@@ -52,12 +53,13 @@ export async function handleWithdrawRequest(
   }
 
   try {
-    const { walletAddress, vaultId, shares } = parsed.data;
+    const { walletAddress, vaultId, shares, min_usdc_out } = parsed.data;
     const result = await buildWithdrawTx(
       vaultId,
       walletAddress,
       shares,
-      APP_NETWORK
+      APP_NETWORK,
+      min_usdc_out
     );
     return { status: 200, body: result };
   } catch (err) {

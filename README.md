@@ -43,10 +43,12 @@ Inflation in many West African economies regularly exceeds 20 % annually. Access
 meridian/
 ├── apps/
 │   ├── web/          # Vite + React 19 dashboard (TypeScript, Tailwind, Zustand)
-│   ├── api/          # Fastify REST API (local dev): builds Soroban txs, aggregates APY
+│   ├── api-local/    # Fastify REST API (local dev only): builds Soroban txs, aggregates APY
 │   ├── docs/         # Internal architecture and operations docs
 │   └── landing/      # Marketing landing page
+├── api/              # Vercel serverless functions (api/v1/...) — the production API
 ├── packages/
+│   ├── api-core/             # Framework-agnostic route handlers shared by both servers
 │   ├── stellar-sdk-helpers/  # Blend & DeFindex client wrappers
 │   ├── shared/               # Zod schemas, constants, pure utils
 │   └── contracts/            # Soroban smart contracts (Rust): vault, blend-adapter, defindex-adapter

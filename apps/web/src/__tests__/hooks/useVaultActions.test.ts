@@ -155,7 +155,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("useVaultActions � deposit", () => {
+describe("useVaultActions — deposit", () => {
   it("builds, signs, and submits a deposit successfully", async () => {
     const { result } = renderHook(() => useVaultActions());
 
@@ -169,6 +169,7 @@ describe("useVaultActions � deposit", () => {
       walletAddress: KEY,
       vaultId: "blend-usdc-fixed",
       amount: "10",
+      min_shares_out: undefined,
     });
     expect(wallet.sign).toHaveBeenCalledWith(
       "DEPOSIT_XDR",
@@ -180,6 +181,28 @@ describe("useVaultActions � deposit", () => {
       message: "Deposited 10 USDC",
     });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["vaults"] });
+  });
+
+  it("passes minSharesOut when specified", async () => {
+    const { result } = renderHook(() => useVaultActions());
+
+    let ok: boolean | undefined;
+    await act(async () => {
+      ok = await result.current.deposit(
+        "10",
+        "blend-usdc-fixed",
+        "USDC",
+        "9.5"
+      );
+    });
+
+    expect(ok).toBe(true);
+    expect(api.buildDeposit).toHaveBeenCalledWith({
+      walletAddress: KEY,
+      vaultId: "blend-usdc-fixed",
+      amount: "10",
+      min_shares_out: "9.5",
+    });
   });
 
   it("returns false without calling the API when no publicKey", async () => {
@@ -200,7 +223,7 @@ describe("useVaultActions � deposit", () => {
   });
 });
 
-describe("useVaultActions � withdraw", () => {
+describe("useVaultActions — withdraw", () => {
   it("builds, signs, and submits a withdrawal successfully", async () => {
     const { result } = renderHook(() => useVaultActions());
 
@@ -214,6 +237,7 @@ describe("useVaultActions � withdraw", () => {
       walletAddress: KEY,
       vaultId: "blend-usdc-fixed",
       shares: "5",
+      min_usdc_out: undefined,
     });
     expect(wallet.sign).toHaveBeenCalled();
     expect(useToastStore.getState().toasts[0]).toMatchObject({
@@ -221,6 +245,28 @@ describe("useVaultActions � withdraw", () => {
       message: "Withdrew 5 USDC",
     });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["vaults"] });
+  });
+
+  it("passes minUsdcOut when specified", async () => {
+    const { result } = renderHook(() => useVaultActions());
+
+    let ok: boolean | undefined;
+    await act(async () => {
+      ok = await result.current.withdraw(
+        "5",
+        "blend-usdc-fixed",
+        "USDC",
+        "4.8"
+      );
+    });
+
+    expect(ok).toBe(true);
+    expect(api.buildWithdraw).toHaveBeenCalledWith({
+      walletAddress: KEY,
+      vaultId: "blend-usdc-fixed",
+      shares: "5",
+      min_usdc_out: "4.8",
+    });
   });
 
   it("pushes an error toast and returns false when withdraw fails", async () => {

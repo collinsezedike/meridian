@@ -113,6 +113,25 @@ describe("POST /api/v1/tx/deposit", () => {
     expect(res.json()).toMatchObject({ xdr: "TXXDR", fee: "100" });
   });
 
+  it("forwards min_shares_out when provided", async () => {
+    const app = buildApp();
+    vi.mocked(buildDepositTx).mockResolvedValue({ xdr: "TXXDR", fee: "100" });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/tx/deposit",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...validBody, min_shares_out: "9.5" }),
+    });
+    expect(buildDepositTx).toHaveBeenCalledWith(
+      "blend-usdc-fixed",
+      WALLET,
+      "10",
+      expect.anything(),
+      "9.5"
+    );
+  });
+
   it("returns 400 when walletAddress is missing", async () => {
     const app = buildApp();
     const res = await app.inject({
@@ -175,6 +194,28 @@ describe("POST /api/v1/tx/withdraw", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ xdr: "WITHDRAWXDR", fee: "100" });
+  });
+
+  it("forwards min_usdc_out when provided", async () => {
+    const app = buildApp();
+    vi.mocked(buildWithdrawTx).mockResolvedValue({
+      xdr: "WITHDRAWXDR",
+      fee: "100",
+    });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/tx/withdraw",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...validBody, min_usdc_out: "4.9" }),
+    });
+    expect(buildWithdrawTx).toHaveBeenCalledWith(
+      "blend-usdc-fixed",
+      WALLET,
+      "5",
+      expect.anything(),
+      "4.9"
+    );
   });
 
   it("returns 400 for a missing shares field", async () => {
