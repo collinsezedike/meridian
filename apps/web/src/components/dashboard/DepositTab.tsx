@@ -1,15 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { AmountInput } from "../ui/AmountInput";
 import type { ApiPosition, ApiVault } from "../../lib/api";
-
-function formatUsd(value: number, locale: string) {
-  return value.toLocaleString(locale === "fr" ? "fr-FR" : "en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
+import { formatUsd } from "../../lib/format";
 
 interface DepositTabProps {
   amount: string;

@@ -15,6 +15,8 @@ import {
   buildCoordinatorDepositTx,
   buildCoordinatorWithdrawTx,
   fetchCoordinatorPosition,
+  fetchVaultAdmin,
+  fetchCoordinatorState,
 } from "./coordinator";
 import { prepareSorobanTx, simulateView } from "./tx";
 
@@ -36,7 +38,7 @@ beforeEach(() => {
 });
 
 describe("buildCoordinatorDepositTx", () => {
-  it("calls the vault's deposit(caller, amount) with the correct ScVal args", async () => {
+  it("calls the vault's deposit(caller, amount, min_shares_out) with default minSharesOut=0", async () => {
     const result = await buildCoordinatorDepositTx(
       { contractId: CONTRACT_ID, network },
       WALLET,
@@ -51,12 +53,28 @@ describe("buildCoordinatorDepositTx", () => {
     expect(passedCaller).toBe(WALLET);
 
     // The built operation should be an InvokeHostFunction calling "deposit"
-    // with the caller's address and the i128 amount, in that order.
+    // with the caller's address, the i128 amount, and i128 min_shares_out (0n by default).
     const invocation = op.body().invokeHostFunctionOp().hostFunction();
     const args = invocation.invokeContract().args();
-    expect(args).toHaveLength(2);
+    expect(args).toHaveLength(3);
     expect(Address.fromScVal(args[0]!).toString()).toBe(WALLET);
     expect(args[1]).toEqual(nativeToScVal(100_000_000n, { type: "i128" }));
+    expect(args[2]).toEqual(nativeToScVal(0n, { type: "i128" }));
+  });
+
+  it("calls deposit with caller-supplied minSharesOut", async () => {
+    await buildCoordinatorDepositTx(
+      { contractId: CONTRACT_ID, network },
+      WALLET,
+      100_000_000n,
+      95_000_000n
+    );
+
+    const [, , op] = vi.mocked(prepareSorobanTx).mock.calls[0]!;
+    const invocation = op.body().invokeHostFunctionOp().hostFunction();
+    const args = invocation.invokeContract().args();
+    expect(args).toHaveLength(3);
+    expect(args[2]).toEqual(nativeToScVal(95_000_000n, { type: "i128" }));
   });
 
   it("throws without calling prepareSorobanTx for a non-positive amount", async () => {
@@ -76,14 +94,27 @@ describe("buildCoordinatorDepositTx", () => {
     ).rejects.toThrow(/amount must be positive/);
     expect(prepareSorobanTx).not.toHaveBeenCalled();
   });
+
+  it("throws without calling prepareSorobanTx for a negative minSharesOut", async () => {
+    await expect(
+      buildCoordinatorDepositTx(
+        { contractId: CONTRACT_ID, network },
+        WALLET,
+        100_000_000n,
+        -1n
+      )
+    ).rejects.toThrow(/minSharesOut must be non-negative/);
+    expect(prepareSorobanTx).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildCoordinatorWithdrawTx", () => {
-  it("calls the vault's withdraw(caller, shares) with the correct ScVal args", async () => {
+  it("calls the vault's withdraw(caller, shares, min_usdc_out) with the correct ScVal args", async () => {
     const result = await buildCoordinatorWithdrawTx(
       { contractId: CONTRACT_ID, network },
       WALLET,
-      50_000_000n
+      50_000_000n,
+      1_000_000n
     );
 
     expect(result).toEqual({ xdr: "UNSIGNED_XDR", fee: "150" });
@@ -93,8 +124,27 @@ describe("buildCoordinatorWithdrawTx", () => {
       "withdraw"
     );
     const args = invocation.invokeContract().args();
+    expect(args).toHaveLength(3);
     expect(Address.fromScVal(args[0]!).toString()).toBe(WALLET);
     expect(args[1]).toEqual(nativeToScVal(50_000_000n, { type: "i128" }));
+    expect(args[2]).toEqual(nativeToScVal(1_000_000n, { type: "i128" }));
+  });
+
+  it("defaults min_usdc_out to 0n when omitted", async () => {
+    await buildCoordinatorWithdrawTx(
+      { contractId: CONTRACT_ID, network },
+      WALLET,
+      50_000_000n
+    );
+    const [, , op] = vi.mocked(prepareSorobanTx).mock.calls[0]!;
+    const args = op
+      .body()
+      .invokeHostFunctionOp()
+      .hostFunction()
+      .invokeContract()
+      .args();
+    expect(args).toHaveLength(3);
+    expect(args[2]).toEqual(nativeToScVal(0n, { type: "i128" }));
   });
 
   it("throws without calling prepareSorobanTx for non-positive shares", async () => {
@@ -105,6 +155,18 @@ describe("buildCoordinatorWithdrawTx", () => {
         0n
       )
     ).rejects.toThrow(/shares must be positive/);
+    expect(prepareSorobanTx).not.toHaveBeenCalled();
+  });
+
+  it("throws without calling prepareSorobanTx for a negative minUsdcOut", async () => {
+    await expect(
+      buildCoordinatorWithdrawTx(
+        { contractId: CONTRACT_ID, network },
+        WALLET,
+        50_000_000n,
+        -1n
+      )
+    ).rejects.toThrow(/minUsdcOut must be non-negative/);
     expect(prepareSorobanTx).not.toHaveBeenCalled();
   });
 });
@@ -235,5 +297,103 @@ describe("fetchCoordinatorPosition", () => {
 
     expect(positions[0]!.deposited).toBeGreaterThan(0);
     expect(positions[0]!.earned).toBe(0);
+  });
+});
+
+describe("fetchVaultAdmin", () => {
+  it("returns the admin address from get_admin", async () => {
+    const ADMIN = "GCKFBEIYTKP6RCZNVPH73XL7XFJVSFAKQR4E4XQD4PGGPCCQTVMWXW6D";
+    vi.mocked(simulateView).mockResolvedValue(ADMIN as never);
+
+    const admin = await fetchVaultAdmin({ contractId: CONTRACT_ID, network });
+
+    expect(admin).toBe(ADMIN);
+    expect(simulateView).toHaveBeenCalledWith(
+      expect.anything(),
+      CONTRACT_ID,
+      network.passphrase,
+      "get_admin"
+    );
+  });
+
+  it("throws when get_admin doesn't resolve to a string", async () => {
+    vi.mocked(simulateView).mockResolvedValue(null as never);
+
+    await expect(
+      fetchVaultAdmin({ contractId: CONTRACT_ID, network })
+    ).rejects.toThrow(/unexpected response shape/);
+  });
+});
+
+describe("fetchCoordinatorState", () => {
+  const ADAPTER_ID = "CADAPTERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2";
+
+  function mockStateCalls(opts: {
+    protocol?: string;
+    totalShares?: bigint;
+    totalAssets?: bigint;
+    paused?: boolean;
+  }) {
+    vi.mocked(simulateView).mockImplementation(
+      async (_server, _contractId, _passphrase, method) => {
+        switch (method) {
+          case "get_adapter":
+            return ADAPTER_ID as never;
+          case "get_protocol":
+            return (opts.protocol ?? "blend") as never;
+          case "get_total_shares":
+            return (opts.totalShares ?? 0n) as never;
+          case "get_total_assets":
+            return (opts.totalAssets ?? 0n) as never;
+          case "is_paused":
+            return (opts.paused ?? false) as never;
+          default:
+            throw new Error(
+              `unexpected simulateView method: ${String(method)}`
+            );
+        }
+      }
+    );
+  }
+
+  it("reads the active adapter's protocol, total shares/assets, and pause flag", async () => {
+    mockStateCalls({
+      protocol: "blend",
+      totalShares: 1_000_0000000n,
+      totalAssets: 1_050_0000000n,
+      paused: false,
+    });
+
+    const state = await fetchCoordinatorState({
+      contractId: CONTRACT_ID,
+      network,
+    });
+
+    expect(state).toEqual({
+      protocol: "blend",
+      adapterId: ADAPTER_ID,
+      totalShares: 1000,
+      totalAssets: 1050,
+      paused: false,
+    });
+  });
+
+  it("reports paused: true when the vault is paused", async () => {
+    mockStateCalls({ paused: true });
+    const state = await fetchCoordinatorState({
+      contractId: CONTRACT_ID,
+      network,
+    });
+    expect(state.paused).toBe(true);
+  });
+
+  it("rounds shares/assets to 2 decimal places of human-readable units", async () => {
+    // 12345678 stroops = 1.2345678 units, rounds to 1.23.
+    mockStateCalls({ totalShares: 12_345_678n, totalAssets: 0n });
+    const state = await fetchCoordinatorState({
+      contractId: CONTRACT_ID,
+      network,
+    });
+    expect(state.totalShares).toBe(1.23);
   });
 });

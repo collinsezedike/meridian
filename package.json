@@ -18,14 +18,14 @@
     "@stellar/stellar-sdk": "^14.6.1"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "esbuild": "^0.28.2",
-    "turbo": "^2.10.8",
+    "turbo": "^2.10.12",
     "tsx": "^4.23.12",
     "typescript": "^6.0.3",
     "prettier": "^3.9.6",
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.9.0"
+    "eslint": "^10.9.1"
   },
   "engines": {
     "node": ">=20.0.0",

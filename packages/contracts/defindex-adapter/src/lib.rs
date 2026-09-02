@@ -5,6 +5,7 @@ use adapter_common::{
 };
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short,
+    contract, contractclient, contracterror, contractimpl, panic_with_error, symbol_short,
     token::TokenClient, vec, Address, Env, Symbol, Val, Vec,
 };
 
@@ -72,8 +73,14 @@ pub struct AdapterWithdrawEvent {
 pub enum ContractError {
     /// `initialize` was called on an adapter that already has a vault set.
     AlreadyInitialized = 1,
+    /// An intermediate arithmetic operation would overflow `i128`.
+    Overflow = 2,
     /// A state-mutating call was made before `initialize`.
-    NotInitialized = 2,
+    NotInitialized = 3,
+    /// The DeFindex vault returned a response that cannot be interpreted as
+    /// a valid asset valuation (e.g. empty vector or missing element at
+    /// index 0).
+    MalformedProtocolResponse = 4,
 }
 
 impl From<AdapterError> for ContractError {
@@ -177,6 +184,19 @@ impl MeridianDefindexAdapter {
         );
 
         shares_credited
+        // checked_sub alone only catches i128 overflow, not a merely
+        // negative result: on signed integers, a decreasing balance
+        // (shares_after < shares_before) subtracts to a valid negative
+        // number rather than overflowing, so it would silently pass through
+        // otherwise. Guard for it explicitly first.
+        if shares_after < shares_before {
+            panic_with_error!(&env, ContractError::Overflow);
+        }
+
+        match shares_after.checked_sub(shares_before) {
+            Some(delta) => delta,
+            None => panic_with_error!(&env, ContractError::Overflow),
+        }
     }
 
     /// Called by the vault to redeem `shares` dfTokens from the DeFindex vault.
@@ -195,9 +215,10 @@ impl MeridianDefindexAdapter {
         let client = DefindexVaultClient::new(&env, &dfx);
         let amounts = client.withdraw(&shares, &vec![&env, 0_i128], &adapter);
 
-        // Vec.get() returns Option which safely defaults to 0 if the vector doesn't contain
-        // index 0 or is empty, so this unwrap_or is safe and intentional.
-        let usdc_out: i128 = amounts.get(0).unwrap_or(0);
+        let usdc_out: i128 = match amounts.get(0) {
+            Some(value) => value,
+            None => panic_with_error!(&env, ContractError::MalformedProtocolResponse),
+        };
         if usdc_out > 0 {
             TokenClient::new(&env, &usdc).transfer(&adapter, &recipient, &usdc_out);
         }
@@ -230,9 +251,22 @@ impl MeridianDefindexAdapter {
         }
 
         let amounts = client.get_asset_amounts_per_shares(&shares);
-        // Vec.get() returns Option which safely defaults to 0 if the vector doesn't contain
-        // index 0 or is empty, so this unwrap_or is safe and intentional.
-        amounts.get(0).unwrap_or(0)
+        match amounts.get(0) {
+            Some(value) => value,
+            None => panic_with_error!(&env, ContractError::MalformedProtocolResponse),
+        }
+    }
+
+    /// Returns the adapter's current dfToken share balance read directly from
+    /// the DeFindex vault's ledger.
+    pub fn total_shares(env: Env) -> i128 {
+        let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
+            &env,
+            env.storage().instance().get(&DFX_VAULT),
+        );
+        let adapter = env.current_contract_address();
+
+        DefindexVaultClient::new(&env, &dfx).balance(&adapter)
     }
 
     /// DeFindex prices live, so refresh does not mutate storage. It still emits
@@ -278,13 +312,15 @@ mod tests {
     // MockDefindexVault: a minimal DeFindex vault double. Tracks the adapter's
     // dfToken balance 1:1 with USDC deposited/withdrawn. `set_withdraw_amounts`
     // lets tests configure exactly what `withdraw` returns, so the
-    // `amounts.get(0).unwrap_or(0)` edge case in the real adapter (a
+    // MalformedProtocolResponse edge case in the real adapter (a
     // differently-shaped or empty return vector) can be exercised directly.
     // -----------------------------------------------------------------------
 
     const MDV_USDC: Symbol = symbol_short!("MDV_USDC");
     const MDV_SH: Symbol = symbol_short!("MDV_SH");
     const MDV_WAMT: Symbol = symbol_short!("MDV_WAMT");
+    const MDV_FAULTY: Symbol = symbol_short!("MDV_FT");
+    const MDV_AAMT: Symbol = symbol_short!("MDV_AAMT");
 
     #[contract]
     pub struct MockDefindexVault;
@@ -300,6 +336,12 @@ mod tests {
         // differently-shaped (e.g. empty) response from DeFindex.
         pub fn set_withdraw_amounts(env: Env, amounts: Vec<i128>) {
             env.storage().instance().set(&MDV_WAMT, &amounts);
+        }
+
+        // Overrides what the next get_asset_amounts_per_shares() call returns,
+        // to simulate a malformed DeFindex response.
+        pub fn set_asset_amounts_per_shares(env: Env, amounts: Vec<i128>) {
+            env.storage().instance().set(&MDV_AAMT, &amounts);
         }
 
         pub fn deposit(
@@ -318,8 +360,17 @@ mod tests {
             let amount = amounts_desired.get(0).unwrap_or(0);
             TokenClient::new(&env, &usdc).transfer(&from, &env.current_contract_address(), &amount);
 
+            let faulty: bool = env.storage().instance().get(&MDV_FAULTY).unwrap_or(false);
             let prev: i128 = env.storage().instance().get(&MDV_SH).unwrap_or(0);
-            env.storage().instance().set(&MDV_SH, &(prev + amount));
+            if faulty {
+                // Simulate a buggy vault whose balance decreases after a deposit.
+                // Must be typed i128 to match the type balance() reads back --
+                // an untyped 0 literal defaults to i32, and storing/reading with
+                // mismatched types panics with Error(Value, UnexpectedType).
+                env.storage().instance().set(&MDV_SH, &0_i128);
+            } else {
+                env.storage().instance().set(&MDV_SH, &(prev + amount));
+            }
             Val::VOID.into()
         }
 
@@ -361,9 +412,16 @@ mod tests {
             env.storage().instance().get(&MDV_SH).unwrap_or(0)
         }
 
+        pub fn set_faulty(env: Env, faulty: bool) {
+            env.storage().instance().set(&MDV_FAULTY, &faulty);
+        }
+
         pub fn get_asset_amounts_per_shares(env: Env, desired_shares: i128) -> Vec<i128> {
-            // 1:1 valuation, matching the deposit/withdraw rate used above.
-            vec![&env, desired_shares]
+            let amounts_override: Option<Vec<i128>> = env.storage().instance().get(&MDV_AAMT);
+            match amounts_override {
+                Some(amounts) => amounts,
+                None => vec![&env, desired_shares],
+            }
         }
     }
 
@@ -442,6 +500,27 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
+    fn deposit_panics_with_typed_error_when_dfx_vault_is_unset() {
+        // The deposit()-side counterpart to
+        // withdraw_panics_with_typed_error_when_dfx_vault_is_unset above:
+        // __constructor always sets DFX_VAULT on any real deployment, so
+        // this state is unreachable in practice; this test clears it
+        // directly after construction to prove deposit() still fails with
+        // the typed NotInitialized panic rather than an opaque unwrap trap
+        // if that invariant is ever violated by a future change.
+        let (env, _vault, _usdc, adapter, _dfx) = setup();
+
+        env.as_contract(&adapter.address, || {
+            env.storage().instance().remove(&DFX_VAULT);
+        });
+
+        // The NotInitialized check runs before any token movement, so no
+        // USDC funding is needed to reach it.
+        adapter.deposit(&100_0000000_i128);
+    }
+
+    #[test]
     fn get_protocol_returns_defindex() {
         let (env, _vault, _usdc, adapter, _dfx) = setup();
         assert_eq!(adapter.get_protocol(), Symbol::new(&env, "defindex"));
@@ -470,6 +549,21 @@ mod tests {
                 total_shares: amount,
             }
         );
+    }
+
+    #[test]
+    fn total_shares_reads_the_dfx_vault_s_live_balance() {
+        let (env, vault, usdc_id, adapter, _dfx) = setup();
+        assert_eq!(adapter.total_shares(), 0);
+
+        let amount = 100_0000000_i128;
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        // total_shares() reads the DeFindex vault's own balance() live,
+        // independent of anything the vault separately tracks -- it must
+        // agree with the dfToken credit deposit() itself just returned.
+        assert_eq!(adapter.total_shares(), shares);
     }
 
     #[test]
@@ -516,6 +610,7 @@ mod tests {
 
     #[test]
     fn withdraw_returns_zero_when_defindex_returns_no_amounts() {
+    fn withdraw_errs_on_malformed_defindex_response() {
         let (env, vault, usdc_id, adapter, dfx) = setup();
         let amount = 100_0000000_i128;
 
@@ -523,15 +618,13 @@ mod tests {
         adapter.deposit(&amount);
 
         // Simulate a shape mismatch: DeFindex returns an empty vector instead
-        // of the expected [usdc_amount] — amounts.get(0).unwrap_or(0) must not
-        // panic, and no USDC should move.
+        // of the expected [usdc_amount] — withdraw() must fail loudly with
+        // MalformedProtocolResponse, not silently return zero.
         dfx.set_withdraw_amounts(&Vec::new(&env));
 
         let recipient = Address::generate(&env);
-        let usdc_out = adapter.withdraw(&amount, &recipient);
-
-        assert_eq!(usdc_out, 0);
-        assert_eq!(TokenClient::new(&env, &usdc_id).balance(&recipient), 0);
+        let result = adapter.try_withdraw(&amount, &recipient);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -552,6 +645,23 @@ mod tests {
         // deposited even though it's routed through get_asset_amounts_per_shares
         // rather than a self-tracked total.
         assert_eq!(adapter.total_assets(), amount);
+    }
+
+    #[test]
+    fn total_assets_errs_on_malformed_defindex_response() {
+        let (env, vault, usdc_id, adapter, dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        // Simulate a shape mismatch: DeFindex returns an empty vector instead
+        // of the expected [usdc_amount] — total_assets() must not silently
+        // return zero, which would cause massive share dilution on deposit.
+        dfx.set_asset_amounts_per_shares(&Vec::new(&env));
+
+        let result = adapter.try_total_assets();
+        assert!(result.is_err());
     }
 
     #[test]
@@ -639,5 +749,37 @@ mod tests {
 
         let recipient = Address::generate(&env);
         adapter.withdraw(&100_0000000_i128, &recipient);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn deposit_panics_with_overflow_when_balance_decreases() {
+        // Simulates a buggy or malicious external vault whose balance()
+        // returns a lower value after deposit than before. The unchecked
+        // subtraction would have panicked with an opaque trap; now it
+        // panics with the typed Overflow error (discriminant #2).
+        let (env, vault, usdc_id, adapter, dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+
+        // First deposit succeeds normally.
+        adapter.deposit(&amount);
+
+        // Fund the adapter for the second deposit, then flip the mock into
+        // faulty mode: deposit will reset the share balance to zero,
+        // so shares_after (0) < shares_before (amount) → Overflow.
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        dfx.set_faulty(&true);
+
+        adapter.deposit(&amount);
+    }
+
+    #[test]
+    fn contract_error_has_expected_variants() {
+        // Compile-time check that the variants exist and are distinct.
+        let _ = ContractError::AlreadyInitialized;
+        let _ = ContractError::Overflow;
+        let _ = ContractError::NotInitialized;
     }
 }

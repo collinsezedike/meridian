@@ -16,7 +16,14 @@ const TESTNET_CACHE_CONTROL = "no-store";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (applyCors(req, res)) return;
-  if (!(await checkRateLimit(req, res))) return;
+  try {
+    if (!(await checkRateLimit(req, res))) return;
+  } catch (err) {
+    console.error("[vaults] rate limit check failed:", err);
+    return res
+      .status(503)
+      .json({ error: "Rate limiter unavailable; refusing to run" });
+  }
 
   const result = await handleGetVaults();
   if (result.error) {
