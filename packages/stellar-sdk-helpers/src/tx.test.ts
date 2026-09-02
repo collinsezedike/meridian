@@ -21,11 +21,7 @@ import {
   assertSubmittable,
 } from "./tx";
 import type { StellarNetwork } from "./types";
-import {
-  CONTRACT_ADDRESSES,
-  MUSDC_ISSUER,
-  USDC_ISSUER,
-} from "@meridian/shared";
+import { CONTRACT_ADDRESSES, USDC_ISSUER } from "@meridian/shared";
 
 const { SUCCESS, FAILED, NOT_FOUND } = rpc.Api.GetTransactionStatus;
 
@@ -244,12 +240,10 @@ const TESTNET: StellarNetwork = {
   passphrase: "Test SDF Network ; September 2015",
 };
 
-// Both pulled from the source of truth rather than hardcoded, so these
-// fixtures don't drift out of sync the next time the vault (and its mUSDC
-// issuer) is redeployed, as happened with the previous hardcoded value in
-// #514.
+// Pulled from the source of truth rather than hardcoded, so this fixture
+// doesn't drift out of sync the next time the vault is redeployed, as
+// happened with the previous hardcoded value in #514.
 const USDC_ISSUER_TESTNET = USDC_ISSUER.testnet;
-const MUSDC_ISSUER_TESTNET = MUSDC_ISSUER.testnet;
 
 function makeBalance(
   code: string,
@@ -274,11 +268,10 @@ describe("buildAddTrustlineTx", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("throws when all required trustlines already exist", async () => {
+    // mUSDC is a SEP-41 contract token post-#578 (MUSDC_ISSUER.testnet is
+    // ""), so it has no classic trustline to check — only USDC is required.
     vi.spyOn(Horizon.Server.prototype, "loadAccount").mockResolvedValue({
-      balances: [
-        makeBalance("USDC", USDC_ISSUER_TESTNET),
-        makeBalance("MUSDC", MUSDC_ISSUER_TESTNET),
-      ],
+      balances: [makeBalance("USDC", USDC_ISSUER_TESTNET)],
     } as unknown as Awaited<ReturnType<Horizon.Server["loadAccount"]>>);
 
     await expect(
@@ -436,12 +429,10 @@ describe("assertSubmittable", () => {
   // testnet allowlist.
   const UNKNOWN_CONTRACT =
     "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
-  // Both pulled from the source of truth rather than hardcoded, so these
-  // fixtures don't drift out of sync the next time the vault (and its mUSDC
-  // issuer) is redeployed, as happened with the previous hardcoded value in
-  // #514.
+  // Pulled from the source of truth rather than hardcoded, so this fixture
+  // doesn't drift out of sync the next time the vault is redeployed, as
+  // happened with the previous hardcoded value in #514.
   const USDC_ISSUER_TESTNET = USDC_ISSUER.testnet;
-  const MUSDC_ISSUER_TESTNET = MUSDC_ISSUER.testnet;
   // Circle's mainnet USDC issuer: a validly-formed address that is not on the
   // testnet allowlist.
   const UNKNOWN_ISSUER =
@@ -482,13 +473,11 @@ describe("assertSubmittable", () => {
     expect(() => assertSubmittable(tx, network)).not.toThrow();
   });
 
-  it("allows a changeTrust to the known mUSDC issuer", () => {
+  it("rejects a changeTrust to mUSDC (SEP-41 contract token, no classic issuer)", () => {
     const tx = buildTx(
-      Operation.changeTrust({
-        asset: new Asset("MUSDC", MUSDC_ISSUER_TESTNET),
-      })
+      Operation.changeTrust({ asset: new Asset("MUSDC", UNKNOWN_ISSUER) })
     );
-    expect(() => assertSubmittable(tx, network)).not.toThrow();
+    expect(() => assertSubmittable(tx, network)).toThrow(/unrecognised issuer/);
   });
 
   it("rejects a changeTrust to an unrecognised issuer", () => {
