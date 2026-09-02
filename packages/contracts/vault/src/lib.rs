@@ -211,6 +211,11 @@ pub enum ContractError {
     /// too, so any non-negative pre-deposit balance clears it regardless of
     /// how much the target is drained during the cooldown.
     MigrationSnapshotAssetsInvalid = 22,
+    /// `deposit`'s adapter call returned zero or negative shares credited,
+    /// indicating the underlying protocol rejected or dropped the deposit.
+    /// Minting vault shares against it would dilute every existing holder
+    /// with nothing backing the new shares.
+    AdapterCreditedNothing = 23,
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +333,10 @@ impl MeridianVault {
 
         // Adapter deploys USDC to the underlying protocol and returns its own shares.
         let adapter_client = AdapterClient::new(&env, &adapter_addr);
-        let _adapter_shares = adapter_client.deposit(&amount);
+        let adapter_shares = adapter_client.deposit(&amount);
+        if adapter_shares <= 0 {
+            return Err(ContractError::AdapterCreditedNothing);
+        }
 
         // Mint mUSDC shares to caller.
         MusdcAdminClient::new(&env, &musdc).mint(&caller, &shares_to_mint);
@@ -2455,6 +2463,30 @@ mod tests {
 
         let result = vault.try_migrate_adapter(&adapter, &0);
         assert_eq!(result, Err(Ok(ContractError::SameAdapter)));
+    }
+
+    #[test]
+    fn deposit_fails_when_adapter_returns_zero_shares() {
+        use zero_share_mock::{ZeroShareMockAdapter, ZeroShareMockAdapterClient};
+
+        let (env, admin, user, usdc, _musdc, _adapter, _vault) = setup();
+        let amount = 100_000000_i128;
+
+        // Register and initialize zero share adapter
+        let zero_share_adapter_id = env.register(ZeroShareMockAdapter, ());
+        ZeroShareMockAdapterClient::new(&env, &zero_share_adapter_id).initialize(&usdc);
+
+        // Deploy a vault configured with the zero-share adapter
+        let musdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let vault_id = env.register(MeridianVault, ());
+        let vault = MeridianVaultClient::new(&env, &vault_id);
+        vault.initialize(&admin, &usdc, &musdc_id, &zero_share_adapter_id);
+
+        // Attempt deposit and assert it returns AdapterCreditedNothing
+        let result = vault.try_deposit(&user, &amount, &0_i128);
+        assert_eq!(result, Err(Ok(ContractError::AdapterCreditedNothing)));
     }
 
     #[test]
