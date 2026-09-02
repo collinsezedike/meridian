@@ -31,7 +31,7 @@ export const USDC_ISSUER: Record<string, string> = {
 // not before — this file describes what's actually live, not what the code
 // supports.
 export const MUSDC_ISSUER: Record<string, string> = {
-  testnet: "GBLYQ5EHXMMULOA7KA4KK2S5Q5GTTWYFVSC3FKLXRLH34EJX35BIAL35",
+  testnet: "",
   mainnet: "",
 };
 
@@ -53,14 +53,14 @@ export const CONTRACT_ADDRESSES = {
     usdc: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
     // Stellar Asset Contract for Circle's testnet EURC (issuer: GB3Q6QDZYTHWT7...).
     eurc: "CCUUDM434BMZMYWYDITHFXHDMIVTGGD6T2I5UKNX5BSLXLW7HVR4MCGZ",
-    musdc: "CDMPSG5HRSSPADIR5JKZM5CWTZFN3AAJEJV5K5QXOXVOZHAWJ7EKZB7H",
-    // Redeployed to sync #604's deposit() min_shares_out parameter and
-    // #606's begin_migration/two-phase migration additions onto a live
-    // contract; the previous vault (CBOE7JPROCMUKQ4NJWPKCLBBQGHLTGV4X3463DHK4D7KX6KWXGZETAJL)
-    // predated both. See apps/docs/operations/testnet-deployment.md's
-    // "Vault migration history" for the old address and its (empty)
-    // pre-cutover balance.
-    vault: "CC3WA7SSJOI7WJPLWEGHSK3GRD3PSQXAIOQTXQEHBXYIIVJFZR4ZVAYP",
+    musdc: "CAJASVPQ365EYUQ62Z54SRSZWJ4C7WJNDYXIYVWKLSRWJTTWET35JPYE",
+    // Redeployed with stellar-cli v28.0.0 to match what
+    // verify-contract-addresses.yml rebuilds with; the previous vault
+    // (CC3WA7SSJOI7WJPLWEGHSK3GRD3PSQXAIOQTXQEHBXYIIVJFZR4ZVAYP) was built
+    // with an older CLI and its bytecode no longer matched current source.
+    // See apps/docs/operations/testnet-deployment.md's "Vault migration
+    // history" for the old address and its (empty) pre-cutover balance.
+    vault: "CBOQTI3C7UHTBRHSF3AJEQYXDINJ354XRWIZKSEV6PFIEUSJF2YWZPME",
   },
   mainnet: {
     blend: {

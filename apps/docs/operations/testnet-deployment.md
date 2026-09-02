@@ -208,6 +208,34 @@ This contract is not deleted or disabled — Soroban has no such operation, it k
 
 Deployed and initialized via `scripts/deploy-testnet.sh`, `DEPLOYER` and `ADMIN` both defaulting to the same key (a pre-existing, already-funded testnet identity previously used as the #514 cutover's admin too). `begin_migration`, `migrate_adapter`, and the three-argument `deposit()` all confirmed present in the deployed vault's exported function list.
 
+### 2026-09-02 — redeployed to fix a `stellar-cli` version drift (#701)
+
+`.github/workflows/verify-contract-addresses.yml`'s "Verify On-Chain Bytecode" job started failing: rebuilding the vault from current source on CI produced a WASM hash (`d46c31020b6eb369ba84a87cbdbd9b0972c3ac8fa732b08a4915f6b262d5f179`) that didn't match the on-chain hash of the live vault below. Source hadn't drifted — the vault had simply been deployed with an older `stellar-cli` than what CI's dynamic `cargo install --locked stellar-cli` now resolves to (v28.0.0), and `stellar contract build`'s output isn't guaranteed byte-identical across CLI versions (see "A note on reproducible builds" above). Confirmed independently: rebuilding locally after upgrading to `stellar-cli` v28.0.0 produced the identical `d46c31020b...` hash CI did, on a separate machine.
+
+**Pre-cutover status:** the old vault below held `get_total_assets() = 0` — no outstanding testnet deposits, so no withdrawal-announcement window was needed.
+
+**Old vault (superseded):**
+
+| Field               | Value                                                      |
+| ------------------- | ---------------------------------------------------------- |
+| Vault contract      | `CC3WA7SSJOI7WJPLWEGHSK3GRD3PSQXAIOQTXQEHBXYIIVJFZR4ZVAYP` |
+| Blend adapter       | `CDHUA2PW62YTU4MS2KDBPQ3UKXSZORVTHM43PMIT2VDIMVGXTKQHANY5` |
+| mUSDC (share token) | `CDMPSG5HRSSPADIR5JKZM5CWTZFN3AAJEJV5K5QXOXVOZHAWJ7EKZB7H` |
+| Admin               | `GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD` |
+
+This contract is not deleted or disabled — Soroban has no such operation, it keeps running exactly as deployed. There is no automatic migration or sweep of old positions into the new vault, but there were none to move at cutover time.
+
+**New vault (current):**
+
+| Field               | Value                                                      |
+| ------------------- | ---------------------------------------------------------- |
+| Vault contract      | `CBOQTI3C7UHTBRHSF3AJEQYXDINJ354XRWIZKSEV6PFIEUSJF2YWZPME` |
+| Blend adapter       | `CCXB5BRVBFNPAN72PRODGFWKGGDHEHJMHJLC7G2OEQFF4PZNNO3C4XBH` |
+| mUSDC (share token) | `CAJASVPQ365EYUQ62Z54SRSZWJ4C7WJNDYXIYVWKLSRWJTTWET35JPYE` |
+| Admin               | `GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD` |
+
+The admin is the same durable key as the two prior cutovers, kept across this one too. Deployed via `scripts/deploy-testnet.sh` with a fresh throwaway `DEPLOYER` and `ADMIN`/`ADMIN_KEY` set explicitly to that durable admin key, so the vault was signed and initialized in the same run rather than left briefly claimable. `get_total_assets()`, `get_pool()`, and `get_protocol()` confirmed resolving correctly on the new vault and its Blend adapter.
+
 ## Run the signing flow end-to-end
 
 With the contracts deployed and `known-pools.ts`/`constants.ts` updated:
