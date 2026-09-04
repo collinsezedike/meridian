@@ -1,9 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   decodeScVal,
   summarizeAction,
   getAdminActionHistory,
+  getRpcAdminHistory,
 } from "./admin-history";
+import { Address, rpc, xdr } from "@stellar/stellar-sdk";
 import type { StellarNetwork } from "./types";
 
 const network: StellarNetwork = {
@@ -388,5 +390,183 @@ describe("getAdminActionHistory", () => {
     await expect(getAdminActionHistory(network, VAULT_ID)).rejects.toThrow(
       /Horizon operations request failed: 503/
     );
+  });
+});
+
+describe("getRpcAdminHistory", () => {
+  const NEW_ADMIN = "GC7MCAT5QBXWXOUDN57SFAM3T353J7KMNVDRK4J5ZSILUJVRL7M3OUIN";
+  const OLD_ADAPTER =
+    "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526";
+  const NEW_ADAPTER =
+    "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ";
+
+  function adminEvent(
+    action: string,
+    value: xdr.ScVal,
+    ledgerClosedAt = "2026-08-27T20:00:00Z"
+  ): rpc.Api.EventResponse {
+    return {
+      type: "contract",
+      ledger: 100,
+      ledgerClosedAt,
+      id: "0000000100000000-0000000001",
+      pagingToken: "0000000100000000-0000000001",
+      topic: [xdr.ScVal.scvSymbol("admin"), xdr.ScVal.scvSymbol(action)],
+      value,
+      inSuccessfulContractCall: true,
+      txHash: "HASH",
+    } as unknown as rpc.Api.EventResponse;
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("parses a paused event", async () => {
+    vi.spyOn(rpc.Server.prototype, "getEvents").mockResolvedValueOnce({
+      events: [adminEvent("paused", xdr.ScVal.scvBool(true))],
+      latestLedger: 100,
+      cursor: "next-cursor",
+    } as never);
+
+    const { actions, nextCursor } = await getRpcAdminHistory(
+      network.rpcUrl,
+      VAULT_ID
+    );
+
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      action: "paused",
+      ledgerSequence: 100,
+      payload: { paused: true },
+    });
+    expect(actions[0]!.timestamp).toEqual(new Date("2026-08-27T20:00:00Z"));
+    expect(nextCursor).toBe("next-cursor");
+  });
+
+  it("parses a transfer event", async () => {
+    vi.spyOn(rpc.Server.prototype, "getEvents").mockResolvedValueOnce({
+      events: [adminEvent("transfer", Address.fromString(NEW_ADMIN).toScVal())],
+      latestLedger: 100,
+    } as never);
+
+    const { actions } = await getRpcAdminHistory(network.rpcUrl, VAULT_ID);
+
+    expect(actions[0]).toMatchObject({
+      action: "transfer",
+      payload: { newAdmin: NEW_ADMIN },
+    });
+  });
+
+  it("parses an accept event", async () => {
+    vi.spyOn(rpc.Server.prototype, "getEvents").mockResolvedValueOnce({
+      events: [adminEvent("accept", Address.fromString(NEW_ADMIN).toScVal())],
+      latestLedger: 100,
+    } as never);
+
+    const { actions } = await getRpcAdminHistory(network.rpcUrl, VAULT_ID);
+
+    expect(actions[0]).toMatchObject({
+      action: "accept",
+      payload: { newAdmin: NEW_ADMIN },
+    });
+  });
+
+  it("parses an adapter event", async () => {
+    vi.spyOn(rpc.Server.prototype, "getEvents").mockResolvedValueOnce({
+      events: [
+        adminEvent("adapter", Address.fromString(NEW_ADAPTER).toScVal()),
+      ],
+      latestLedger: 100,
+    } as never);
+
+    const { actions } = await getRpcAdminHistory(network.rpcUrl, VAULT_ID);
+
+    expect(actions[0]).toMatchObject({
+      action: "adapter",
+      payload: { newAdapter: NEW_ADAPTER },
+    });
+  });
+
+  it("parses a migrate event with old and new adapter addresses", async () => {
+    vi.spyOn(rpc.Server.prototype, "getEvents").mockResolvedValueOnce({
+      events: [
+        adminEvent(
+          "migrate",
+          xdr.ScVal.scvVec([
+            Address.fromString(OLD_ADAPTER).toScVal(),
+            Address.fromString(NEW_ADAPTER).toScVal(),
+          ])
+        ),
+      ],
+      latestLedger: 100,
+    } as never);
+
+    const { actions } = await getRpcAdminHistory(network.rpcUrl, VAULT_ID);
+
+    expect(actions[0]).toMatchObject({
+      action: "migrate",
+      payload: { oldAdapter: OLD_ADAPTER, newAdapter: NEW_ADAPTER },
+    });
+  });
+
+  it("skips events with an unrecognised action symbol", async () => {
+    vi.spyOn(rpc.Server.prototype, "getEvents").mockResolvedValueOnce({
+      events: [adminEvent("unknown_action", xdr.ScVal.scvBool(true))],
+      latestLedger: 100,
+    } as never);
+
+    const { actions } = await getRpcAdminHistory(network.rpcUrl, VAULT_ID);
+
+    expect(actions).toHaveLength(0);
+  });
+
+  it("skips a migrate event with fewer than two vec items", async () => {
+    vi.spyOn(rpc.Server.prototype, "getEvents").mockResolvedValueOnce({
+      events: [
+        adminEvent("migrate", xdr.ScVal.scvVec([xdr.ScVal.scvBool(true)])),
+      ],
+      latestLedger: 100,
+    } as never);
+
+    const { actions } = await getRpcAdminHistory(network.rpcUrl, VAULT_ID);
+
+    expect(actions).toHaveLength(0);
+  });
+
+  it("skips a paused event whose value is not a bool", async () => {
+    vi.spyOn(rpc.Server.prototype, "getEvents").mockResolvedValueOnce({
+      events: [adminEvent("paused", xdr.ScVal.scvSymbol("not-a-bool"))],
+      latestLedger: 100,
+    } as never);
+
+    const { actions } = await getRpcAdminHistory(network.rpcUrl, VAULT_ID);
+
+    expect(actions).toHaveLength(0);
+  });
+
+  it("omits timestamp when ledgerClosedAt is not provided", async () => {
+    vi.spyOn(rpc.Server.prototype, "getEvents").mockResolvedValueOnce({
+      events: [adminEvent("paused", xdr.ScVal.scvBool(true), "")],
+      latestLedger: 100,
+    } as never);
+
+    const { actions } = await getRpcAdminHistory(network.rpcUrl, VAULT_ID);
+
+    expect(actions[0]!.timestamp).toBeUndefined();
+  });
+
+  it("uses a cursor request instead of startLedger when a cursor is supplied", async () => {
+    const spy = vi
+      .spyOn(rpc.Server.prototype, "getEvents")
+      .mockResolvedValueOnce({ events: [], latestLedger: 100 } as never);
+
+    await getRpcAdminHistory(network.rpcUrl, VAULT_ID, {
+      cursor: "some-cursor",
+    });
+
+    const callArgs = spy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(callArgs.cursor).toBe("some-cursor");
+    expect(callArgs).not.toHaveProperty("startLedger");
   });
 });

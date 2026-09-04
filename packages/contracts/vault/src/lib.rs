@@ -28,6 +28,13 @@ const MIG_ACTIVE: Symbol = symbol_short!("MIG_ACT");
 /// stabilise. At ~5 s per Stellar ledger close, 12 ledgers ≈ 1 minute.
 const MIN_LEDGER_GAP: u32 = 12;
 
+// ---------------------------------------------------------------------------
+// Event topics
+// ---------------------------------------------------------------------------
+
+/// Top-level topic shared by all vault admin-action events.
+const ADMIN_EVT: Symbol = symbol_short!("admin");
+
 // Virtual shares/assets offset (OpenZeppelin ERC-4626 mitigation against the
 // first-depositor inflation attack). Share price is computed against
 // `total_assets + OFFSET` over `total_shares + OFFSET` instead of the raw
@@ -730,6 +737,8 @@ impl MeridianVault {
     pub fn set_paused(env: Env, paused: bool) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
         env.storage().instance().set(&PAUSED, &paused);
+        env.events()
+            .publish((ADMIN_EVT, symbol_short!("paused")), paused);
         Ok(())
     }
 
@@ -748,6 +757,8 @@ impl MeridianVault {
     pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
         env.storage().instance().set(&PEND_ADM, &new_admin);
+        env.events()
+            .publish((ADMIN_EVT, symbol_short!("transfer")), new_admin.clone());
         Ok(())
     }
 
@@ -765,6 +776,8 @@ impl MeridianVault {
         pending.require_auth();
         env.storage().instance().set(&ADMIN, &pending);
         env.storage().instance().remove(&PEND_ADM);
+        env.events()
+            .publish((ADMIN_EVT, symbol_short!("accept")), pending.clone());
         Ok(())
     }
 
@@ -802,6 +815,8 @@ impl MeridianVault {
             return Err(ContractError::AdapterSwapUnsafe);
         }
         env.storage().instance().set(&ADAPTER, &new_adapter);
+        env.events()
+            .publish((ADMIN_EVT, symbol_short!("adapter")), new_adapter.clone());
         Ok(())
     }
 
@@ -1018,6 +1033,10 @@ impl MeridianVault {
         env.storage()
             .instance()
             .set(&ADPT_SH, &new_adapter_client.total_shares());
+        env.events().publish(
+            (ADMIN_EVT, symbol_short!("migrate")),
+            (old_adapter_addr.clone(), new_adapter.clone()),
+        );
         env.storage().instance().set(&MIG_ACTIVE, &0_i128);
         Ok(())
     }
