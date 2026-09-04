@@ -50,7 +50,7 @@ export function WalletConnect() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      push("error", "Failed to copy address");
+      push("error", t("walletConnect.copyFailed"));
     }
   };
 
