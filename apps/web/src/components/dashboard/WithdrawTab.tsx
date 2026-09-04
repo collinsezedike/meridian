@@ -58,6 +58,8 @@ export function WithdrawTab({
               !amount ||
               !bestVault ||
               isWithdrawing ||
+              parseFloat(amount) <= 0 ||
+              Number.isNaN(parseFloat(amount)) ||
               parseFloat(amount) > (position?.shares ?? 0)
             }
             className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 disabled:text-gray-600 text-white text-sm font-semibold py-3.5 transition-all duration-150 disabled:cursor-not-allowed"

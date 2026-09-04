@@ -64,6 +64,22 @@ describe("DepositTab", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
+  it("disables the submit button when amount is zero", () => {
+    renderDepositTab({ amount: "0" });
+    expect(screen.getByTestId("vault-deposit-submit")).toHaveProperty(
+      "disabled",
+      true
+    );
+  });
+
+  it("disables the submit button when amount is negative", () => {
+    renderDepositTab({ amount: "-1" });
+    expect(screen.getByTestId("vault-deposit-submit")).toHaveProperty(
+      "disabled",
+      true
+    );
+  });
+
   it("disables the submit button when amount is empty", () => {
     renderDepositTab({ amount: "" });
 

@@ -87,6 +87,22 @@ describe("WithdrawTab", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
+  it("disables the submit button when amount is zero", () => {
+    renderWithdrawTab({ amount: "0" });
+    expect(screen.getByTestId("vault-withdraw-submit")).toHaveProperty(
+      "disabled",
+      true
+    );
+  });
+
+  it("disables the submit button when amount is negative", () => {
+    renderWithdrawTab({ amount: "-1" });
+    expect(screen.getByTestId("vault-withdraw-submit")).toHaveProperty(
+      "disabled",
+      true
+    );
+  });
+
   it("disables the submit button when amount exceeds available shares", () => {
     renderWithdrawTab({ amount: "999" });
 

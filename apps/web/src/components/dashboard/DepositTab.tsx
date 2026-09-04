@@ -50,7 +50,13 @@ export function DepositTab({
       <button
         data-testid="vault-deposit-submit"
         onClick={onSubmit}
-        disabled={!amount || !bestVault || isDepositing}
+        disabled={
+          !amount ||
+          !bestVault ||
+          isDepositing ||
+          parseFloat(amount) <= 0 ||
+          Number.isNaN(parseFloat(amount))
+        }
         className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 disabled:text-gray-600 text-white text-sm font-semibold py-3.5 transition-all duration-150 disabled:cursor-not-allowed"
       >
         {isDepositing ? t("vaultPanel.waiting") : t("vaultPanel.deposit")}
