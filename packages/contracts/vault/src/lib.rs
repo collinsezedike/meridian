@@ -95,7 +95,13 @@ impl MeridianVault {
     /// self-authorized call first: the deployer's transaction is the only
     /// one that can ever set this contract's state (#551, same bug class as
     /// #505, fixed for the adapters/mUSDC in #550).
-    pub fn __constructor(env: Env, admin: Address, usdc: Address, musdc: Address, adapter: Address) {
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        usdc: Address,
+        musdc: Address,
+        adapter: Address,
+    ) {
         Self::init_state(&env, &admin, &usdc, &musdc, &adapter);
     }
 
