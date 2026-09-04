@@ -53,12 +53,19 @@ WASM_MUSDC_TOKEN="$WASM_DIR/meridian_musdc_token.wasm"
 upload() {
   stellar contract upload --network "$NETWORK" --source "$DEPLOYER" --wasm "$1"
 }
-# Any arguments after the wasm hash are forwarded to `stellar contract deploy`,
-# which is how constructor arguments are passed: `deploy "$hash" -- --a 1`.
+# The optional second argument is a salt (pass "" for none, letting the CLI
+# pick one), used by the vault deploy below to land at a precomputed address.
+# Any arguments after `--` are forwarded to `stellar contract deploy` as
+# constructor arguments: `deploy "$hash" "" -- --a 1`.
 deploy() {
   local hash="$1"
-  shift
-  stellar contract deploy --network "$NETWORK" --source "$DEPLOYER" --wasm-hash "$hash" "$@"
+  local salt="$2"
+  shift 2
+  if [ -n "$salt" ]; then
+    stellar contract deploy --network "$NETWORK" --source "$DEPLOYER" --wasm-hash "$hash" --salt "$salt" "$@"
+  else
+    stellar contract deploy --network "$NETWORK" --source "$DEPLOYER" --wasm-hash "$hash" "$@"
+  fi
 }
 
 echo "Uploading vault WASM..."
@@ -86,7 +93,7 @@ echo "Reserved vault contract ID: $VAULT_ID"
 # it is set inside this same CreateContract operation. There is deliberately no
 # separate initialize() step: that gap was front-runnable (#505).
 echo "Deploying blend-adapter (vault=$VAULT_ID, pool=$BLEND_POOL_ID, usdc=$USDC_ID)..."
-BLEND_ADAPTER_ID=$(deploy "$BLEND_ADAPTER_HASH" \
+BLEND_ADAPTER_ID=$(deploy "$BLEND_ADAPTER_HASH" "" \
   -- --vault "$VAULT_ID" --pool "$BLEND_POOL_ID" --usdc "$USDC_ID")
 echo "blend-adapter contract ID: $BLEND_ADAPTER_ID"
 
@@ -99,7 +106,7 @@ echo "blend-adapter contract ID: $BLEND_ADAPTER_ID"
 # deploy-then-initialize gap would be front-runnable the same way #505's
 # adapter gap was.
 echo "Deploying mUSDC token (admin=$VAULT_ID)..."
-MUSDC_ID=$(deploy "$MUSDC_TOKEN_HASH" \
+MUSDC_ID=$(deploy "$MUSDC_TOKEN_HASH" "" \
   -- --admin "$VAULT_ID" --decimals 7 --name "Meridian USDC" --symbol mUSDC)
 echo "mUSDC contract ID: $MUSDC_ID"
 
@@ -109,8 +116,20 @@ echo "mUSDC contract ID: $MUSDC_ID"
 # the old two-step deploy-then-initialize()) and there is no window where the
 # vault exists but is unclaimed.
 echo "Deploying vault (admin=$ADMIN_ADDRESS, usdc=$USDC_ID, musdc=$MUSDC_ID, adapter=$BLEND_ADAPTER_ID)..."
-stellar contract deploy --network "$NETWORK" --source "$DEPLOYER" --wasm-hash "$VAULT_HASH" --salt "$VAULT_SALT" \
-  -- --admin "$ADMIN_ADDRESS" --usdc "$USDC_ID" --musdc "$MUSDC_ID" --adapter "$BLEND_ADAPTER_ID"
+ACTUAL_VAULT_ID=$(deploy "$VAULT_HASH" "$VAULT_SALT" \
+  -- --admin "$ADMIN_ADDRESS" --usdc "$USDC_ID" --musdc "$MUSDC_ID" --adapter "$BLEND_ADAPTER_ID")
+
+# blend-adapter and mUSDC above were already deployed with VAULT_ID baked
+# permanently into their constructor state, and neither has an in-place
+# upgrade path. This should never fail (the same DEPLOYER and salt computed
+# VAULT_ID and are used again here), but if it ever did, silently trusting
+# the precomputed address instead of checking would leave both permanently
+# wired to a vault address that isn't the one actually deployed.
+if [ "$ACTUAL_VAULT_ID" != "$VAULT_ID" ]; then
+  echo "ERROR: vault deployed to $ACTUAL_VAULT_ID, but blend-adapter and mUSDC" >&2
+  echo "were already wired to the precomputed address $VAULT_ID." >&2
+  exit 1
+fi
 echo "vault contract ID: $VAULT_ID"
 
 echo ""
