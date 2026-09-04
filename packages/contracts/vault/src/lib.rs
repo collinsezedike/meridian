@@ -5,8 +5,9 @@ mod storage;
 
 pub use errors::ContractError;
 pub use storage::{
-    clear_position_records, DataKey, MigrationSnapshot, ADAPTER, ADMIN, ADPT_SH, MIG_ACTIVE,
-    MIG_SNAP, MIN_LEDGER_GAP, MUSDC, OFFSET, PAUSED, PEND_ADM, TOTAL_SH, USDC,
+    clear_position_records, DataKey, MigrationSnapshot, ADAPTER, ADMIN, ADPT_SH,
+    MAX_ADMIN_SLIPPAGE_BPS, MIG_ACTIVE, MIG_SNAP, MIN_LEDGER_GAP, MUSDC, OFFSET, PAUSED, PEND_ADM,
+    TOTAL_SH, USDC,
 };
 
 use soroban_sdk::{
@@ -682,12 +683,20 @@ impl MeridianVault {
             .ok_or(ContractError::NotInitialized)
     }
 
-    /// Phase 1 of a two-phase migration. Snapshots the target adapter's
+    /// Phase 1 of a two-phase migration, and the trigger for
+    /// `MIN_LEDGER_GAP`'s ~1-day timelock. Snapshots the target adapter's
     /// `total_assets()` and the current ledger sequence so that a later
     /// `migrate_adapter` call can verify the valuation has been stable for
-    /// at least `MIN_LEDGER_GAP` ledgers (~1 minute). This prevents an
-    /// observer from griefing or masking a migration by front-running a
-    /// transiently-shifted valuation (issue #567).
+    /// at least `MIN_LEDGER_GAP` ledgers. This prevents an observer from
+    /// griefing or masking a migration by front-running a
+    /// transiently-shifted valuation (issue #567), and separately gives
+    /// observers or automated monitoring a real window to notice and react
+    /// to a migration triggered by a compromised admin key before it can
+    /// execute (issue #557) — the same unattended signer used for routine
+    /// migration-keeper operations can call this function, so the delay
+    /// itself is the only thing standing between a leaked key and the
+    /// vault's entire position moving to an address the attacker
+    /// controls.
     ///
     /// Can be called repeatedly for the same or different adapters; each
     /// call overwrites the previous snapshot. The admin must then wait for
@@ -752,18 +761,29 @@ impl MeridianVault {
     /// denominated in vault mUSDC shares, not adapter shares, so they
     /// remain valid across an adapter swap.
     ///
-    /// Fails with `InvalidSlippageBps` if `max_slippage_bps` is not in
-    /// `0..=10_000`; `10_000` itself is a valid, if extreme, choice —
-    /// an admin explicitly accepting no protection against value loss,
-    /// e.g. when recovering from an old adapter already known to be
-    /// broken.
+    /// Fails with `InvalidSlippageBps` if `max_slippage_bps` exceeds
+    /// `MAX_ADMIN_SLIPPAGE_BPS`. Unlike the pre-#557 behaviour, the caller
+    /// cannot opt into unlimited slippage no matter the circumstances: a
+    /// single compromised admin key authorizing `max_slippage_bps: 10_000`
+    /// used to be able to move the entire vault position with zero loss
+    /// protection, which is exactly the attack #557 describes. Recovering
+    /// from an adapter already known to be broken now requires raising
+    /// `MAX_ADMIN_SLIPPAGE_BPS` itself (a code change), not just a
+    /// higher per-call argument.
     ///
-    /// This does not protect against a malicious or compromised admin
-    /// key: the admin chooses `new_adapter`, and a fake adapter could
-    /// report whatever `total_assets()` it likes to pass the slippage
-    /// check and then keep the funds. The invariant guards against
-    /// accidental value loss (slippage, a buggy new adapter), not
-    /// against the admin key itself — that is a key-custody problem.
+    /// The slippage/stability checks alone do not protect against a
+    /// malicious or compromised admin key: the admin chooses `new_adapter`,
+    /// and a fake adapter could report whatever `total_assets()` it likes
+    /// to pass both checks and then keep the funds. What actually stands
+    /// between a compromised key and total loss is `MIN_LEDGER_GAP`'s
+    /// ~1-day timelock from `begin_migration` (issue #557): it cannot stop
+    /// a patient attacker outright, but it gives observers or automated
+    /// monitoring a real window to notice a suspicious `begin_migration`
+    /// call (e.g. targeting an unrecognized adapter address) and react
+    /// (e.g. `set_paused` does not block this call, so reacting means
+    /// rotating the admin key via `transfer_admin`/`accept_admin`, or
+    /// pausing deposits, before the cooldown elapses) before the funds
+    /// actually move.
     ///
     /// The invariant's real strength also depends on how honestly
     /// `new_adapter.total_assets()` reflects what it actually holds.
@@ -781,7 +801,7 @@ impl MeridianVault {
     ) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
 
-        if max_slippage_bps > 10_000 {
+        if max_slippage_bps > MAX_ADMIN_SLIPPAGE_BPS {
             return Err(ContractError::InvalidSlippageBps);
         }
 
@@ -2243,7 +2263,24 @@ mod tests {
         let new_adapter_id = env.register(MockAdapter, ());
         MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc);
 
-        let result = vault.try_migrate_adapter(&new_adapter_id, &10_001);
+        let result = vault.try_migrate_adapter(&new_adapter_id, &(MAX_ADMIN_SLIPPAGE_BPS + 1));
+        assert_eq!(result, Err(Ok(ContractError::InvalidSlippageBps)));
+    }
+
+    // Regression test for issue #557: max_slippage_bps used to be bounded
+    // only by its literal type range up to 10_000 (100%), so a single
+    // compromised admin key could authorize moving the entire vault
+    // position with zero loss protection. 10_000 must now be rejected the
+    // same as any other value above MAX_ADMIN_SLIPPAGE_BPS.
+    #[test]
+    fn migrate_adapter_rejects_the_old_unbounded_maximum() {
+        let (env, _admin, user, usdc, _musdc, _adapter, vault) = setup();
+        vault.deposit(&user, &100_0000000_i128, &0_i128);
+
+        let new_adapter_id = env.register(MockAdapter, ());
+        MockAdapterClient::new(&env, &new_adapter_id).initialize(&usdc);
+
+        let result = vault.try_migrate_adapter(&new_adapter_id, &10_000);
         assert_eq!(result, Err(Ok(ContractError::InvalidSlippageBps)));
     }
 
@@ -2263,7 +2300,7 @@ mod tests {
         env.ledger()
             .with_mut(|li| li.sequence_number += MIN_LEDGER_GAP);
 
-        let result = vault.try_migrate_adapter(&zero_share_adapter_id, &10_000);
+        let result = vault.try_migrate_adapter(&zero_share_adapter_id, &0);
         assert_eq!(result, Err(Ok(ContractError::DepositTooSmall)));
 
         // Nothing moved: the old adapter still holds the full position, and
