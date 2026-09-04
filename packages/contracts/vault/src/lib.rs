@@ -184,7 +184,7 @@ impl MeridianVault {
         // way this contract doesn't yet account for, so a stale basis can
         // never be silently inherited by a fresh deposit.
         if TokenClient::new(&env, &musdc).balance(&caller) == 0 {
-            Self::clear_position_records(&env, &caller);
+            clear_position_records(&env, &caller);
         }
 
         // Pull USDC from caller directly to the adapter.
@@ -341,7 +341,7 @@ impl MeridianVault {
         // A full exit clears the entry time and cost basis so a later re-deposit
         // starts fresh.
         if remaining == 0 {
-            Self::clear_position_records(&env, &caller);
+            clear_position_records(&env, &caller);
         }
 
         Ok(usdc_out)
@@ -414,7 +414,7 @@ impl MeridianVault {
         // reflects when the sender first deposited, not what they
         // currently hold.
         if sender_balance_before - amount == 0 {
-            Self::clear_position_records(&env, &from);
+            clear_position_records(&env, &from);
         } else {
             env.storage()
                 .persistent()
@@ -529,7 +529,7 @@ impl MeridianVault {
     /// again through an unrelated deposit or transfer-in.
     pub fn get_entry_time(env: Env, address: Address) -> u64 {
         if Self::get_position(env.clone(), address.clone()) == 0 {
-            Self::clear_position_records(&env, &address);
+            clear_position_records(&env, &address);
             return 0;
         }
         let key = DataKey::Entry(address);
@@ -559,7 +559,7 @@ impl MeridianVault {
     /// live-holder migration, if one hasn't run yet.
     pub fn get_principal(env: Env, address: Address) -> i128 {
         if Self::get_position(env.clone(), address.clone()) == 0 {
-            Self::clear_position_records(&env, &address);
+            clear_position_records(&env, &address);
             return 0;
         }
         let key = DataKey::Principal(address);
@@ -936,20 +936,6 @@ impl MeridianVault {
             .instance()
             .get(&MUSDC)
             .ok_or(ContractError::NotInitialized)
-    }
-
-    /// Clears a holder's Entry/Principal records. The two are always
-    /// written and read together, so every caller of this helper clears
-    /// both rather than leaving one to go stale on its own (see
-    /// `get_principal`, `get_entry_time`, `deposit`, and `withdraw`'s
-    /// full-exit branch).
-    fn clear_position_records(env: &Env, address: &Address) {
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Entry(address.clone()));
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Principal(address.clone()));
     }
 }
 
