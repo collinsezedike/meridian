@@ -22,24 +22,10 @@ NETWORK="testnet"
 # DEPLOYER's own address for local/dev convenience, but should always be
 # explicitly set to a durable key (or multisig) for anything beyond a
 # throwaway testnet run, and MUST be set explicitly ahead of any mainnet
-# deployment. Public key only (G...), not a secret key.
+# deployment. Public key only (G...), not a secret key. Never needs to sign
+# anything at deploy time (see the constructor note below), so no
+# corresponding "ADMIN_KEY" is needed here the way it used to be.
 : "${ADMIN:=}"
-
-# ADMIN_KEY is the signing key (a Stellar secret key, or a `stellar keys`
-# alias) for the ADMIN address above. Optional, and only meaningful when ADMIN
-# is a separate address from DEPLOYER. initialize() calls
-# admin.require_auth(), so that call has to carry ADMIN's own signature, which
-# DEPLOYER cannot produce. When ADMIN_KEY is supplied the script signs and
-# submits initialize() itself, in the same run as the deploy.
-#
-# Supply it whenever the key is available on the machine running this script.
-# initialize() is callable by ANY address (it only checks that whatever admin
-# it is handed authorizes the call), so a deployed-but-uninitialized vault can
-# be claimed by whoever calls initialize() first, with themselves as admin.
-# Leaving ADMIN_KEY unset means the script cannot close that window itself and
-# has to hand the call off, so the window stays open until the key holder runs
-# it. See the warning the script prints in that case.
-: "${ADMIN_KEY:=}"
 
 # Existing testnet assets/protocol contracts this deployment wires the vault
 # to. Override via env var to point at different addresses.
@@ -52,19 +38,6 @@ if [ -z "$ADMIN" ]; then
   echo "WARNING: ADMIN not set, defaulting vault admin to the deployer's own address."
   echo "The deployer key will then also be the permanent admin key. Set ADMIN"
   echo "explicitly to a separate, durable key to avoid this."
-fi
-
-# Resolve identities and fail fast on a mismatched ADMIN_KEY, before spending
-# a build and four transactions to find out the initialize() signature will
-# not satisfy admin.require_auth().
-if [ -n "$ADMIN_KEY" ]; then
-  ADMIN_KEY_ADDRESS=$(stellar keys address "$ADMIN_KEY")
-  if [ "$ADMIN_KEY_ADDRESS" != "$ADMIN_ADDRESS" ]; then
-    echo "ERROR: ADMIN_KEY resolves to $ADMIN_KEY_ADDRESS, but ADMIN is $ADMIN_ADDRESS." >&2
-    echo "They have to be the same identity: initialize() is signed by ADMIN_KEY and" >&2
-    echo "its admin.require_auth() is checked against ADMIN." >&2
-    exit 1
-  fi
 fi
 
 echo "Building contracts..."
@@ -95,9 +68,19 @@ BLEND_ADAPTER_HASH=$(upload "$WASM_BLEND_ADAPTER")
 echo "Uploading mUSDC token WASM..."
 MUSDC_TOKEN_HASH=$(upload "$WASM_MUSDC_TOKEN")
 
-echo "Deploying vault..."
-VAULT_ID=$(deploy "$VAULT_HASH")
-echo "vault contract ID: $VAULT_ID"
+# The vault now takes admin/usdc/musdc/adapter as constructor arguments too
+# (#551, same fix #505/#550 already applied to the adapters/mUSDC), so its
+# state is set inside its own deploying transaction with no intervening
+# ledger for a front-run to land in. But blend-adapter and mUSDC's own
+# constructors need the vault's address, and the vault won't exist to hand
+# out an address until it is deployed. Soroban contract IDs are deterministic
+# from (network, deployer, salt) alone, independent of the wasm being
+# deployed, so a random salt lets the vault's address be computed up front,
+# handed to blend-adapter/mUSDC, and then the vault is deployed to that exact
+# same address with a matching --salt.
+VAULT_SALT=$(openssl rand -hex 32)
+VAULT_ID=$(stellar contract id wasm --network "$NETWORK" --source-account "$DEPLOYER" --salt "$VAULT_SALT")
+echo "Reserved vault contract ID: $VAULT_ID"
 
 # The adapter's vault/pool/USDC wiring is passed as constructor arguments, so
 # it is set inside this same CreateContract operation. There is deliberately no
@@ -120,62 +103,18 @@ MUSDC_ID=$(deploy "$MUSDC_TOKEN_HASH" \
   -- --admin "$VAULT_ID" --decimals 7 --name "Meridian USDC" --symbol mUSDC)
 echo "mUSDC contract ID: $MUSDC_ID"
 
-# Whichever key signs initialize(), it has to be the one that controls
-# ADMIN_ADDRESS: initialize() calls admin.require_auth() on the address it is
-# handed. When ADMIN defaults to DEPLOYER's own address, DEPLOYER's signature
-# satisfies both roles. When ADMIN is separate, only ADMIN_KEY can sign it.
-VAULT_INITIALIZED=0
-INIT_SOURCE=""
-if [ "$ADMIN_ADDRESS" = "$DEPLOYER_ADDRESS" ]; then
-  INIT_SOURCE="$DEPLOYER"
-elif [ -n "$ADMIN_KEY" ]; then
-  INIT_SOURCE="$ADMIN_KEY"
-fi
-
-if [ -n "$INIT_SOURCE" ]; then
-  echo "Initializing vault (admin=$ADMIN_ADDRESS, usdc=$USDC_ID, musdc=$MUSDC_ID, adapter=$BLEND_ADAPTER_ID)..."
-  stellar contract invoke \
-    --network "$NETWORK" --source "$INIT_SOURCE" --id "$VAULT_ID" \
-    -- initialize \
-    --admin "$ADMIN_ADDRESS" --usdc "$USDC_ID" --musdc "$MUSDC_ID" --adapter "$BLEND_ADAPTER_ID"
-  VAULT_INITIALIZED=1
-else
-  # ADMIN is separate from DEPLOYER and its key was not supplied, so this run
-  # cannot sign initialize() at all: submitting with only DEPLOYER's signature
-  # fails with "Missing signing key for account $ADMIN_ADDRESS". Print the
-  # call for the ADMIN key holder to run, and be explicit that the vault is
-  # exposed until they do. Set ADMIN_KEY to avoid this path entirely.
-  echo ""
-  echo "WARNING: the vault at $VAULT_ID is deployed but NOT INITIALIZED."
-  echo ""
-  echo "ADMIN ($ADMIN_ADDRESS) is separate from DEPLOYER and ADMIN_KEY was not"
-  echo "set, so this run has no key that can satisfy initialize()'s"
-  echo "admin.require_auth(). initialize() is callable by anyone, so until the"
-  echo "call below lands, anyone watching testnet can call it first with their"
-  echo "own address as admin. They would then own set_adapter/transfer_admin/"
-  echo "set_paused on this vault, and the real initialize() would fail with"
-  echo "AlreadyInitialized. Run this NOW, or re-run the script with ADMIN_KEY"
-  echo "set and abandon this vault:"
-  echo ""
-  echo "  stellar contract invoke --network $NETWORK --source <your-ADMIN-key-or-alias> \\"
-  echo "    --id $VAULT_ID -- initialize \\"
-  echo "    --admin $ADMIN_ADDRESS --usdc $USDC_ID --musdc $MUSDC_ID --adapter $BLEND_ADAPTER_ID"
-  echo ""
-  echo "Then confirm the vault is yours before funding it:"
-  echo ""
-  echo "  stellar contract invoke --network $NETWORK --source $DEPLOYER_ADDRESS \\"
-  echo "    --send=no --id $VAULT_ID -- get_admin"
-  echo ""
-fi
+# Deploying with the same salt used to reserve VAULT_ID above lands the vault
+# at that exact address. Its constructor sets admin/usdc/musdc/adapter in
+# this same transaction, so ADMIN never needs to sign anything here (unlike
+# the old two-step deploy-then-initialize()) and there is no window where the
+# vault exists but is unclaimed.
+echo "Deploying vault (admin=$ADMIN_ADDRESS, usdc=$USDC_ID, musdc=$MUSDC_ID, adapter=$BLEND_ADAPTER_ID)..."
+stellar contract deploy --network "$NETWORK" --source "$DEPLOYER" --wasm-hash "$VAULT_HASH" --salt "$VAULT_SALT" \
+  -- --admin "$ADMIN_ADDRESS" --usdc "$USDC_ID" --musdc "$MUSDC_ID" --adapter "$BLEND_ADAPTER_ID"
+echo "vault contract ID: $VAULT_ID"
 
 echo ""
 echo "Done. Add these to your .env:"
 echo "  VAULT_CONTRACT_ID=$VAULT_ID"
 echo "  BLEND_ADAPTER_CONTRACT_ID=$BLEND_ADAPTER_ID"
 echo "  MUSDC_CONTRACT_ID=$MUSDC_ID"
-if [ "$VAULT_INITIALIZED" -eq 0 ]; then
-  echo ""
-  echo "Reminder: the vault is deployed but NOT YET INITIALIZED, and claimable"
-  echo "by anyone until it is. See the initialize() command printed above for"
-  echo "the ADMIN key holder to run."
-fi

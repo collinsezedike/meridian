@@ -88,8 +88,24 @@ pub struct MeridianVault;
 
 #[contractimpl]
 impl MeridianVault {
-    /// Called once at deployment. Sets the admin, USDC token address, mUSDC
-    /// share token address, and the initial yield adapter address.
+    /// Sets the admin, USDC token address, mUSDC share token address, and
+    /// the initial yield adapter address, inside the deploying transaction's
+    /// own `CreateContract` operation. Unlike a separate `initialize()` call,
+    /// there is no intervening ledger where an attacker could land a
+    /// self-authorized call first: the deployer's transaction is the only
+    /// one that can ever set this contract's state (#551, same bug class as
+    /// #505, fixed for the adapters/mUSDC in #550).
+    pub fn __constructor(env: Env, admin: Address, usdc: Address, musdc: Address, adapter: Address) {
+        Self::init_state(&env, &admin, &usdc, &musdc, &adapter);
+    }
+
+    /// Retained so the ABI of vaults already deployed from earlier WASM is
+    /// unchanged, and so an old vault can still be initialized by hand.
+    ///
+    /// On any vault deployed from this WASM it is unreachable: `__constructor`
+    /// has already set `ADMIN`, so every call returns `AlreadyInitialized`.
+    /// That is the intended behavior, not a leftover. An attacker calling
+    /// this against a freshly deployed vault is rejected instead of served.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -101,13 +117,20 @@ impl MeridianVault {
             return Err(ContractError::AlreadyInitialized);
         }
         admin.require_auth();
-        env.storage().instance().set(&ADMIN, &admin);
-        env.storage().instance().set(&USDC, &usdc);
-        env.storage().instance().set(&MUSDC, &musdc);
-        env.storage().instance().set(&ADAPTER, &adapter);
+        Self::init_state(&env, &admin, &usdc, &musdc, &adapter);
+        Ok(())
+    }
+
+    /// The write half of initialization, shared by `__constructor` and
+    /// `initialize` so the two can never set up different state. Not exported
+    /// (no `pub`), so it is not callable from outside the contract.
+    fn init_state(env: &Env, admin: &Address, usdc: &Address, musdc: &Address, adapter: &Address) {
+        env.storage().instance().set(&ADMIN, admin);
+        env.storage().instance().set(&USDC, usdc);
+        env.storage().instance().set(&MUSDC, musdc);
+        env.storage().instance().set(&ADAPTER, adapter);
         env.storage().instance().set(&TOTAL_SH, &0_i128);
         env.storage().instance().set(&ADPT_SH, &0_i128);
-        Ok(())
     }
 
     /// Deposit `amount` USDC into the vault. USDC is forwarded to the yield
@@ -1440,13 +1463,20 @@ mod tests {
         let adapter_id = env.register(CachedMockAdapter, ());
         CachedMockAdapterClient::new(&env, &adapter_id).initialize(&usdc_id);
 
-        let vault_id = env.register(MeridianVault, ());
-        let vault = MeridianVaultClient::new(&env, &vault_id);
+        // See setup()'s comment below on why the vault's address is
+        // pre-generated and reserved via register_at rather than registered
+        // directly (#551).
+        let vault_id = Address::generate(&env);
 
         let musdc_id = env.register(MockMusdc, ());
         MockMusdcClient::new(&env, &musdc_id).initialize(&vault_id);
 
-        vault.initialize(&admin, &usdc_id, &musdc_id, &adapter_id);
+        env.register_at(
+            &vault_id,
+            MeridianVault,
+            (&admin, &usdc_id, &musdc_id, &adapter_id),
+        );
+        let vault = MeridianVaultClient::new(&env, &vault_id);
 
         StellarAssetClient::new(&env, &usdc_id).mint(&user, &10_000_000_000_i128);
 
@@ -1482,20 +1512,26 @@ mod tests {
         let adapter_id = env.register(MockAdapter, ());
         MockAdapterClient::new(&env, &adapter_id).initialize(&usdc_id);
 
-        // The vault must exist before mUSDC can be initialized with it as
-        // admin (mUSDC's admin is a contract address, not an account, so it
-        // can never itself sign an `initialize()` call the way a deploy
-        // script's admin key signs the vault's own `initialize()` — this
-        // mirrors the vault's own initialize() being callable by anyone
-        // before the real admin gets to it, see
-        // apps/docs/operations/testnet-deployment.md).
-        let vault_id = env.register(MeridianVault, ());
-        let vault = MeridianVaultClient::new(&env, &vault_id);
+        // The vault's real deployment wires mUSDC and the adapter through
+        // its own __constructor (#551), which needs their addresses already
+        // known, but mUSDC's admin (this vault's own address) needs to be
+        // known before *that* can happen either. Real deployments break this
+        // cycle with a precomputed, deterministic contract ID (`stellar
+        // contract id wasm --salt`, then `deploy --salt` to land on that same
+        // address); `register_at` is the test-env equivalent, reserving the
+        // vault's address up front so mUSDC can be told about it before the
+        // vault itself is actually registered.
+        let vault_id = Address::generate(&env);
 
         let musdc_id = env.register(MockMusdc, ());
         MockMusdcClient::new(&env, &musdc_id).initialize(&vault_id);
 
-        vault.initialize(&admin, &usdc_id, &musdc_id, &adapter_id);
+        env.register_at(
+            &vault_id,
+            MeridianVault,
+            (&admin, &usdc_id, &musdc_id, &adapter_id),
+        );
+        let vault = MeridianVaultClient::new(&env, &vault_id);
 
         // Fund the user with 1000 USDC (7 decimal places: 1000 * 10^7).
         StellarAssetClient::new(&env, &usdc_id).mint(&user, &10_000_000_000_i128);
@@ -2079,6 +2115,22 @@ mod tests {
     }
 
     #[test]
+    fn initialize_cannot_hijack_a_constructor_deployed_vault() {
+        // The #551 front-run, run against the fixed contract. An attacker
+        // watching the ledger calls initialize() with their own address as
+        // admin, hoping to land before the deployer's own call. There is no
+        // longer a window to land in: __constructor already ran inside the
+        // deploying transaction, so the attempt is rejected and the vault
+        // stays bound to the real admin.
+        let (env, admin, _user, usdc_id, musdc_id, adapter_id, vault) = setup();
+        let attacker = Address::generate(&env);
+
+        let result = vault.try_initialize(&attacker, &usdc_id, &musdc_id, &adapter_id);
+        assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
+        assert_eq!(vault.get_admin(), admin);
+    }
+
+    #[test]
     fn deposit_zero_amount_fails() {
         let (_env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
         let result = vault.try_deposit(&user, &0_i128, &0_i128);
@@ -2339,9 +2391,11 @@ mod tests {
         let musdc_id = env
             .register_stellar_asset_contract_v2(admin.clone())
             .address();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = env.register(
+            MeridianVault,
+            (&admin, &usdc, &musdc_id, &zero_share_adapter_id),
+        );
         let vault = MeridianVaultClient::new(&env, &vault_id);
-        vault.initialize(&admin, &usdc, &musdc_id, &zero_share_adapter_id);
 
         // Attempt deposit and assert it returns AdapterCreditedNothing
         let result = vault.try_deposit(&user, &amount, &0_i128);
@@ -2634,11 +2688,33 @@ mod tests {
         );
     }
 
+    // __constructor always sets ADMIN/USDC/MUSDC/ADAPTER on any real
+    // deployment (#551), so a genuinely uninitialized vault is unreachable in
+    // practice. These tests register a real vault through the constructor,
+    // then strip that state directly, to prove the NotInitialized guards
+    // still fire correctly if that invariant is ever violated by a future
+    // change (mirrors blend-adapter's
+    // refresh_panics_when_pool_key_is_unset).
+    fn register_uninitialized_vault(env: &Env) -> Address {
+        let admin = Address::generate(env);
+        let usdc = Address::generate(env);
+        let musdc = Address::generate(env);
+        let adapter = Address::generate(env);
+        let vault_id = env.register(MeridianVault, (&admin, &usdc, &musdc, &adapter));
+        env.as_contract(&vault_id, || {
+            env.storage().instance().remove(&ADMIN);
+            env.storage().instance().remove(&USDC);
+            env.storage().instance().remove(&MUSDC);
+            env.storage().instance().remove(&ADAPTER);
+        });
+        vault_id
+    }
+
     #[test]
     fn get_admin_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let result = vault.try_get_admin();
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
@@ -2648,7 +2724,7 @@ mod tests {
     fn get_adapter_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let result = vault.try_get_adapter();
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
@@ -2658,7 +2734,7 @@ mod tests {
     fn get_total_assets_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let result = vault.try_get_total_assets();
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
@@ -2668,7 +2744,7 @@ mod tests {
     fn set_paused_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let result = vault.try_set_paused(&true);
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
@@ -2678,7 +2754,7 @@ mod tests {
     fn transfer_admin_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let new_admin = Address::generate(&env);
         let result = vault.try_transfer_admin(&new_admin);
@@ -2689,7 +2765,7 @@ mod tests {
     fn set_adapter_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let new_adapter = Address::generate(&env);
         let result = vault.try_set_adapter(&new_adapter);
@@ -2700,7 +2776,7 @@ mod tests {
     fn deposit_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let user = Address::generate(&env);
         let result = vault.try_deposit(&user, &100_0000000_i128, &0_i128);
@@ -2711,7 +2787,7 @@ mod tests {
     fn withdraw_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let user = Address::generate(&env);
         let result = vault.try_withdraw(&user, &100_0000000_i128, &0_i128);
@@ -2985,13 +3061,21 @@ mod tests {
                 .address();
             let adapter_id = env.register(MockAdapter, ());
             MockAdapterClient::new(&env, &adapter_id).initialize(&usdc_id);
-            let vault_id = env.register(MeridianVault, ());
-            let vault = MeridianVaultClient::new(&env, &vault_id);
+
+            // See setup()'s comment above on why the vault's address is
+            // pre-generated and reserved via register_at rather than
+            // registered directly (#551).
+            let vault_id = Address::generate(&env);
 
             let musdc_id = env.register(MockMusdc, ());
             MockMusdcClient::new(&env, &musdc_id).initialize(&vault_id);
 
-            vault.initialize(&admin, &usdc_id, &musdc_id, &adapter_id);
+            env.register_at(
+                &vault_id,
+                MeridianVault,
+                (&admin, &usdc_id, &musdc_id, &adapter_id),
+            );
+            let vault = MeridianVaultClient::new(&env, &vault_id);
 
             StellarAssetClient::new(&env, &usdc_id).mint(&user_a, &10_000_000_i128);
             StellarAssetClient::new(&env, &usdc_id).mint(&user_b, &10_000_i128);
