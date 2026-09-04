@@ -4,9 +4,6 @@ use adapter_common::{
     get_usdc, require_not_initialized, require_vault_auth, store_vault_and_usdc, AdapterError,
 };
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short,
-    token::TokenClient, vec, Address, Env, Symbol, Val, Vec,
-    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short,
     contract, contractclient, contracterror, contractimpl, panic_with_error, symbol_short,
     token::TokenClient, vec, Address, Env, Symbol, Val, Vec,
 };
@@ -43,46 +40,6 @@ pub trait DefindexVaultInterface {
     fn balance(env: Env, id: Address) -> i128;
 
     fn get_asset_amounts_per_shares(env: Env, desired_shares: i128) -> Vec<i128>;
-}
-
-// ---------------------------------------------------------------------------
-// Events
-// ---------------------------------------------------------------------------
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterDepositEvent {
-    pub amount: i128,
-    pub shares_credited: i128,
-    pub total_shares: i128,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterWithdrawEvent {
-    pub shares_redeemed: i128,
-    pub amount_out: i128,
-    pub remaining_shares: i128,
-}
-
-// ---------------------------------------------------------------------------
-// Events
-// ---------------------------------------------------------------------------
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterDepositEvent {
-    pub amount: i128,
-    pub shares_credited: i128,
-    pub total_shares: i128,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdapterWithdrawEvent {
-    pub shares_redeemed: i128,
-    pub amount_out: i128,
-    pub remaining_shares: i128,
 }
 
 // ---------------------------------------------------------------------------
@@ -173,14 +130,6 @@ impl MeridianDefindexAdapter {
     fn init_state(env: &Env, vault: &Address, defindex_vault: &Address, usdc: &Address) {
         store_vault_and_usdc(env, vault, usdc);
         env.storage().instance().set(&DFX_VAULT, defindex_vault);
-        env.events().publish(
-            (symbol_short!("init"), vault.clone(), defindex_vault.clone()),
-            usdc.clone(),
-        );
-        env.events().publish(
-            (symbol_short!("init"), vault.clone(), defindex_vault.clone()),
-            usdc.clone(),
-        );
     }
 
     /// Called by the vault after transferring `amount` USDC to this adapter.
@@ -199,28 +148,7 @@ impl MeridianDefindexAdapter {
         let shares_before = client.balance(&adapter);
         let _ = client.deposit(&vec![&env, amount], &vec![&env, 0_i128], &adapter, &true);
         let shares_after = client.balance(&adapter);
-        let shares_credited = shares_after - shares_before;
-        env.events().publish(
-            (symbol_short!("deposit"), adapter),
-            AdapterDepositEvent {
-                amount,
-                shares_credited,
-                total_shares: shares_after,
-            },
-        );
 
-        shares_credited
-        let shares_credited = shares_after - shares_before;
-        env.events().publish(
-            (symbol_short!("deposit"), adapter),
-            AdapterDepositEvent {
-                amount,
-                shares_credited,
-                total_shares: shares_after,
-            },
-        );
-
-        shares_credited
         // checked_sub alone only catches i128 overflow, not a merely
         // negative result: on signed integers, a decreasing balance
         // (shares_after < shares_before) subtracts to a valid negative
@@ -249,10 +177,8 @@ impl MeridianDefindexAdapter {
         let usdc = get_usdc(&env);
         let adapter = env.current_contract_address();
 
-        let client = DefindexVaultClient::new(&env, &dfx);
-        let amounts = client.withdraw(&shares, &vec![&env, 0_i128], &adapter);
-        let client = DefindexVaultClient::new(&env, &dfx);
-        let amounts = client.withdraw(&shares, &vec![&env, 0_i128], &adapter);
+        let amounts =
+            DefindexVaultClient::new(&env, &dfx).withdraw(&shares, &vec![&env, 0_i128], &adapter);
 
         let usdc_out: i128 = match amounts.get(0) {
             Some(value) => value,
@@ -261,24 +187,6 @@ impl MeridianDefindexAdapter {
         if usdc_out > 0 {
             TokenClient::new(&env, &usdc).transfer(&adapter, &recipient, &usdc_out);
         }
-        let remaining_shares = client.balance(&adapter);
-        env.events().publish(
-            (symbol_short!("withdraw"), recipient),
-            AdapterWithdrawEvent {
-                shares_redeemed: shares,
-                amount_out: usdc_out,
-                remaining_shares,
-            },
-        );
-        let remaining_shares = client.balance(&adapter);
-        env.events().publish(
-            (symbol_short!("withdraw"), recipient),
-            AdapterWithdrawEvent {
-                shares_redeemed: shares,
-                amount_out: usdc_out,
-                remaining_shares,
-            },
-        );
 
         usdc_out
     }
@@ -317,26 +225,9 @@ impl MeridianDefindexAdapter {
         DefindexVaultClient::new(&env, &dfx).balance(&adapter)
     }
 
-    /// DeFindex prices live, so refresh does not mutate storage. It still emits
-    /// the observed value because callers use this mutation hook as their
-    /// synchronization point and need a filterable off-chain signal.
-    pub fn refresh(env: Env) {
-        let total_assets = Self::total_assets(env.clone());
-        env.events().publish(
-            (symbol_short!("refresh"), env.current_contract_address()),
-            total_assets,
-        );
-    }
-    /// DeFindex prices live, so refresh does not mutate storage. It still emits
-    /// the observed value because callers use this mutation hook as their
-    /// synchronization point and need a filterable off-chain signal.
-    pub fn refresh(env: Env) {
-        let total_assets = Self::total_assets(env.clone());
-        env.events().publish(
-            (symbol_short!("refresh"), env.current_contract_address()),
-            total_assets,
-        );
-    }
+    /// No-op: DeFindex's total_assets() already prices live on every call
+    /// via the vault's exchange rate, so there is no cache to refresh.
+    pub fn refresh(_env: Env) {}
 
     /// Returns the DeFindex vault this adapter deposits into.
     pub fn get_pool(env: Env) -> Address {
@@ -361,11 +252,9 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         contract, contractimpl, symbol_short,
-        testutils::{Address as _, Events as _},
-        testutils::{Address as _, Events as _},
+        testutils::Address as _,
         token::{StellarAssetClient, TokenClient},
-        Address, Env, IntoVal, TryFromVal,
-        Address, Env, IntoVal, TryFromVal,
+        Address, Env,
     };
 
     // -----------------------------------------------------------------------
@@ -506,47 +395,17 @@ mod tests {
         let dfx = MockDefindexVaultClient::new(&env, &dfx_id);
         dfx.initialize(&usdc_id);
 
-        // Fund the vault (the caller of deposit) with USDC, then act as the
-        // vault transferring into the adapter, matching real vault behaviour.
-        StellarAssetClient::new(&env, &usdc_id).mint(&vault, &10_000_000_000_i128);
-
-        // Fund the vault (the caller of deposit) with USDC, then act as the
-        // vault transferring into the adapter, matching real vault behaviour.
-        StellarAssetClient::new(&env, &usdc_id).mint(&vault, &10_000_000_000_i128);
-
         let adapter_id = env.register(
             MeridianDefindexAdapter,
             (vault.clone(), dfx_id.clone(), usdc_id.clone()),
         );
         let adapter = MeridianDefindexAdapterClient::new(&env, &adapter_id);
 
+        // Fund the vault (the caller of deposit) with USDC, then act as the
+        // vault transferring into the adapter, matching real vault behaviour.
+        StellarAssetClient::new(&env, &usdc_id).mint(&vault, &10_000_000_000_i128);
+
         (env, vault, usdc_id, adapter, dfx)
-    }
-
-    #[test]
-    fn constructor_publishes_event() {
-        let (env, vault, usdc, adapter, dfx) = setup();
-        let topics = (symbol_short!("init"), vault, dfx.address).into_val(&env);
-        let event = env
-            .events()
-            .all()
-            .iter()
-            .find(|event| event.0 == adapter.address && event.1 == topics)
-            .unwrap();
-        assert_eq!(Address::try_from_val(&env, &event.2).unwrap(), usdc);
-    }
-
-    #[test]
-    fn constructor_publishes_event() {
-        let (env, vault, usdc, adapter, dfx) = setup();
-        let topics = (symbol_short!("init"), vault, dfx.address).into_val(&env);
-        let event = env
-            .events()
-            .all()
-            .iter()
-            .find(|event| event.0 == adapter.address && event.1 == topics)
-            .unwrap();
-        assert_eq!(Address::try_from_val(&env, &event.2).unwrap(), usdc);
     }
 
     #[test]
@@ -612,34 +471,7 @@ mod tests {
         let shares = adapter.deposit(&amount);
 
         assert_eq!(shares, amount);
-        let (contract, topics, data) = env.events().all().last().unwrap();
-        assert_eq!(contract, adapter.address);
-        assert_eq!(
-            topics,
-            (symbol_short!("deposit"), adapter.address.clone()).into_val(&env)
-        );
-        assert_eq!(
-            AdapterDepositEvent::try_from_val(&env, &data).unwrap(),
-            AdapterDepositEvent {
-                amount,
-                shares_credited: amount,
-                total_shares: amount,
-            }
-        );
-        let (contract, topics, data) = env.events().all().last().unwrap();
-        assert_eq!(contract, adapter.address);
-        assert_eq!(
-            topics,
-            (symbol_short!("deposit"), adapter.address.clone()).into_val(&env)
-        );
-        assert_eq!(
-            AdapterDepositEvent::try_from_val(&env, &data).unwrap(),
-            AdapterDepositEvent {
-                amount,
-                shares_credited: amount,
-                total_shares: amount,
-            }
-        );
+        assert_eq!(adapter.total_assets(), amount);
     }
 
     #[test]
@@ -669,65 +501,10 @@ mod tests {
         let usdc_out = adapter.withdraw(&amount, &recipient);
 
         assert_eq!(usdc_out, amount);
-        let (contract, topics, data) = env.events().all().last().unwrap();
-        assert_eq!(contract, adapter.address);
-        assert_eq!(
-            topics,
-            (symbol_short!("withdraw"), recipient.clone()).into_val(&env)
-        );
-        assert_eq!(
-            AdapterWithdrawEvent::try_from_val(&env, &data).unwrap(),
-            AdapterWithdrawEvent {
-                shares_redeemed: amount,
-                amount_out: amount,
-                remaining_shares: 0,
-            }
-        );
-        let (contract, topics, data) = env.events().all().last().unwrap();
-        assert_eq!(contract, adapter.address);
-        assert_eq!(
-            topics,
-            (symbol_short!("withdraw"), recipient.clone()).into_val(&env)
-        );
-        assert_eq!(
-            AdapterWithdrawEvent::try_from_val(&env, &data).unwrap(),
-            AdapterWithdrawEvent {
-                shares_redeemed: amount,
-                amount_out: amount,
-                remaining_shares: 0,
-            }
-        );
         assert_eq!(TokenClient::new(&env, &usdc_id).balance(&recipient), amount);
     }
 
     #[test]
-    fn refresh_publishes_current_value() {
-        let (env, _vault, _usdc, adapter, _dfx) = setup();
-        adapter.refresh();
-        let (contract, topics, data) = env.events().all().last().unwrap();
-        assert_eq!(contract, adapter.address);
-        assert_eq!(
-            topics,
-            (symbol_short!("refresh"), adapter.address.clone()).into_val(&env)
-        );
-        assert_eq!(i128::try_from_val(&env, &data).unwrap(), 0_i128);
-    }
-
-    #[test]
-    fn refresh_publishes_current_value() {
-        let (env, _vault, _usdc, adapter, _dfx) = setup();
-        adapter.refresh();
-        let (contract, topics, data) = env.events().all().last().unwrap();
-        assert_eq!(contract, adapter.address);
-        assert_eq!(
-            topics,
-            (symbol_short!("refresh"), adapter.address.clone()).into_val(&env)
-        );
-        assert_eq!(i128::try_from_val(&env, &data).unwrap(), 0_i128);
-    }
-
-    #[test]
-    fn withdraw_returns_zero_when_defindex_returns_no_amounts() {
     fn withdraw_errs_on_malformed_defindex_response() {
         let (env, vault, usdc_id, adapter, dfx) = setup();
         let amount = 100_0000000_i128;
