@@ -1,10 +1,14 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
+  consoleLogger,
   isMigrationKeeperConfigured,
+  loadKeeperHeartbeatStore,
   loadMigrationKeeperConfig,
+  recordKeeperHeartbeat,
   redactedErrorMessage,
   runMigrationKeeper,
 } from "@meridian/stellar-sdk-helpers";
+import { APP_NETWORK } from "@meridian/shared";
 import {
   checkRateLimit,
   isCronAuthorized,
@@ -33,7 +37,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // itself is more tolerant: this is the abuse backstop on an endpoint that
   // signs real transactions, and the next scheduled tick retries anyway.
   try {
-    if (!(await checkRateLimit(req, res))) return;
+    if (!(await checkRateLimit(req, res, { strict: true }))) return;
   } catch (err) {
     console.error("[migration-keeper] rate limit check failed:", err);
     return res
@@ -65,6 +69,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const config = loadMigrationKeeperConfig(process.env);
     const result = await runMigrationKeeper(config);
     const status = result.failures.length > 0 ? 500 : 200;
+    // See accrue.ts's matching comment: recorded only on a clean run,
+    // best-effort, after the response status is already decided.
+    if (result.failures.length === 0) {
+      const store = loadKeeperHeartbeatStore(process.env, {
+        logger: consoleLogger,
+      });
+      await recordKeeperHeartbeat(
+        store,
+        "migration",
+        APP_NETWORK.network,
+        consoleLogger
+      );
+    }
     return res.status(status).json(result);
   } catch (err) {
     console.error("[migration-keeper] run failed:", err);

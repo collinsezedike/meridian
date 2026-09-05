@@ -1,9 +1,13 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
+  consoleLogger,
   loadBlendAccrualKeeperConfig,
+  loadKeeperHeartbeatStore,
+  recordKeeperHeartbeat,
   redactedErrorMessage,
   runBlendAccrualKeeper,
 } from "@meridian/stellar-sdk-helpers";
+import { APP_NETWORK } from "@meridian/shared";
 import {
   checkRateLimit,
   isCronAuthorized,
@@ -31,7 +35,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // itself is more tolerant: this is the abuse backstop on an endpoint that
   // signs real transactions, and the next scheduled tick retries anyway.
   try {
-    if (!(await checkRateLimit(req, res))) return;
+    if (!(await checkRateLimit(req, res, { strict: true }))) return;
   } catch (err) {
     console.error("[accrual-keeper] rate limit check failed:", err);
     return res
@@ -51,6 +55,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const config = loadBlendAccrualKeeperConfig(process.env);
     const result = await runBlendAccrualKeeper(config);
     const status = result.failures.length > 0 ? 500 : 200;
+    // Recorded on a clean run only (no failures), even if there was nothing
+    // to do (zero discovered adapters): a clean no-op run still proves the
+    // keeper itself is alive, which is what the admin dashboard's Keeper
+    // Health card is showing. Best-effort and after the response status is
+    // already decided — a heartbeat-store hiccup must never turn an
+    // otherwise-successful run into a reported failure.
+    if (result.failures.length === 0) {
+      const store = loadKeeperHeartbeatStore(process.env, {
+        logger: consoleLogger,
+      });
+      await recordKeeperHeartbeat(
+        store,
+        "accrual",
+        APP_NETWORK.network,
+        consoleLogger
+      );
+    }
     return res.status(status).json(result);
   } catch (err) {
     console.error("[accrual-keeper] run failed:", err);

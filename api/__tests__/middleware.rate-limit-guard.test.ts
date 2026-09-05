@@ -1,13 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-// This file intentionally has no static import of middleware.js: the module
-// throws at load time when VERCEL_ENV=production and the Upstash credentials
-// are absent, so importing it statically would crash the whole file (and every
-// pre-existing test in it) if the ambient environment ever has those vars set.
-// All imports below are dynamic, inside the test body, where the env vars are
-// controlled explicitly.
-
 // Minimal fake request / response ------------------------------------------------
 
 function fakeReq(
@@ -40,77 +33,80 @@ function fakeRes(): FakeRes & VercelResponse {
       r.body = payload;
       return this;
     },
+    setHeader(key: string, value: string) {
+      r.headers[key.toLowerCase()] = value;
+      return this;
+    },
     end() {
       r.ended = true;
       return this;
     },
-    setHeader(k: string, v: string) {
-      r.headers[k] = v;
-    },
-  }) as unknown as FakeRes & VercelResponse;
+  }) as FakeRes & VercelResponse;
 }
 
-// production rate-limit guard -------------------------------------------------
+// --------------------------------------------------------------------------------
 
-describe("production rate-limit guard", () => {
-  const savedEnv = {
-    VERCEL_ENV: process.env.VERCEL_ENV,
-    UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL,
-    UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN,
-  };
+describe("Rate limit production fail-closed scoping (#621)", () => {
+  const originalEnv = { ...process.env };
 
   afterEach(() => {
-    Object.entries(savedEnv).forEach(([k, v]) => {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    });
+    process.env = { ...originalEnv };
+    vi.resetModules();
   });
 
-  it("throws at module load in production when Upstash env vars are missing", async () => {
-    vi.resetModules();
+  it("does not throw at module load when VERCEL_ENV=production and Upstash is unconfigured", async () => {
     process.env.VERCEL_ENV = "production";
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
-    await expect(import("../_lib/middleware.js")).rejects.toThrow(
-      /UPSTASH_REDIS_REST_URL/
-    );
-  });
+    delete process.env.UPSTASH_REDIS_REST_KV_REST_API_URL;
+    delete process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN;
 
-  it("loads in production when Upstash env vars are set", async () => {
-    vi.resetModules();
-    process.env.VERCEL_ENV = "production";
-    process.env.UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
-    process.env.UPSTASH_REDIS_REST_TOKEN = "test-token";
     await expect(import("../_lib/middleware.js")).resolves.toBeDefined();
-  });
+  }, 15000);
 
-  it("keeps the in-memory fallback for local dev (VERCEL_ENV unset)", async () => {
-    vi.resetModules();
-    delete process.env.VERCEL_ENV;
+  it("allows non-strict read-only routes to fall back to in-memory limiter in production without Upstash", async () => {
+    process.env.VERCEL_ENV = "production";
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
-    const mod = await import("../_lib/middleware.js");
-    const res = fakeRes();
-    await expect(
-      mod.checkRateLimit(
-        fakeReq("POST", { "x-forwarded-for": "10.1.1.1" }),
-        res
-      )
-    ).resolves.toBe(true);
-  });
+    delete process.env.UPSTASH_REDIS_REST_KV_REST_API_URL;
+    delete process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN;
 
-  it("keeps the in-memory fallback on preview deploys (VERCEL_ENV=preview)", async () => {
-    vi.resetModules();
-    process.env.VERCEL_ENV = "preview";
+    const mod = await import("../_lib/middleware.js");
+    const req = fakeReq("GET", { "x-vercel-forwarded-for": "1.2.3.4" });
+    const res = fakeRes();
+
+    const allowed = await mod.checkRateLimit(req, res, { strict: false });
+    expect(allowed).toBe(true);
+    expect(res.statusCode).toBe(200);
+  }, 15000);
+
+  it("fails with HTTP 503 for strict critical routes in production when Upstash is unconfigured", async () => {
+    process.env.VERCEL_ENV = "production";
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    delete process.env.UPSTASH_REDIS_REST_KV_REST_API_URL;
+    delete process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN;
+
     const mod = await import("../_lib/middleware.js");
+    const req = fakeReq("POST", { "x-vercel-forwarded-for": "1.2.3.4" });
     const res = fakeRes();
-    await expect(
-      mod.checkRateLimit(
-        fakeReq("POST", { "x-forwarded-for": "10.1.1.2" }),
-        res
-      )
-    ).resolves.toBe(true);
-  });
+
+    const allowed = await mod.checkRateLimit(req, res, { strict: true });
+    expect(allowed).toBe(false);
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toEqual(
+      expect.objectContaining({
+        code: "RATE_LIMIT_BACKEND_UNAVAILABLE",
+      })
+    );
+  }, 15000);
+
+  it("allows strict routes when distributed rate limiting is configured", async () => {
+    process.env.VERCEL_ENV = "production";
+    process.env.UPSTASH_REDIS_REST_URL = "https://mock-redis.upstash.io";
+    process.env.UPSTASH_REDIS_REST_TOKEN = "mock-token";
+
+    const mod = await import("../_lib/middleware.js");
+    expect(mod.isDistributedRateLimitingConfigured()).toBe(true);
+  }, 15000);
 });

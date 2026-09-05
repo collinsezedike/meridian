@@ -296,6 +296,13 @@ async function clearRecord(
  */
 export class SubmissionLease {
   private held: StoredRecord | null;
+  // Set the moment a signed transaction's hash-write is attempted, and only
+  // cleared on a confirmed outcome (the write landed, or the lease was lost).
+  // A failed write leaves the stored claim hash-less, so `unsent` alone can't
+  // tell "never signed" from "signed but the record write failed"; this flag
+  // makes the latter not safe to release, so `releaseIfUnsent` won't delete
+  // the very record meant to block a duplicate submission.
+  private writeAttempted = false;
 
   private constructor(
     private readonly store: KeeperStateStore,
@@ -353,9 +360,19 @@ export class SubmissionLease {
     };
   }
 
-  /** Whether this run still holds a claim that never became a transaction. */
+  /**
+   * Whether this run still holds a claim that never became a transaction.
+   * False when a hash-write was attempted but its outcome is unknown: the
+   * stored claim may still be hash-less, but a signed transaction may be in
+   * flight, so releasing it would delete the record meant to block a
+   * duplicate submission.
+   */
   get unsent(): boolean {
-    return this.held !== null && this.held.record.hash === null;
+    return (
+      this.held !== null &&
+      this.held.record.hash === null &&
+      !this.writeAttempted
+    );
   }
 
   /**
@@ -367,6 +384,11 @@ export class SubmissionLease {
   private async write(hash: string, now = Date.now()): Promise<void> {
     if (!this.held) return;
     const revision = this.held.revision;
+    // Mark the write as attempted before the first store call. If every
+    // retry fails, the stored claim stays hash-less but a signed transaction
+    // may be in flight, so `unsent` must not report this run as having sent
+    // nothing (which would let `releaseIfUnsent` delete the claim).
+    this.writeAttempted = true;
     try {
       const next = await withRetry(
         () =>
@@ -387,9 +409,11 @@ export class SubmissionLease {
           hash,
         });
         this.held = null;
+        this.writeAttempted = false;
         return;
       }
       this.held = next;
+      this.writeAttempted = false;
     } catch (err) {
       // Every retry failed: the claim (short TTL, no hash) is still what's
       // stored, so this signed, in-flight transaction is only covered until
@@ -412,6 +436,7 @@ export class SubmissionLease {
     if (!this.held) return;
     const revision = this.held.revision;
     this.held = null;
+    this.writeAttempted = false;
     await clearRecord(
       this.store,
       this.key,
@@ -628,8 +653,15 @@ export function loadKeeperStateStore(
     timeoutMs?: number;
   }
 ): KeeperStateStore {
-  const url = env.UPSTASH_REDIS_REST_URL?.trim();
-  const token = env.UPSTASH_REDIS_REST_TOKEN?.trim();
+  // Vercel's own Upstash Marketplace integration provisions credentials
+  // under a store-prefixed name, not the plain UPSTASH_REDIS_REST_URL/_TOKEN
+  // a manually-configured Upstash instance uses. Accept either.
+  const url = (
+    env.UPSTASH_REDIS_REST_URL ?? env.UPSTASH_REDIS_REST_KV_REST_API_URL
+  )?.trim();
+  const token = (
+    env.UPSTASH_REDIS_REST_TOKEN ?? env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN
+  )?.trim();
   if (url && token) {
     return createUpstashKeeperStateStore({
       url,

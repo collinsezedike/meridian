@@ -1,6 +1,6 @@
 # Signing Flow
 
-Meridian's core security property is that the server never holds or touches private keys. The signing flow enforces this by splitting transaction construction and transaction signing into separate steps on separate systems.
+Meridian's core security property is that the server never holds or touches private keys. The signing flow enforces this by splitting transaction construction and transaction signing into separate steps on separate systems. Signing itself goes through the `WalletAdapter` interface, so the flow below applies to any connected wallet, not a specific one.
 
 ## Sequence diagram
 
@@ -21,9 +21,9 @@ Browser                    API (Vercel)              Stellar RPC
    │◄──────────────────────────│  (add footprint + fee)   │
    │  { xdr, fee }             │                          │
    │                           │                          │
-   │  signTransaction(xdr)     │                          │
+   │  wallet.sign(xdr, ...)    │                          │
    │──────────────┐            │                          │
-   │  Freighter   │            │                          │
+   │  Wallet      │            │                          │
    │  shows user: │            │                          │
    │  contract,   │            │                          │
    │  function,   │            │                          │
@@ -46,7 +46,7 @@ Browser                    API (Vercel)              Stellar RPC
 
 **The API receives only a public key, never a private key.** It uses the public key to fetch the account's sequence number from the Stellar RPC, which is needed to construct a valid transaction. The private key never leaves the user's device.
 
-**The user sees the transaction before signing.** Freighter displays the contract address, function name, and all arguments. The user can reject if anything looks wrong.
+**The user sees the transaction before signing.** The connected wallet displays the contract address, function name, and all arguments. The user can reject if anything looks wrong.
 
 **The API cannot forge a transaction on the user's behalf.** `caller.require_auth()` in the Soroban contract ensures the transaction is only valid if it carries a valid signature from `caller`. The API cannot produce that signature.
 
@@ -62,9 +62,30 @@ Before returning XDR to the client, the API simulates the transaction against th
 
 ## Network passphrase
 
-Every Stellar transaction is bound to a specific network by its passphrase. The signed XDR from Freighter is only valid on the network it was signed for:
+Every Stellar transaction is bound to a specific network by its passphrase. The signed XDR from the wallet is only valid on the network it was signed for:
 
 - Testnet: `Test SDF Network ; September 2015`
 - Mainnet: `Public Global Stellar Network ; September 2015`
 
-The API and Freighter must agree on the passphrase. Mismatches cause signature verification to fail at submission time.
+The API and the wallet must agree on the passphrase. Mismatches cause signature verification to fail at submission time.
+
+## The WalletAdapter interface
+
+Frontend code never calls a wallet's own SDK directly. It depends on a common `WalletAdapter` interface (`apps/web/src/lib/wallet.ts`) that every supported wallet implements:
+
+```typescript
+interface WalletAdapter {
+  isInstalled(): Promise<boolean>;
+  isAuthorized(): Promise<boolean>; // has the user granted this site access?
+  connect(): Promise<string>; // resolves the connected public key
+  sign(xdr: string, networkPassphrase: string): Promise<string>; // resolves the signed XDR
+}
+```
+
+The connect flow calls `isInstalled()` to detect the wallet and `connect()` to request access; a persisted session is re-validated via `isAuthorized()` on load. Signing (this doc's flow) goes through `sign()`.
+
+Two adapters exist in code today, `FreighterWallet` and `LobstrWallet`, but only Freighter is currently wired up as the active `wallet` export — there is no wallet-selection UI yet, so LOBSTR's adapter isn't reachable from the app.
+
+<!-- TODO(#613): describe picker UI once #476/#488/#490 land -->
+
+Freighter is used as the concrete example above because it's the wallet actually in use today; the flow itself is defined against the interface, not against any single wallet.

@@ -37,6 +37,41 @@ describe("DepositRequestSchema", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it("accepts a valid deposit request with min_shares_out", () => {
+    const result = DepositRequestSchema.safeParse({
+      walletAddress: VALID_ADDRESS,
+      vaultId: "meridian-usdc",
+      amount: "100.5",
+      min_shares_out: "99.0",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.min_shares_out).toBe("99.0");
+    }
+  });
+
+  it("defaults min_shares_out to 0 when omitted", () => {
+    const result = DepositRequestSchema.safeParse({
+      walletAddress: VALID_ADDRESS,
+      vaultId: "meridian-usdc",
+      amount: "100.5",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.min_shares_out).toBe("0");
+    }
+  });
+
+  it("rejects min_shares_out with more than 7 decimal places", () => {
+    const result = DepositRequestSchema.safeParse({
+      walletAddress: VALID_ADDRESS,
+      vaultId: "meridian-usdc",
+      amount: "100.5",
+      min_shares_out: "99.12345678",
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("WithdrawRequestSchema", () => {
@@ -47,6 +82,22 @@ describe("WithdrawRequestSchema", () => {
       shares: "50",
     });
     expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.min_usdc_out).toBe("0");
+    }
+  });
+
+  it("accepts a valid withdraw request with min_usdc_out", () => {
+    const result = WithdrawRequestSchema.safeParse({
+      walletAddress: VALID_ADDRESS,
+      vaultId: "meridian-usdc",
+      shares: "50",
+      min_usdc_out: "49.5",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.min_usdc_out).toBe("49.5");
+    }
   });
 
   it("rejects a non-numeric shares value", () => {
@@ -54,6 +105,16 @@ describe("WithdrawRequestSchema", () => {
       walletAddress: VALID_ADDRESS,
       vaultId: "meridian-usdc",
       shares: "all of it",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects min_usdc_out with more than 7 decimal places", () => {
+    const result = WithdrawRequestSchema.safeParse({
+      walletAddress: VALID_ADDRESS,
+      vaultId: "meridian-usdc",
+      shares: "50",
+      min_usdc_out: "49.12345678",
     });
     expect(result.success).toBe(false);
   });

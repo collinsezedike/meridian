@@ -6,6 +6,42 @@ import { Redis } from "@upstash/redis";
 
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? DEFAULT_ALLOWED_ORIGIN;
 
+const LIMIT = 100;
+const WINDOW = "60 s";
+const WINDOW_MS = 60_000;
+
+// Vercel's Upstash integration provisions credentials under either store-prefixed or standard names
+const UPSTASH_URL =
+  process.env.UPSTASH_REDIS_REST_URL ??
+  process.env.UPSTASH_REDIS_REST_KV_REST_API_URL;
+const UPSTASH_TOKEN =
+  process.env.UPSTASH_REDIS_REST_TOKEN ??
+  process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN;
+
+export const UPSTASH_CONFIGURED =
+  Boolean(UPSTASH_URL) && Boolean(UPSTASH_TOKEN);
+
+/**
+ * Checks if production distributed Redis rate-limiting credentials are configured.
+ */
+export function isDistributedRateLimitingConfigured(): boolean {
+  return UPSTASH_CONFIGURED;
+}
+
+const ratelimit = UPSTASH_CONFIGURED
+  ? new Ratelimit({
+      redis: new Redis({ url: UPSTASH_URL!, token: UPSTASH_TOKEN! }),
+      limiter: Ratelimit.slidingWindow(LIMIT, WINDOW),
+    })
+  : null;
+
+const counts = new Map<string, { n: number; resetAt: number }>();
+
+/** Clears all in-memory rate-limit buckets. Exposed for tests only. */
+export function resetRateLimitForTesting(): void {
+  counts.clear();
+}
+
 /**
  * Set CORS headers and handle preflight. Returns true when the request was a
  * preflight OPTIONS and has been fully handled — the caller should return
@@ -22,47 +58,11 @@ export function applyCors(req: VercelRequest, res: VercelResponse): boolean {
   return false;
 }
 
-const LIMIT = 100;
-const WINDOW = "60 s";
-const WINDOW_MS = 60_000;
-
-const UPSTASH_CONFIGURED =
-  Boolean(process.env.UPSTASH_REDIS_REST_URL) &&
-  Boolean(process.env.UPSTASH_REDIS_REST_TOKEN);
-
-// The in-memory fallback is per-process and is not shared across workers, so
-// on a production deploy it is effectively no limit at all. Fail loudly at
-// module load instead of silently serving traffic without distributed rate
-// limiting. Local dev (VERCEL_ENV unset) and preview deploys
-// (VERCEL_ENV="preview") keep the fallback.
-if (process.env.VERCEL_ENV === "production" && !UPSTASH_CONFIGURED) {
-  throw new Error(
-    "Refusing to start: UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required when VERCEL_ENV=production (the in-memory rate-limit fallback is not shared across workers)"
-  );
-}
-
-const ratelimit = UPSTASH_CONFIGURED
-  ? new Ratelimit({
-      redis: Redis.fromEnv(),
-      limiter: Ratelimit.slidingWindow(LIMIT, WINDOW),
-    })
-  : null;
-
-const counts = new Map<string, { n: number; resetAt: number }>();
-
-/** Clears all in-memory rate-limit buckets. Exposed for tests only. */
-export function resetRateLimitForTesting(): void {
-  counts.clear();
-}
-
 function clientIp(req: VercelRequest): string {
-  // x-vercel-forwarded-for is set by the Vercel edge and cannot be spoofed
-  // by the client, unlike x-forwarded-for which is client-controlled.
   const vercelIp = req.headers["x-vercel-forwarded-for"];
   if (typeof vercelIp === "string" && vercelIp)
     return vercelIp.split(",")[0]?.trim() ?? vercelIp;
 
-  // Fallback for local dev (Fastify / pnpm dev) where Vercel headers are absent.
   const fwd = req.headers["x-forwarded-for"];
   return (
     (typeof fwd === "string" ? (fwd.split(",")[0]?.trim() ?? fwd) : null) ??
@@ -72,14 +72,45 @@ function clientIp(req: VercelRequest): string {
 }
 
 /**
- * Check the per-IP rate limit. Returns true when the request is allowed.
- * Writes a 429 response and returns false when the limit is exceeded — the
- * caller should return immediately.
+ * Enforces strict distributed rate limiting for fund-moving or keeper endpoints.
+ * Returns false and sends a 503 HTTP response if production Redis is missing.
+ */
+export function enforceStrictRateLimit(res: VercelResponse): boolean {
+  const isProduction = process.env.VERCEL_ENV === "production";
+
+  if (isProduction && !isDistributedRateLimitingConfigured()) {
+    res.status(503).json({
+      error:
+        "Service Unavailable: Distributed rate limiting is required in production for this route.",
+      code: "RATE_LIMIT_BACKEND_UNAVAILABLE",
+    });
+    return false;
+  }
+
+  return true;
+}
+
+export interface RateLimitOptions {
+  strict?: boolean;
+}
+
+/**
+ * Check rate limit for the incoming request.
+ * - If strict: true (fund-moving/keeper endpoints), returns 503 if Upstash is unconfigured in production.
+ * - For non-strict routes (read-only), falls back to the in-memory rate limiter.
+ * Writes a 429 or 503 response and returns false when blocked.
  */
 export async function checkRateLimit(
   req: VercelRequest,
-  res: VercelResponse
+  res: VercelResponse,
+  options: RateLimitOptions = {}
 ): Promise<boolean> {
+  const { strict = false } = options;
+
+  if (strict && !enforceStrictRateLimit(res)) {
+    return false;
+  }
+
   const ip = clientIp(req);
 
   if (ratelimit) {
@@ -93,6 +124,7 @@ export async function checkRateLimit(
     return true;
   }
 
+  // In-memory fallback
   const now = Date.now();
   const entry = counts.get(ip);
   if (!entry || now > entry.resetAt) {

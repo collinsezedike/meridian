@@ -71,12 +71,36 @@ describe("WithdrawTab", () => {
     expect(onAmountChange).toHaveBeenCalledWith("50.0000000");
   });
 
+  it("renders the Max label through the translation key", () => {
+    renderWithdrawTab();
+
+    expect(screen.getByTestId("vault-withdraw-max").textContent).toBe(
+      "vaultPanel.max: 50.00"
+    );
+  });
+
   it("calls onSubmit when the withdraw button is clicked", () => {
     renderWithdrawTab({ amount: "10" });
 
     fireEvent.click(screen.getByTestId("vault-withdraw-submit"));
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the submit button when amount is zero", () => {
+    renderWithdrawTab({ amount: "0" });
+    expect(screen.getByTestId("vault-withdraw-submit")).toHaveProperty(
+      "disabled",
+      true
+    );
+  });
+
+  it("disables the submit button when amount is negative", () => {
+    renderWithdrawTab({ amount: "-1" });
+    expect(screen.getByTestId("vault-withdraw-submit")).toHaveProperty(
+      "disabled",
+      true
+    );
   });
 
   it("disables the submit button when amount exceeds available shares", () => {

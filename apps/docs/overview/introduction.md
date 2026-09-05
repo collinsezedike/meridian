@@ -10,12 +10,12 @@ Meridian is a stablecoin yield aggregator on the Stellar network. Users deposit 
 4. The user receives mUSDC share tokens representing their position. Share price appreciates as yield accrues.
 5. At any time the user can withdraw by burning their mUSDC shares, receiving USDC plus accumulated yield.
 
-Switching which protocol a vault routes to happens via `set_adapter` (admin-only, deploying a new adapter contract and pointing the vault at it) — it is not something that happens per-deposit or per-user.
+Which protocol a vault routes to can change after a deposit, without any action from the depositor. An hourly migration keeper compares the vault's current adapter against other supported protocols and, when a meaningfully better rate is available, atomically moves the entire position via `migrate_adapter`, slippage-bounded so the move can't complete at a worse value than before it started. A one-off manual swap (`set_adapter`, admin-only) also exists, for cases like recovering from a broken adapter, but ongoing rebalancing is the keeper's job, not something an admin does per-deposit or per-user.
 
 ## What it does not do
 
 - Meridian never holds or controls private keys. The server builds an unsigned transaction and returns it to the browser; the user signs with Freighter.
-- Meridian does not custody funds in the traditional sense. The vault forwards deposited USDC to its active adapter, which deploys it directly to the underlying protocol (e.g. supplied as collateral in a Blend pool); mUSDC is a standard Stellar asset representing the resulting position.
+- Meridian does not custody funds in the traditional sense. The vault forwards deposited USDC to its active adapter, which deploys it directly to the underlying protocol (e.g. supplied as collateral in a Blend pool); mUSDC is a custom SEP-41 token representing the resulting position (not a classic Stellar asset — see [Wallet and DEX compatibility](../architecture/vault-contract.md#transferable-shares) for what that trade-off means).
 - Meridian does not guarantee yield. APY figures are live estimates from on-chain data and DeFiLlama. Past rates do not predict future rates.
 
 ## Status

@@ -417,6 +417,32 @@ describe("SubmissionLease", () => {
     expect(log.warn).toHaveBeenCalledTimes(2);
   });
 
+  it("does not release a claim whose hash-write failed, so the record still blocks a duplicate", async () => {
+    // The bug this guards against: a failed hash-write leaves the stored
+    // claim hash-less, and `unsent` used to read true, so `releaseIfUnsent`
+    // deleted the very record meant to block a second submission even though
+    // a signed transaction may be in flight.
+    const log = logger();
+    const inner = await seeded();
+    const store: KeeperStateStore = {
+      ...inner,
+      replace: async () => {
+        throw new Error("KV write failed");
+      },
+    };
+    const acquired = await acquire(store, log);
+    if (!("lease" in acquired)) throw new Error("expected a lease");
+
+    await acquired.lease.hooks.onSigned?.("SIGNED");
+    await acquired.lease.releaseIfUnsent();
+
+    // The claim must survive (still hash-less, still held) so the next run
+    // reads it as claimed/expired rather than a clean slate to rebroadcast
+    // into.
+    expect(await store.get(KEY)).not.toBeNull();
+    expect((await store.get(KEY))?.record.hash).toBeNull();
+  });
+
   it("retries recording the signed hash instead of giving up on the first transient failure", async () => {
     // A swallowed one-shot failure here would leave the claim (short TTL, no
     // hash) as the only record of an actually in-flight transaction, aging

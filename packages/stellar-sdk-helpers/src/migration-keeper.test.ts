@@ -154,6 +154,15 @@ const VAULT: KnownPoolMeta = {
   contractId: "CVAULT",
 };
 
+const EURC_VAULT: KnownPoolMeta = {
+  id: "meridian-eurc",
+  name: "Meridian",
+  protocol: "meridian",
+  label: "EURC Vault",
+  contractId: "CEURCVAULT",
+  assetId: "CEURCASSET",
+};
+
 const DISCOVERED_VAULT: DiscoveredVault = {
   vaultId: "meridian-usdc",
   vaultContractId: "CVAULT",
@@ -177,6 +186,30 @@ function makeServer(overrides: Record<string, unknown> = {}) {
     simulateTransaction: vi.fn(async () => ({ kind: "success" })),
     ...overrides,
   };
+}
+
+// Configures the shared simulateView mock for the real (non-injected)
+// submission path: get_adapter (the pre-submit "vault hasn't moved since
+// discovery" guard) resolves to `liveAdapterId`, and get_migration_snapshot
+// resolves to an already-active, matching, cooldown-elapsed snapshot for
+// `candidateAdapterId` so the test exercises the real migrate_adapter call
+// instead of the begin_migration deferral path.
+function mockLiveAdapterAndActiveSnapshot(
+  liveAdapterId: string,
+  candidateAdapterId: string
+) {
+  stellarMocks.simulateView.mockImplementation(
+    async (_server, _contractId, _passphrase, method) => {
+      if (method === "get_migration_snapshot") {
+        return {
+          adapter: candidateAdapterId,
+          total_assets: 0n,
+          ledger_seq: 0,
+        };
+      }
+      return liveAdapterId;
+    }
+  );
 }
 
 beforeEach(() => {
@@ -303,6 +336,32 @@ describe("discoverMigrationVaults", () => {
 
     expect(result.failures).toEqual([]);
     expect(result.vaults).toEqual([DISCOVERED_VAULT]);
+  });
+
+  it("resolves the vault's assetId from its KNOWN_POOLS entry (#539)", async () => {
+    stellarMocks.simulateView
+      .mockResolvedValueOnce("CBLENDADAPTER")
+      .mockResolvedValueOnce("blend")
+      .mockResolvedValueOnce("CBLENDPOOL");
+
+    const result = await discoverMigrationVaults({
+      network: NETWORK,
+      pools: { "meridian-eurc": EURC_VAULT },
+      logger: logger(),
+      sleep: vi.fn(),
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.vaults).toEqual([
+      {
+        vaultId: "meridian-eurc",
+        vaultContractId: "CEURCVAULT",
+        currentAdapterId: "CBLENDADAPTER",
+        currentProtocol: "blend",
+        currentPoolId: "CBLENDPOOL",
+        assetId: "CEURCASSET",
+      },
+    ]);
   });
 
   it("retries a transient discovery failure and succeeds", async () => {
@@ -480,6 +539,66 @@ describe("runMigrationKeeper", () => {
     expect(result.skipped).toEqual([
       { vaultId: "meridian-usdc", reason: "current rate unavailable" },
     ]);
+  });
+
+  it("threads the vault's assetId into every rate query so a non-USDC vault prices the right reserve (#539)", async () => {
+    const submitMigration = vi.fn(async () => ({
+      hash: "EURC_MIGRATE_HASH",
+      ledger: 123,
+    }));
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+    const eurcVault: DiscoveredVault = {
+      ...DISCOVERED_VAULT,
+      assetId: "CEURCASSET",
+    };
+
+    const result = await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [eurcVault],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      submitMigration,
+    });
+
+    // Both the current vault's rate and each candidate's rate are evaluated
+    // against the vault's own reserve asset, never a hardcoded USDC address
+    // (see rate-sources.ts for how createBlendRateSource consumes it).
+    expect(rateSource).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: "blend", assetId: "CEURCASSET" })
+    );
+    expect(rateSource).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: "defindex", assetId: "CEURCASSET" })
+    );
+    expect(result.migrations).toMatchObject([
+      { toProtocol: "defindex", improvementBps: 200 },
+    ]);
+  });
+
+  it("keeps the USDC-vault query shape unchanged when the vault has no assetId (#539)", async () => {
+    // #539 acceptance criterion: no change to RateQuery's existing USDC-vault
+    // behavior. A vault whose KNOWN_POOLS entry has no assetId must not start
+    // carrying an assetId field, so the Blend rate source keeps falling back
+    // to its USDC default exactly as before.
+    const submitMigration = vi.fn();
+    const rateSource = vi.fn(async () => null);
+
+    await runMigrationKeeper(CONFIG, {
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      submitMigration,
+    });
+
+    expect(rateSource).toHaveBeenCalled();
+    for (const call of rateSource.mock.calls) {
+      expect(call[0]).not.toHaveProperty("assetId");
+    }
   });
 
   it("migrates when a candidate clears the minimum improvement threshold", async () => {
@@ -806,8 +925,9 @@ describe("runMigrationKeeper", () => {
     stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
     // The pre-submit "vault hasn't moved since discovery" guard reads
     // get_adapter() fresh; keep it matching DISCOVERED_VAULT's adapter.
-    stellarMocks.simulateView.mockResolvedValue(
-      DISCOVERED_VAULT.currentAdapterId
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CDEFINDEXADAPTER"
     );
     const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
       protocol === "blend" ? 500 : 700
@@ -855,8 +975,9 @@ describe("runMigrationKeeper", () => {
     stellarMocks.waitForTransaction
       .mockRejectedValueOnce(new Error("Soroban RPC timed out after 100ms"))
       .mockResolvedValueOnce({ ledger: 321 });
-    stellarMocks.simulateView.mockResolvedValue(
-      DISCOVERED_VAULT.currentAdapterId
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CDEFINDEXADAPTER"
     );
     const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
       protocol === "blend" ? 500 : 700
@@ -1106,7 +1227,7 @@ describe("runMigrationKeeper", () => {
     // since this run's discovery read; submitting anyway would build a
     // migrate_adapter call using stale assumptions about the vault's
     // current adapter.
-    stellarMocks.simulateView.mockResolvedValue("CSOMEOTHERADAPTER");
+    mockLiveAdapterAndActiveSnapshot("CSOMEOTHERADAPTER", "CDEFINDEXADAPTER");
     const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
       protocol === "blend" ? 500 : 700
     );
@@ -1143,7 +1264,7 @@ describe("runMigrationKeeper", () => {
     // trigger that redaction, which would otherwise mask this exact
     // scenario. This proves the skip reason survives with real addresses.
     const realAddress = `C${"A".repeat(55)}`;
-    stellarMocks.simulateView.mockResolvedValue(realAddress);
+    mockLiveAdapterAndActiveSnapshot(realAddress, "CDEFINDEXADAPTER");
     const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
       protocol === "blend" ? 500 : 700
     );
@@ -1165,6 +1286,160 @@ describe("runMigrationKeeper", () => {
         reason: expect.stringContaining("adapter changed since discovery"),
       },
     ]);
+  });
+
+  it("submits begin_migration and defers migrate_adapter when no snapshot exists yet", async () => {
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+    // get_migration_snapshot traps (no active migration); get_adapter
+    // resolves normally for the staleness guard, which is never reached.
+    stellarMocks.simulateView.mockImplementation(
+      async (_server, _contractId, _passphrase, method) => {
+        if (method === "get_migration_snapshot") {
+          throw new Error("MigrationNotInitialized");
+        }
+        return DISCOVERED_VAULT.currentAdapterId;
+      }
+    );
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(result.migrations).toEqual([]);
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        reason: expect.stringContaining("begin_migration submitted"),
+      },
+    ]);
+  });
+
+  it("reports a transient failure reading the migration snapshot instead of assuming none exists", async () => {
+    // A timeout/rate-limit reading get_migration_snapshot must not be
+    // treated the same as a genuine MigrationNotInitialized trap: doing so
+    // would fire begin_migration and reset a possibly already
+    // cooldown-elapsed snapshot's ledger_seq, delaying a ready migration by
+    // a full MIN_LEDGER_GAP for no reason.
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.simulateView.mockImplementation(
+      async (_server, _contractId, _passphrase, method) => {
+        if (method === "get_migration_snapshot") {
+          throw new Error("Soroban RPC timed out after 100ms");
+        }
+        return DISCOVERED_VAULT.currentAdapterId;
+      }
+    );
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
+    // No begin_migration (or anything else) was sent this run.
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(result.migrations).toEqual([]);
+    expect(result.skipped).toEqual([]);
+    expect(result.failures).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        transient: true,
+        error: expect.stringContaining("could not read the migration snapshot"),
+      },
+    ]);
+  });
+
+  it("submits begin_migration and defers migrate_adapter when the existing snapshot is for a different adapter", async () => {
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CSOMEOTHERCANDIDATE"
+    );
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(result.migrations).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        reason: expect.stringContaining("begin_migration submitted"),
+      },
+    ]);
+  });
+
+  it("releases the submission lease after begin_migration so a later run isn't blocked", async () => {
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+    stellarMocks.simulateView.mockImplementation(
+      async (_server, _contractId, _passphrase, method) => {
+        if (method === "get_migration_snapshot") {
+          throw new Error("MigrationNotInitialized");
+        }
+        return DISCOVERED_VAULT.currentAdapterId;
+      }
+    );
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+    const stateStore = createInMemoryKeeperStateStore();
+    const key = submissionStateKey(
+      "migration",
+      "testnet",
+      DISCOVERED_VAULT.vaultId
+    );
+
+    await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+      stateStore,
+    });
+
+    expect(await stateStore.get(key)).toBeNull();
   });
 
   it("skips evaluation entirely when no candidate adapters are configured", async () => {
@@ -1318,8 +1593,9 @@ describe("runMigrationKeeper cross-invocation dedup", () => {
     });
     stellarMocks.getRpcServer.mockReturnValue(server);
     stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
-    stellarMocks.simulateView.mockResolvedValue(
-      DISCOVERED_VAULT.currentAdapterId
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CDEFINDEXADAPTER"
     );
     const stateStore = await store({
       hash: "LANDED_HASH",
@@ -1342,8 +1618,9 @@ describe("runMigrationKeeper cross-invocation dedup", () => {
     });
     stellarMocks.getRpcServer.mockReturnValue(server);
     stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
-    stellarMocks.simulateView.mockResolvedValue(
-      DISCOVERED_VAULT.currentAdapterId
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CDEFINDEXADAPTER"
     );
 
     const result = await run(
@@ -1367,8 +1644,9 @@ describe("runMigrationKeeper cross-invocation dedup", () => {
       }),
     });
     stellarMocks.getRpcServer.mockReturnValue(server);
-    stellarMocks.simulateView.mockResolvedValue(
-      DISCOVERED_VAULT.currentAdapterId
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CDEFINDEXADAPTER"
     );
     stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
 
@@ -1403,7 +1681,7 @@ describe("runMigrationKeeper cross-invocation dedup", () => {
     // The stale-adapter guard aborts before the transaction is built.
     // Leaving the claim behind would lock the vault out of migrating for
     // the claim's whole window over a transaction that never existed.
-    stellarMocks.simulateView.mockResolvedValue("CSOMEOTHERADAPTER");
+    mockLiveAdapterAndActiveSnapshot("CSOMEOTHERADAPTER", "CDEFINDEXADAPTER");
     const stateStore = await store();
     stellarMocks.getRpcServer.mockReturnValue(makeServer());
 

@@ -40,7 +40,7 @@ The Vite dev server proxies `/api/*` to `http://localhost:3001` and `/docs/*` to
 pnpm --filter @meridian/web dev
 
 # API only
-pnpm --filter @meridian/api dev
+pnpm --filter @meridian/api-local dev
 ```
 
 ## Health check
