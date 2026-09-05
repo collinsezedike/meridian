@@ -63,7 +63,6 @@ async function getAlbedo(): Promise<AlbedoModule> {
   }
 }
 
-
 // Freighter's real API talks to the browser extension via an internal
 // postMessage protocol, which isn't practical to fake from outside the app.
 // Playwright e2e tests inject this global before the app loads (see

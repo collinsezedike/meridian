@@ -90,7 +90,9 @@ describe("AlbedoWallet — real Albedo path (no mock wallet present)", () => {
       message: "Action request was rejected by the user.",
       code: -4,
     } as unknown as Awaited<ReturnType<typeof albedo.publicKey>>);
-    await expect(albedoWallet.connect()).rejects.toThrow("Connection cancelled");
+    await expect(albedoWallet.connect()).rejects.toThrow(
+      "Connection cancelled"
+    );
   });
 
   it("connect propagates errors thrown by Albedo", async () => {
