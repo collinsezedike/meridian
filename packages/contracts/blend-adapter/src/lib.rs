@@ -931,25 +931,7 @@ mod tests {
 
         assert_eq!(adapter.try_accrue(), Ok(Ok(())));
 
-        let events = env.events().all();
-        let accrue_event = events
-            .into_iter()
-            .find(|e| {
-                if e.0 == adapter.address && e.1.len() == 1 {
-                    if let Ok(topic) =
-                        soroban_sdk::TryIntoVal::<_, soroban_sdk::Symbol>::try_into_val(
-                            &e.1.get(0).unwrap(),
-                            &env,
-                        )
-                    {
-                        topic == symbol_short!("accrue")
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            })
+        let accrue_event = find_event(&env, &adapter.address, symbol_short!("accrue"))
             .expect("accrue event not found");
 
         let expected_prev = amount;
@@ -959,8 +941,7 @@ mod tests {
         assert_eq!(data, (expected_prev, expected_new));
     }
 
-    /// Finds the single-topic event published under `topic` from `address`,
-    /// the same lookup `accrue_publishes_event_on_success` above uses.
+    /// Finds the single-topic event published under `topic` from `address`.
     fn find_event(
         env: &Env,
         address: &Address,
