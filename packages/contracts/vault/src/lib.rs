@@ -95,6 +95,18 @@ impl MeridianVault {
     /// self-authorized call first: the deployer's transaction is the only
     /// one that can ever set this contract's state (#551, same bug class as
     /// #505, fixed for the adapters/mUSDC in #550).
+    ///
+    /// Unlike the adapters/mUSDC's constructor arguments, `admin` is a
+    /// human-held key, not a programmatically-derived contract address, so
+    /// `require_auth()` is called on it here too: without it, `DEPLOYER`
+    /// alone could set any address as admin with no proof it is controlled
+    /// by anyone, permanently bricking the vault on a typo (`transfer_admin`/
+    /// `accept_admin` both require the *current* admin's own signature to
+    /// move away from it). Soroban only honors `require_auth()` inside a
+    /// constructor for the address that is the deploying transaction's own
+    /// source account, so this requires `ADMIN` itself, not `DEPLOYER`, to
+    /// source the vault's deploy transaction. See
+    /// `apps/docs/operations/testnet-deployment.md`.
     pub fn __constructor(
         env: Env,
         admin: Address,
@@ -102,6 +114,7 @@ impl MeridianVault {
         musdc: Address,
         adapter: Address,
     ) {
+        admin.require_auth();
         Self::init_state(&env, &admin, &usdc, &musdc, &adapter);
     }
 
