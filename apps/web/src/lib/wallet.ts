@@ -11,11 +11,23 @@ import {
 } from "@lobstrco/signer-extension-api";
 import { xBullWalletConnect } from "@creit.tech/xbull-wallet-connect";
 
+// Closing the Albedo popup does not reject the request the way a genuine
+// failure does: @albedo-link/intent's transportCloseHandler() resolves every
+// pending request with intentErrors.actionRejectedByUser
+// ({ message: "Action request was rejected by the user.", code: -4 }, no
+// `.error` field), since handleIntentResponsePromise only rejects when
+// `.error` is present. A successful response never carries `code`, so its
+// presence (specifically -4) is what distinguishes a user cancellation from
+// a real failure on an otherwise-empty result.
+const ALBEDO_USER_REJECTED_CODE = -4;
+
 type AlbedoModule = {
   publicKey: (params: Record<string, unknown>) => Promise<{
-    pubkey: string;
-    signed_message: string;
-    signature: string;
+    pubkey?: string;
+    signed_message?: string;
+    signature?: string;
+    code?: number;
+    message?: string;
   }>;
   tx: (params: {
     xdr: string;
@@ -23,11 +35,13 @@ type AlbedoModule = {
     submit?: boolean;
     pubkey?: string;
   }) => Promise<{
-    signed_envelope_xdr: string;
-    xdr: string;
-    tx_hash: string;
-    network: string;
-    result: unknown;
+    signed_envelope_xdr?: string;
+    xdr?: string;
+    tx_hash?: string;
+    network?: string;
+    result?: unknown;
+    code?: number;
+    message?: string;
   }>;
 };
 
@@ -49,9 +63,6 @@ async function getAlbedo(): Promise<AlbedoModule> {
   }
 }
 
-// Test-only helper retained for compatibility with tests that call it
-// explicitly; no longer needed since getAlbedo no longer caches.
-export function __resetAlbedoForTests(): void {}
 
 // Freighter's real API talks to the browser extension via an internal
 // postMessage protocol, which isn't practical to fake from outside the app.
@@ -361,6 +372,9 @@ export class AlbedoWallet implements WalletAdapter {
       async () => {
         const albedo = await getAlbedo();
         const result = await albedo.publicKey({});
+        if (result?.code === ALBEDO_USER_REJECTED_CODE) {
+          throw new Error("Connection cancelled");
+        }
         if (!result?.pubkey)
           throw new Error("Albedo wallet returned no public key");
         storePublicKey(ALBEDO_PUBLIC_KEY_STORAGE_KEY, result.pubkey);

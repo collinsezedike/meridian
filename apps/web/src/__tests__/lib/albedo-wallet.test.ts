@@ -8,7 +8,7 @@ vi.mock("@albedo-link/intent", () => ({
 }));
 
 import albedo from "@albedo-link/intent";
-import { AlbedoWallet, __resetAlbedoForTests } from "../../lib/wallet";
+import { AlbedoWallet } from "../../lib/wallet";
 
 const ADDRESS = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 
@@ -24,7 +24,6 @@ afterEach(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   window.sessionStorage.clear();
-  __resetAlbedoForTests();
 });
 
 describe("AlbedoWallet — real Albedo path (no mock wallet present)", () => {
@@ -77,6 +76,21 @@ describe("AlbedoWallet — real Albedo path (no mock wallet present)", () => {
     await expect(albedoWallet.connect()).rejects.toThrow(
       "Albedo wallet returned no public key"
     );
+  });
+
+  it("connect throws a cancel-worded error when the user closes the popup", async () => {
+    // Closing the Albedo popup does not reject the request: transportCloseHandler()
+    // resolves it with intentErrors.actionRejectedByUser ({message, code: -4}, no
+    // .error field). This must surface as a cancel, matching useWalletConnect.ts's
+    // /cancel|decline|reject/i filter, not the generic "no public key" error.
+    // @albedo-link/intent's own PublicKeyIntentResult type doesn't model this
+    // shape at all, even though it's what the library actually resolves with
+    // on cancellation, hence the cast.
+    vi.mocked(albedo.publicKey).mockResolvedValue({
+      message: "Action request was rejected by the user.",
+      code: -4,
+    } as unknown as Awaited<ReturnType<typeof albedo.publicKey>>);
+    await expect(albedoWallet.connect()).rejects.toThrow("Connection cancelled");
   });
 
   it("connect propagates errors thrown by Albedo", async () => {
