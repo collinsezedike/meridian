@@ -146,7 +146,11 @@ describe("VaultPanel — tab switcher", () => {
 });
 
 describe("VaultPanel — deposit", () => {
-  it("calls deposit with the entered amount and clears the field on success", async () => {
+  it("deposits with no slippage floor for a first-time depositor (no existing position)", async () => {
+    // No matching position exists yet, so there's no reliable share price
+    // to derive a floor from — assuming 1:1 would be wrong for any vault
+    // that has already accrued yield, and would revert every first deposit
+    // with SlippageExceeded. min_shares_out must be omitted, not guessed.
     render(<VaultPanel />);
 
     fireEvent.change(screen.getByPlaceholderText("0.00"), {
@@ -155,10 +159,60 @@ describe("VaultPanel — deposit", () => {
     fireEvent.click(screen.getByTestId("vault-deposit-submit"));
 
     await waitFor(() => {
-      expect(deposit).toHaveBeenCalledWith("25", "meridian-usdc", "USDC");
+      expect(deposit).toHaveBeenCalledWith(
+        "25",
+        "meridian-usdc",
+        "USDC",
+        undefined
+      );
     });
     await waitFor(() => {
       expect(screen.getByPlaceholderText("0.00")).toHaveProperty("value", "");
+    });
+  });
+
+  it("derives the slippage floor from the caller's own position in the recommended vault", async () => {
+    mockPositions({ isError: false, data: [POSITION] });
+    render(<VaultPanel />);
+
+    fireEvent.change(screen.getByPlaceholderText("0.00"), {
+      target: { value: "25" },
+    });
+    fireEvent.click(screen.getByTestId("vault-deposit-submit"));
+
+    await waitFor(() => {
+      // POSITION: 50 shares / 100 deposited -> 0.5 share price.
+      // 25 * 0.5 = 12.5 expected shares, * 0.995 tolerance = 12.4375.
+      expect(deposit).toHaveBeenCalledWith(
+        "25",
+        "meridian-usdc",
+        "USDC",
+        "12.4375000"
+      );
+    });
+  });
+
+  it("deposits with no slippage floor when the caller only holds a position in a different vault", async () => {
+    // A position in some other (legacy) vault carries an unrelated price
+    // and must not be used to compute a floor for a deposit into bestVault.
+    mockPositions({
+      isError: false,
+      data: [{ ...POSITION, vaultId: "blend-usdc-fixed" }],
+    });
+    render(<VaultPanel />);
+
+    fireEvent.change(screen.getByPlaceholderText("0.00"), {
+      target: { value: "25" },
+    });
+    fireEvent.click(screen.getByTestId("vault-deposit-submit"));
+
+    await waitFor(() => {
+      expect(deposit).toHaveBeenCalledWith(
+        "25",
+        "meridian-usdc",
+        "USDC",
+        undefined
+      );
     });
   });
 });
@@ -175,7 +229,12 @@ describe("VaultPanel — withdraw", () => {
     fireEvent.click(screen.getByTestId("vault-withdraw-submit"));
 
     await waitFor(() => {
-      expect(withdraw).toHaveBeenCalledWith("10", "meridian-usdc", "USDC");
+      expect(withdraw).toHaveBeenCalledWith(
+        "10",
+        "meridian-usdc",
+        "USDC",
+        "19.9000000"
+      );
     });
   });
 

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { WalletConnect } from "../../components/onboarding/WalletConnect";
 import { useWalletStore } from "../../store/wallet";
+import { useToastStore } from "../../store/toast";
 import { useWalletConnect } from "../../hooks/useWalletConnect";
 
 const handleConnect = vi.fn();
@@ -146,5 +147,32 @@ describe("WalletConnect — picker", () => {
     rerender(<WalletConnect />);
 
     expect(screen.queryByTestId("wallet-picker-menu")).toBeNull();
+  });
+});
+
+describe("WalletConnect — copy address", () => {
+  it("pushes the translated copyFailed toast when the clipboard write rejects", async () => {
+    useWalletStore.setState({
+      publicKey: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+      connected: true,
+    });
+    useToastStore.setState({ toasts: [] });
+    vi.stubGlobal("navigator", {
+      clipboard: { writeText: vi.fn(async () => Promise.reject()) },
+    });
+    render(<WalletConnect />);
+
+    fireEvent.click(screen.getByLabelText("walletConnect.copyAddress"));
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts).toContainEqual(
+        expect.objectContaining({
+          kind: "error",
+          message: "walletConnect.copyFailed",
+        })
+      );
+    });
+
+    vi.unstubAllGlobals();
   });
 });

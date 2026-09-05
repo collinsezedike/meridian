@@ -2,10 +2,10 @@
 
 Meridian ships two deploy scripts, both in `scripts/`. Which one you need depends on what you're doing:
 
-| Script                              | Use when                                                                                                                                                  |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scripts/deploy-testnet.sh`         | Standing up a brand new environment: vault, a `BlendAdapter`, and an mUSDC share token, all initialized and wired together.                               |
-| `scripts/redeploy-blend-adapter.sh` | Pushing new adapter code (e.g. a fix to `accrue()`, `get_pool()`, `get_protocol()`) onto an **already-live** vault, without redeploying the vault itself. |
+| Script                              | Use when                                                                                                                                                      |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scripts/deploy-testnet.sh`         | Standing up a brand new environment: vault, a `BlendAdapter`, and the mUSDC share token (a custom SEP-41 contract, #578), all initialized and wired together. |
+| `scripts/redeploy-blend-adapter.sh` | Pushing new adapter code (e.g. a fix to `accrue()`, `get_pool()`, `get_protocol()`) onto an **already-live** vault, without redeploying the vault itself.     |
 
 Neither script requires manual `stellar contract invoke` steps — read them before running if you want to understand exactly what they do; they're short and heavily commented.
 
@@ -18,9 +18,9 @@ Neither script requires manual `stellar contract invoke` steps — read them bef
 
 Both scripts require a `DEPLOYER` secret key, funded via [Friendbot](https://friendbot.stellar.org/). `DEPLOYER` only pays transaction fees and signs the setup calls — it does **not** need to be kept around afterward, and can be thrown away once the script finishes.
 
-`deploy-testnet.sh` additionally accepts an optional `ADMIN` **public key**. This becomes the deployed vault's permanent admin, the only address that can ever call `transfer_admin`, `set_paused`, `set_adapter`, or `migrate_adapter` on it. `ADMIN` is deliberately independent of `DEPLOYER` as an identity — but not as a _signer_: the vault's `initialize()` calls `admin.require_auth()`, so the deployed-with-`ADMIN`-set-separately case still needs a signature from `ADMIN` itself, not just from `DEPLOYER`. So when `ADMIN` differs from `DEPLOYER`, pass the `ADMIN` signing key as `ADMIN_KEY` (a secret key, or a `stellar keys` alias) alongside it, and the script signs and submits `initialize()` itself in the same run. `ADMIN_KEY` is validated up front: if it resolves to an address other than `ADMIN`, the script exits before building anything. If you don't set `ADMIN`, the script defaults it to `DEPLOYER`'s own address and prints a warning — fine for a quick throwaway test (and the one case where the script _can_ fully automate `initialize()`, since `DEPLOYER`'s own signature already covers it), but you should always set `ADMIN` explicitly to a separate, durable key for anything you intend to keep testing against, and it **must** be set explicitly ahead of any mainnet deployment.
+`deploy-testnet.sh` additionally accepts an optional `ADMIN` **public key**. This becomes the deployed vault's permanent admin, the only address that can ever call `transfer_admin`, `set_paused`, `set_adapter`, or `migrate_adapter` on it. `ADMIN` is deliberately independent of `DEPLOYER` as an identity — but not as a _signer_: the vault takes `admin`/`usdc`/`musdc`/`adapter` as **constructor arguments** (#551, same fix #505/#550 already applied to the adapters/mUSDC), so its state is set inside its own deploying transaction with no separate `initialize()` step to front-run. Unlike the adapters/mUSDC's constructor arguments, `admin` is a human-held key, not a programmatically-derived contract address, so the constructor calls `admin.require_auth()` too, and Soroban only honors that inside a constructor for the transaction's own source account. So when `ADMIN` differs from `DEPLOYER`, pass the `ADMIN` signing key as `ADMIN_KEY` (a secret key, or a `stellar keys` alias) alongside it, and the script sources the vault's deploy transaction with `ADMIN_KEY` itself rather than `DEPLOYER`. `ADMIN_KEY` is validated up front: if it resolves to an address other than `ADMIN`, the script exits before building anything. If you don't set `ADMIN`, the script defaults it (and `ADMIN_KEY`) to `DEPLOYER`'s own address/key — fine for a quick throwaway test, but you should always set `ADMIN` explicitly to a separate, durable key for anything you intend to keep testing against, and it **must** be set explicitly ahead of any mainnet deployment.
 
-**Set `ADMIN_KEY` whenever the key is on the machine running the script.** `initialize()` is callable by any address and only checks that the admin it is handed authorizes the call, so a vault that is deployed but not yet initialized can be claimed by whoever calls `initialize()` first, with themselves as admin. They would then control `transfer_admin`, `set_paused`, and `set_adapter` on it, and the real `ADMIN`'s later call would fail with `AlreadyInitialized`. If `ADMIN_KEY` is genuinely not available where the script runs, it falls back to printing the `initialize()` command for the key holder to run, and warns that the vault is claimable until they do. Run it immediately in that case, then confirm the vault is yours with `get_admin` before funding it.
+**Set `ADMIN_KEY` whenever the key is on the machine running the script.** Without it, the script cannot source the vault's deploy transaction itself, so it deploys `BlendAdapter` and mUSDC (both already wired to the vault's precomputed address) and then prints the vault's own deploy command, using that same precomputed address's salt, for the `ADMIN` key holder to run. Unlike the old two-step deploy-then-`initialize()` flow this replaced, there is no "deployed but claimable" window in that case: the vault simply does not exist on-chain at all until that command is run, by `ADMIN` specifically.
 
 Save the `ADMIN` secret key somewhere durable (a password manager, not a plaintext file) the moment you deploy with it — there is no recovery path if it's lost. `transfer_admin`/`set_paused`/`set_adapter` become permanently inaccessible, and since adapters have no in-place upgrade path, that also means the vault can never be pointed at fixed adapter code again.
 
@@ -31,20 +31,22 @@ Save the `ADMIN` secret key somewhere durable (a password manager, not a plainte
 stellar keys generate my-deployer --fund --network testnet
 DEPLOYER_ADDR=$(stellar keys address my-deployer)
 
-# Generate and fund a separate, durable admin key (keep this one)
+# Generate and fund a separate, durable admin key (keep this one). It must be
+# funded too: it sources the vault's own deploy transaction, see below.
 stellar keys generate my-admin --fund --network testnet
 ADMIN_ADDR=$(stellar keys address my-admin)
 
-# ADMIN_KEY lets the script sign initialize() in the same run, so the vault is
-# never left deployed-but-uninitialized and claimable by a third party.
+# ADMIN_KEY lets the script source the vault's deploy transaction itself, so
+# the vault is never left undeployed and waiting on a second manual step.
 DEPLOYER=my-deployer ADMIN=$ADMIN_ADDR ADMIN_KEY=my-admin bash scripts/deploy-testnet.sh
 ```
 
-This builds all three contract crates (`vault`, `blend-adapter`, `defindex-adapter`), uploads and deploys the vault and a `BlendAdapter`, deploys a fresh mUSDC Stellar Asset Contract, and wires everything together:
+This builds all four contract crates (`vault`, `blend-adapter`, `defindex-adapter`, `musdc-token`), uploads and deploys the vault, a `BlendAdapter`, and mUSDC — a custom SEP-41 token (#578), not a Stellar Asset Contract — and wires everything together:
 
-1. Deploys the `BlendAdapter` with the vault address, Blend's testnet pool, and USDC passed as **constructor arguments**, so the adapter is wired inside the transaction that creates it. There is no separate adapter `initialize()` step: that gap was front-runnable (#505). See "Adapter deployment and initialization" in [`architecture/vault-contract.md`](../architecture/vault-contract.md).
-2. Initializes the vault with `admin`, `usdc`, `musdc`, and `adapter` (the just-deployed `BlendAdapter`), signed by `DEPLOYER` when `ADMIN` defaulted to it, or by `ADMIN_KEY` when `ADMIN` is a separate address. Without `ADMIN_KEY` this step is printed for the `ADMIN` key holder to run instead, leaving the vault claimable until they do (see "The `DEPLOYER` / `ADMIN` split" above).
-3. Sets the vault as mUSDC's admin, so it can mint/burn shares autonomously.
+1. Reserves the vault's contract address up front via `stellar contract id wasm --source-account $ADMIN_ADDR --salt`, without deploying anything yet. Soroban contract IDs are deterministic from (network, source account, salt) alone, independent of the wasm deployed, so this address is known before the vault itself exists. The source account used here must match whichever account actually sources the vault's own deploy in step 4, since the computed address depends on it.
+2. Deploys the `BlendAdapter` with that reserved vault address, Blend's testnet pool, and USDC passed as **constructor arguments**, so the adapter is wired inside the transaction that creates it. There is no separate adapter `initialize()` step: that gap was front-runnable (#505). See "Adapter deployment and initialization" in [`architecture/vault-contract.md`](../architecture/vault-contract.md).
+3. Deploys mUSDC with that same reserved vault address, decimals, name, and symbol passed as **constructor arguments** too, for the same reason: mUSDC's `admin` is set inside the transaction that creates it, so it's never observable on-ledger with the wrong admin.
+4. Deploys the vault itself, sourced by `ADMIN_KEY` and using the same salt from step 1 so it lands at the address already reserved and handed to the two contracts above, with `admin`, `usdc`, `musdc`, and `adapter` passed as constructor arguments. Its own state is set inside this deploying transaction the same way, so there is no deploy-then-initialize gap here either (#551), and `admin.require_auth()` inside the constructor proves `ADMIN`'s key genuinely exists and its holder consents.
 
 It prints the three contract IDs you need at the end:
 
@@ -106,21 +108,36 @@ Adapter contracts have no in-place upgrade path. To get new adapter code (a bug 
 VAULT_ID=$VAULT_CONTRACT_ID DEPLOYER=my-deployer bash scripts/redeploy-blend-adapter.sh
 ```
 
-This builds and deploys a new `BlendAdapter`, wired to the same vault/pool/USDC through its constructor arguments, and then **prints, but does not run**, the final `set_adapter` command:
+This builds and deploys a new `BlendAdapter`, wired to the same vault/pool/USDC through its constructor arguments, and then **prints, but does not run**, the final swap command. Which command it prints depends on whether the vault already has depositors, so check that first:
 
 ```bash
-stellar contract invoke --network testnet --source $ADMIN \
+stellar contract invoke --network testnet --source my-deployer \
+  --id $VAULT_CONTRACT_ID -- get_total_shares
+```
+
+### Vault with depositors (`get_total_shares > 0`) — `migrate_adapter`
+
+```bash
+stellar contract invoke --network testnet --source $DEPLOYER \
+  --id $VAULT_ID -- migrate_adapter --new-adapter $NEW_ADAPTER_ID --max-slippage-bps 100
+```
+
+`migrate_adapter` moves the vault's entire position from the old adapter to the new one atomically, comparing the value that lands on the new adapter against the old adapter's value before extraction and reverting if the difference exceeds `--max-slippage-bps` (basis points, max `10000`). Per-depositor bookkeeping is denominated in vault shares, not adapter shares, so it is left untouched — **no depositor has to withdraw first**. It fails with `SameAdapter` if the new adapter is the one already installed, and with `NoAdapterPosition` if the vault holds no adapter position at all (which is the zero-depositor case below).
+
+### Fresh vault, no depositors yet (`get_total_shares == 0`) — `set_adapter`
+
+```bash
+stellar contract invoke --network testnet --source $DEPLOYER \
   --id $VAULT_ID -- set_adapter --new-adapter $NEW_ADAPTER_ID
 ```
 
-This last step is deliberately manual. `set_adapter` resets the vault's adapter-share accounting to zero — if any funds are currently deposited through the vault's _current_ adapter, they become unreachable through the vault's normal withdraw flow the moment you swap. Before running the printed command:
+`set_adapter` is simpler but it only resets the vault's adapter-share accounting (`ADPT_SH`) to zero and moves no funds. On a vault that _does_ hold a position, anything deposited through the current adapter becomes unreachable through the vault's normal withdraw flow the moment you swap — which is why `migrate_adapter` exists and is the correct choice there.
 
-1. Confirm no funds are at risk: `vault.get_adapter()` → that adapter's `total_assets()`. If it's non-zero, withdraw first.
-2. Run the printed command using the vault's actual `ADMIN` key, not `DEPLOYER` — this call requires `admin.require_auth()`.
+Both commands are deliberately left for you to run by hand, and both require `admin.require_auth()` — the `--source` key must be the vault's actual admin. The script prints them with `--source $DEPLOYER`, so if your deployer key is not the vault admin, substitute the admin key before running.
 
 ## Getting testnet USDC
 
-Blend's testnet pool uses USDC issued by Blend's own controlled test key, not Circle's testnet USDC — the two are different Stellar assets that happen to share an asset code. Fund a testnet wallet from [Blend's public faucet](https://testnet.blend.capital) or via its API endpoint (`fundFromBlendFaucet()` in `apps/web/src/hooks/useVaultActions.ts` calls this automatically when a depositing wallet has no USDC balance). In practice the default faucet call reliably grants BLND/wETH/wBTC but has not reliably granted USDC in testing — if a deposit fails with a missing-trustline or insufficient-balance error, you may need to fund the wallet directly through Blend's own faucet UI.
+Blend's testnet pool uses USDC issued by Blend's own controlled test key, not Circle's testnet USDC — the two are different Stellar assets that happen to share an asset code. Fund a testnet wallet from [Blend's public faucet](https://testnet.blend.capital) or via its API endpoint (`fundFromBlendFaucet()` in `apps/web/src/hooks/useBlendFaucet.ts` calls this automatically when a depositing wallet has no USDC balance). In practice the default faucet call reliably grants BLND/wETH/wBTC but has not reliably granted USDC in testing — if a deposit fails with a missing-trustline or insufficient-balance error, you may need to fund the wallet directly through Blend's own faucet UI.
 
 ## Vault migration history
 

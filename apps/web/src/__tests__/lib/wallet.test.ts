@@ -45,14 +45,14 @@ beforeEach(() => {
 });
 
 describe("wallet registry", () => {
-  it("lists Freighter and LOBSTR as implemented adapters", () => {
-    expect(WALLETS.map((w) => w.id)).toEqual(["freighter", "lobstr"]);
+  it("lists Freighter, LOBSTR, and xBull as implemented adapters", () => {
+    expect(WALLETS.map((w) => w.id)).toEqual(["freighter", "lobstr", "xbull"]);
   });
 
   it("isWalletId accepts only registered ids", () => {
     expect(isWalletId("freighter")).toBe(true);
     expect(isWalletId("lobstr")).toBe(true);
-    expect(isWalletId("xbull")).toBe(false);
+    expect(isWalletId("xbull")).toBe(true);
     expect(isWalletId(null)).toBe(false);
   });
 

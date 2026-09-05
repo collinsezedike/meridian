@@ -9,6 +9,7 @@ import {
   getPublicKey as lobstrGetPublicKey,
   signTransaction as lobstrSign,
 } from "@lobstrco/signer-extension-api";
+import { xBullWalletConnect } from "@creit.tech/xbull-wallet-connect";
 
 // Freighter's real API talks to the browser extension via an internal
 // postMessage protocol, which isn't practical to fake from outside the app.
@@ -108,22 +109,23 @@ class FreighterWallet implements WalletAdapter {
   }
 }
 
-// The LOBSTR API itself persists the pairing connection key in sessionStorage
-// (signTransaction/signMessage read it from there), so we store our own
-// paired-public-key signal in the same scope. Session scope means a returning
-// browser session re-validates against the extension instead of trusting a
-// stale key from a previous session.
-const LOBSTR_PUBLIC_KEY_STORAGE_KEY = "meridian-lobstr-public-key";
-
-function readStoredLobstrPublicKey(): string | null {
+// Shared by every wallet whose API offers no passive "is site authorized"
+// query (LOBSTR, xBull): each stores its own paired-public-key signal in
+// sessionStorage under a wallet-specific key, set on connect() and read by
+// isAuthorized(). Session scope means a returning browser session
+// re-validates against the extension instead of trusting a stale key from a
+// previous session.
+function readStoredPublicKey(storageKey: string): string | null {
   if (typeof window === "undefined") return null;
-  return window.sessionStorage.getItem(LOBSTR_PUBLIC_KEY_STORAGE_KEY);
+  return window.sessionStorage.getItem(storageKey);
 }
 
-function storeLobstrPublicKey(publicKey: string): void {
+function storePublicKey(storageKey: string, publicKey: string): void {
   if (typeof window === "undefined") return;
-  window.sessionStorage.setItem(LOBSTR_PUBLIC_KEY_STORAGE_KEY, publicKey);
+  window.sessionStorage.setItem(storageKey, publicKey);
 }
+
+const LOBSTR_PUBLIC_KEY_STORAGE_KEY = "meridian-lobstr-public-key";
 
 // LOBSTR uses a browser extension that pairs with the LOBSTR mobile app.
 // It differs from Freighter in two ways:
@@ -154,7 +156,7 @@ export class LobstrWallet implements WalletAdapter {
       async () => {
         const installed = await this.isInstalled();
         if (!installed) return false;
-        return readStoredLobstrPublicKey() !== null;
+        return readStoredPublicKey(LOBSTR_PUBLIC_KEY_STORAGE_KEY) !== null;
       }
     );
   }
@@ -165,7 +167,7 @@ export class LobstrWallet implements WalletAdapter {
       async () => {
         const publicKey = await lobstrGetPublicKey();
         if (!publicKey) throw new Error("LOBSTR wallet returned no public key");
-        storeLobstrPublicKey(publicKey);
+        storePublicKey(LOBSTR_PUBLIC_KEY_STORAGE_KEY, publicKey);
         return publicKey;
       }
     );
@@ -185,11 +187,97 @@ export class LobstrWallet implements WalletAdapter {
   }
 }
 
+// xBull's own public key/pairing signal, kept separate from LOBSTR's.
+const XBULL_PUBLIC_KEY_STORAGE_KEY = "meridian-xbull-public-key";
+
+// The extension injects this global for its own "direct" SDK (separate from
+// the xbull-wallet-connect bridge library used below for connect/sign). Its
+// presence is the only passive signal xBull exposes for "is the extension
+// installed" — the bridge library itself has no isConnected-style query and
+// will silently fall back to opening the xBull webapp if the extension is
+// absent.
+function isXBullExtensionPresent(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    typeof (window as unknown as { xBullSDK?: unknown }).xBullSDK !==
+    "undefined"
+  );
+}
+
+// xBull talks to the extension (or the xBull webapp, as a fallback) through
+// the xbull-wallet-connect bridge library via postMessage, not a browser-
+// injected request/response API like Freighter's. That means:
+//   1. isInstalled() can't ask the bridge; it checks for window.xBullSDK
+//      instead (see isXBullExtensionPresent above).
+//   2. isAuthorized() has no passive query either, so — same as LobstrWallet —
+//      it's "extension installed + a public key stored from a prior connect()".
+// Each connect()/sign() call opens a fresh bridge, per the library's own
+// guidance, and always closes it via closeConnections() in a finally block to
+// avoid leaking listeners into the next bridge instance.
+export class XBullWallet implements WalletAdapter {
+  async isInstalled(): Promise<boolean> {
+    return withMockWallet(
+      (mock) => mock.installed,
+      async () => isXBullExtensionPresent()
+    );
+  }
+
+  async isAuthorized(): Promise<boolean> {
+    return withMockWallet(
+      (mock) => mock.installed && mock.authorized,
+      async () => {
+        const installed = await this.isInstalled();
+        if (!installed) return false;
+        return readStoredPublicKey(XBULL_PUBLIC_KEY_STORAGE_KEY) !== null;
+      }
+    );
+  }
+
+  async connect(): Promise<string> {
+    return withMockWallet(
+      (mock) => mock.address,
+      async () => {
+        const bridge = new xBullWalletConnect();
+        try {
+          const publicKey = await bridge.connect();
+          if (!publicKey)
+            throw new Error("xBull wallet returned no public key");
+          storePublicKey(XBULL_PUBLIC_KEY_STORAGE_KEY, publicKey);
+          return publicKey;
+        } finally {
+          bridge.closeConnections();
+        }
+      }
+    );
+  }
+
+  async sign(xdr: string, networkPassphrase: string): Promise<string> {
+    return withMockWallet(
+      (mock) => mock.sign(xdr, networkPassphrase),
+      async () => {
+        const bridge = new xBullWalletConnect();
+        try {
+          const signedXdr = await bridge.sign({
+            xdr,
+            network: networkPassphrase,
+            publicKey:
+              readStoredPublicKey(XBULL_PUBLIC_KEY_STORAGE_KEY) ?? undefined,
+          });
+          if (!signedXdr) throw new Error("Signing cancelled");
+          return signedXdr;
+        } finally {
+          bridge.closeConnections();
+        }
+      }
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Wallet registry (#611)
 // ---------------------------------------------------------------------------
 
-export type WalletId = "freighter" | "lobstr";
+export type WalletId = "freighter" | "lobstr" | "xbull";
 
 export interface WalletMeta {
   id: WalletId;
@@ -202,9 +290,7 @@ export interface WalletMeta {
   adapter: WalletAdapter;
 }
 
-// Every implemented adapter, in the order offered to the user. xBull (#598)
-// joins this list once its adapter lands — nothing else here should need to
-// change for that.
+// Every implemented adapter, in the order offered to the user.
 export const WALLETS: WalletMeta[] = [
   {
     id: "freighter",
@@ -217,6 +303,12 @@ export const WALLETS: WalletMeta[] = [
     name: "LOBSTR",
     installUrl: "https://lobstr.co",
     adapter: new LobstrWallet(),
+  },
+  {
+    id: "xbull",
+    name: "xBull",
+    installUrl: "https://xbull.app",
+    adapter: new XBullWallet(),
   },
 ];
 

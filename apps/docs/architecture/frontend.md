@@ -13,7 +13,7 @@
 
 ## Component structure
 
-The UI is intentionally minimal: one page, one panel.
+The public UI is intentionally minimal: one page, one panel. A second, admin-only page (`/app/admin`) was added for #615; there is no router — `App.tsx` picks between the two by checking `window.location.pathname` directly, since a full router is a heavier change than a single static path split needs (see its comment).
 
 ```
 App
@@ -24,13 +24,20 @@ App
     ├── Position summary     # Shown when connected with a position
     ├── Tab switcher         # Deposit | Withdraw
     └── Action area          # Amount input + submit button
+
+AdminDashboard (/app/admin)
+├── useIsAdminWallet          # Placeholder client-side gate — see its comment; #614 replaces this
+├── KeeperHealthPanel         # Accrual/migration keeper status, last run, overdue-by
+└── VaultStatePanel           # Active adapter, total shares/assets, Active/Paused badge
 ```
 
-`VaultPanel` is the only stateful UI component. It pulls from three hooks:
+`VaultPanel` is the main stateful UI component. It pulls from three hooks:
 
 - `useVaults()`: fetches `GET /api/v1/vaults`, picks `bestVault` by APY.
 - `usePositions(publicKey)`: fetches `GET /api/v1/positions/:key`, enabled only when connected.
 - `useVaultActions()`: orchestrates the build → sign → submit cycle.
+
+`KeeperHealthPanel` and `VaultStatePanel` pull from `useKeeperHealth()` (`GET /api/v1/keepers/health`) and `useVaultState()` (`GET /api/v1/admin/vault-state`) respectively — both public, read-only, 30s stale time.
 
 ## Data flow
 

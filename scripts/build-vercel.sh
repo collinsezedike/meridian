@@ -16,6 +16,13 @@ esbuild "$ROOT/packages/api-core/src/index.ts" \
   --bundle --platform=node --format=esm --packages=external \
   --outfile="$ROOT/packages/api-core/dist/index.js"
 
+# esbuild above only emits JS; package.json#types now points at
+# dist/index.d.ts, so generate that too.
+echo "▶ Emitting type declarations for Vercel's function build…"
+tsc --project "$ROOT/packages/shared/tsconfig.json" --emitDeclarationOnly
+tsc --project "$ROOT/packages/stellar-sdk-helpers/tsconfig.json" --emitDeclarationOnly
+tsc --project "$ROOT/packages/api-core/tsconfig.json" --emitDeclarationOnly
+
 echo "▶ Cleaning output directory…"
 rm -rf "$OUT"
 mkdir -p "$OUT"
