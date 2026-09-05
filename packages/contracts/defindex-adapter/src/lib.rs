@@ -25,7 +25,10 @@ const DFX_VAULT: Symbol = symbol_short!("DFXVAULT");
 /// minimum, accepting any price the DeFindex vault happened to offer (#558).
 /// A floor set to the exact expected amount would revert on ordinary
 /// rounding, so this leaves headroom rather than demanding an exact match.
-const SLIPPAGE_BPS: i128 = 50; // 0.5%
+/// Matches buildDefindexDepositTx/buildDefindexWithdrawTx's own default
+/// (packages/stellar-sdk-helpers/src/defindex.ts), so the on-chain floor
+/// this adapter enforces is no looser than the off-chain path already does.
+const SLIPPAGE_BPS: i128 = 10; // 0.1%
 const BPS_DENOMINATOR: i128 = 10_000;
 
 /// Floors `amount` by `SLIPPAGE_BPS`, giving the minimum acceptable amount to
@@ -589,7 +592,7 @@ mod tests {
         TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
         adapter.deposit(&amount);
 
-        let expected_min = amount - (amount * 50) / 10_000;
+        let expected_min = amount - (amount * 10) / 10_000;
         assert!(expected_min > 0);
         assert_eq!(dfx.last_deposit_min(), expected_min);
     }
@@ -608,7 +611,7 @@ mod tests {
         let recipient = Address::generate(&env);
         adapter.withdraw(&amount, &recipient);
 
-        let expected_min = amount - (amount * 50) / 10_000;
+        let expected_min = amount - (amount * 10) / 10_000;
         assert!(expected_min > 0);
         assert_eq!(dfx.last_withdraw_min(), expected_min);
     }
