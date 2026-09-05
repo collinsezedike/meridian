@@ -55,6 +55,13 @@ if [ -z "$ADMIN" ]; then
   echo "WARNING: ADMIN not set, defaulting vault admin to the deployer's own address."
   echo "The deployer key will then also be the permanent admin key. Set ADMIN"
   echo "explicitly to a separate, durable key to avoid this."
+fi
+# Whenever ADMIN_ADDRESS and DEPLOYER_ADDRESS are the same identity, DEPLOYER's
+# own signature already satisfies the vault constructor's admin.require_auth(),
+# whether ADMIN was left unset (defaulting above) or explicitly set to the same
+# address. Only fill this in when the caller hasn't already supplied their own
+# ADMIN_KEY, so an explicit value is never silently overridden.
+if [ -z "$ADMIN_KEY" ] && [ "$ADMIN_ADDRESS" = "$DEPLOYER_ADDRESS" ]; then
   ADMIN_KEY="$DEPLOYER"
 fi
 
