@@ -434,12 +434,9 @@ export const WALLETS: WalletMeta[] = [
     installUrl: "https://xbull.app",
     adapter: new XBullWallet(),
   },
-  {
-    id: "albedo",
-    name: "Albedo",
-    installUrl: "https://albedo.link",
-    adapter: new AlbedoWallet(),
-  },
+  // AlbedoWallet is implemented and tested but deliberately not wired in
+  // here yet: wallet-picker UI exposure is out of scope for the PR that
+  // added it (#674), gated on #611 landing separately.
 ];
 
 const DEFAULT_WALLET_ID: WalletId = "freighter";
