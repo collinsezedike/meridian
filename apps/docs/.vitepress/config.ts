@@ -45,6 +45,10 @@ export default defineConfig({
             link: "/operations/testnet-deployment",
           },
           {
+            text: "Mainnet Deployment",
+            link: "/operations/mainnet-deployment",
+          },
+          {
             text: "Environment Variables",
             link: "/operations/environment-variables",
           },
