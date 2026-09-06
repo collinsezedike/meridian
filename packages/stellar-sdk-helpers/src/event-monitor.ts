@@ -1,7 +1,7 @@
 import { rpc, xdr } from "@stellar/stellar-sdk";
 import { errorMessage, type KeeperLogger } from "./keeper-retry";
 import { withRaceTimeout } from "@meridian/shared";
-import type { StellarNetwork } from "./types";
+
 
 /* ───────────────────────────────────────────────────────────────────────────
  * Contract event monitoring and alerting service (#707)
@@ -75,8 +75,8 @@ function parseAlertableEvent(
   if (!topic || topic.length < 2) return null;
 
   const actionVal = topic[1];
-  if (actionVal.switch().name !== "scvSymbol") return null;
-  const action = actionVal.sym().toString() as AlertableEventType;
+  if (actionVal?.switch().name !== "scvSymbol") return null;
+  const action = actionVal?.sym().toString() as AlertableEventType;
   if (!ALERTABLE_EVENTS.includes(action)) return null;
 
   const value = event.value;
@@ -114,7 +114,7 @@ function parseAlertableEvent(
 
   return {
     event: action,
-    vaultContractId: event.contractId?.string() ?? "",
+    vaultContractId: event.contractId?.toString() ?? "",
     ledgerSequence: event.ledger,
     ...(event.ledgerClosedAt ? { timestamp: event.ledgerClosedAt } : {}),
     details,
@@ -195,7 +195,7 @@ export async function pollAndAlert(
         fetch(webhookUrl, {
           method: "POST",
           headers,
-          body: JSON.stringify(parsed),
+          body: JSON.toStringify(parsed),
         }).then(async (res) => {
           if (!res.ok) {
             throw new Error(`webhook returned ${res.status}`);
