@@ -160,6 +160,9 @@ impl MeridianBlendAdapter {
         let prev: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
         env.storage().instance().set(&TOTAL_KEY, &(prev + amount));
 
+        env.events()
+            .publish((symbol_short!("deposit"),), (amount, b_tokens_credited));
+
         b_tokens_credited
     }
 
@@ -217,6 +220,9 @@ impl MeridianBlendAdapter {
             0
         };
         env.storage().instance().set(&TOTAL_KEY, &remaining);
+
+        env.events()
+            .publish((symbol_short!("withdraw"),), (shares, recipient, delivered));
 
         delivered
     }
@@ -931,25 +937,7 @@ mod tests {
 
         assert_eq!(adapter.try_accrue(), Ok(Ok(())));
 
-        let events = env.events().all();
-        let accrue_event = events
-            .into_iter()
-            .find(|e| {
-                if e.0 == adapter.address && e.1.len() == 1 {
-                    if let Ok(topic) =
-                        soroban_sdk::TryIntoVal::<_, soroban_sdk::Symbol>::try_into_val(
-                            &e.1.get(0).unwrap(),
-                            &env,
-                        )
-                    {
-                        topic == symbol_short!("accrue")
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            })
+        let accrue_event = find_event(&env, &adapter.address, symbol_short!("accrue"))
             .expect("accrue event not found");
 
         let expected_prev = amount;
@@ -1004,5 +992,56 @@ mod tests {
         env.as_contract(&adapter_id, || {
             assert!(env.storage().instance().has(&TOTAL_KEY));
         });
+    }
+
+    /// Finds the single-topic event published under `topic` from `address`.
+    fn find_event(
+        env: &Env,
+        address: &Address,
+        topic: Symbol,
+    ) -> Option<(
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> {
+        env.events().all().into_iter().find(|e| {
+            e.0 == *address
+                && e.1.len() == 1
+                && soroban_sdk::TryIntoVal::<_, Symbol>::try_into_val(&e.1.get(0).unwrap(), env)
+                    .map(|t: Symbol| t == topic)
+                    .unwrap_or(false)
+        })
+    }
+
+    #[test]
+    fn deposit_publishes_event_with_amount_and_credited_shares() {
+        let (env, vault, usdc_id, adapter, _pool) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        let event = find_event(&env, &adapter.address, symbol_short!("deposit"))
+            .expect("deposit event not found");
+        let data: (i128, i128) = soroban_sdk::TryIntoVal::try_into_val(&event.2, &env).unwrap();
+        assert_eq!(data, (amount, shares));
+    }
+
+    #[test]
+    fn withdraw_publishes_event_with_shares_recipient_and_delivered() {
+        let (env, vault, usdc_id, adapter, _pool) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        let recipient = Address::generate(&env);
+        let delivered = adapter.withdraw(&amount, &recipient);
+
+        let event = find_event(&env, &adapter.address, symbol_short!("withdraw"))
+            .expect("withdraw event not found");
+        let data: (i128, Address, i128) =
+            soroban_sdk::TryIntoVal::try_into_val(&event.2, &env).unwrap();
+        assert_eq!(data, (amount, recipient, delivered));
     }
 }
