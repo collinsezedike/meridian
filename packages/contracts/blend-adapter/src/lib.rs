@@ -10,7 +10,9 @@ pub use types::{
     REQUEST_WITHDRAW_COLLATERAL,
 };
 
-use adapter_common::{get_usdc, require_not_initialized, require_vault_auth, store_vault_and_usdc};
+use adapter_common::{
+    extend_instance, get_usdc, require_not_initialized, require_vault_auth, store_vault_and_usdc,
+};
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractimpl, panic_with_error, symbol_short,
@@ -88,6 +90,7 @@ impl MeridianBlendAdapter {
     /// tracks genuine, appreciating shares instead of raw principal (#486).
     pub fn deposit(env: Env, amount: i128) -> i128 {
         require_vault_auth(&env);
+        extend_instance(&env);
 
         let pool: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
             &env,
@@ -170,6 +173,7 @@ impl MeridianBlendAdapter {
     /// measured directly rather than assumed to equal the request (#489).
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
         require_vault_auth(&env);
+        extend_instance(&env);
 
         let pool: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
             &env,
@@ -234,6 +238,8 @@ impl MeridianBlendAdapter {
     /// (`get_positions`) rather than self-tracking it, so there is no risk of
     /// drift between the stored total and Blend's actual accounting.
     pub fn accrue(env: Env) -> Result<(), ContractError> {
+        extend_instance(&env);
+
         let pool: Address = env
             .storage()
             .instance()
@@ -330,7 +336,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         contract, contractimpl,
-        testutils::{Address as _, Events, MockAuth, MockAuthInvoke},
+        testutils::{Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke},
         token::{StellarAssetClient, TokenClient},
         Address, Env, Map, Val,
     };
@@ -939,6 +945,53 @@ mod tests {
         let data: (i128, i128) =
             soroban_sdk::TryIntoVal::try_into_val(&accrue_event.2, &env).unwrap();
         assert_eq!(data, (expected_prev, expected_new));
+    }
+
+    #[test]
+    fn deposit_extends_instance_ttl() {
+        let (env, vault, usdc_id, adapter, _pool) = setup();
+        let adapter_id = adapter.address.clone();
+        let amount = 100_0000000_i128;
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter_id, &amount);
+        adapter.deposit(&amount);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += adapter_common::INSTANCE_THRESHOLD - 1);
+        env.as_contract(&adapter_id, || {
+            assert!(env.storage().instance().has(&TOTAL_KEY));
+        });
+    }
+
+    #[test]
+    fn withdraw_extends_instance_ttl() {
+        let (env, vault, usdc_id, adapter, _pool) = setup();
+        let adapter_id = adapter.address.clone();
+        let amount = 100_0000000_i128;
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter_id, &amount);
+        adapter.deposit(&amount);
+        let recipient = Address::generate(&env);
+        adapter.withdraw(&amount, &recipient);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += adapter_common::INSTANCE_THRESHOLD - 1);
+        env.as_contract(&adapter_id, || {
+            assert!(env.storage().instance().has(&TOTAL_KEY));
+        });
+    }
+
+    #[test]
+    fn accrue_extends_instance_ttl() {
+        let (env, vault, usdc_id, adapter, pool) = setup();
+        let adapter_id = adapter.address.clone();
+        let amount = 100_0000000_i128;
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter_id, &amount);
+        adapter.deposit(&amount);
+        let new_rate = RATE_SCALAR + RATE_SCALAR / 10;
+        pool.set_rate(&new_rate);
+        adapter.accrue();
+        env.ledger()
+            .with_mut(|li| li.sequence_number += adapter_common::INSTANCE_THRESHOLD - 1);
+        env.as_contract(&adapter_id, || {
+            assert!(env.storage().instance().has(&TOTAL_KEY));
+        });
     }
 
     /// Finds the single-topic event published under `topic` from `address`.
