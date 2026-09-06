@@ -82,35 +82,36 @@ The following parameters are either defaulted on testnet or hardcoded in the con
 
 ### Migration Cooldown (`MIN_LEDGER_GAP`)
 
-| Environment | Value | Rationale |
-|-------------|-------|-----------|
-| Testnet | 12 ledgers (~1 min) | Fast iteration; low attack surface on testnet |
+| Environment | Value                     | Rationale                                                                                               |
+| ----------- | ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Testnet     | 12 ledgers (~1 min)       | Fast iteration; low attack surface on testnet                                                           |
 | **Mainnet** | **120 ledgers (~10 min)** | Sustained manipulation requires ~10 minutes, giving operators and monitoring time to detect and respond |
 
 Set via: contract source constant. Requires re-audit and redeploy to change.
 
 ### Slippage Tolerances
 
-| Action | Testnet Default | Mainnet Recommendation |
-|--------|-----------------|------------------------|
+| Action            | Testnet Default                      | Mainnet Recommendation                                                                                                            |
+| ----------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
 | `migrate_adapter` | No ceiling (up to 10,000 bps / 100%) | **Hard cap at 500 bps (5%)** enforced off-chain via keeper config; any migration request above this is rejected before submission |
-| User deposit | No `min_shares_out` required | UI should calculate and enforce a reasonable floor based on current share price |
-| User withdraw | No `min_usdc_out` required | UI should calculate and enforce a reasonable floor |
+| User deposit      | No `min_shares_out` required         | UI should calculate and enforce a reasonable floor based on current share price                                                   |
+| User withdraw     | No `min_usdc_out` required           | UI should calculate and enforce a reasonable floor                                                                                |
 
 > **Note:** The contract allows `max_slippage_bps = 10_000` (100%) as a valid, if extreme, value. This is intentional for recovery scenarios (e.g., a known-broken adapter where any migration is better than none), but the keeper and any migration scripts should default to a much tighter bound. See [#557](https://github.com/drydocs/meridian/issues/557).
 
 ### TTL Extension Thresholds
 
-| Storage Type | Testnet | Mainnet |
-|--------------|---------|---------|
-| Instance TTL | 30 days | **30 days** (same; bump on every state-changing call) |
-| Position (Entry/Principal) TTL | 120 days | **120 days** |
+| Storage Type                   | Testnet  | Mainnet                                               |
+| ------------------------------ | -------- | ----------------------------------------------------- |
+| Instance TTL                   | 30 days  | **30 days** (same; bump on every state-changing call) |
+| Position (Entry/Principal) TTL | 120 days | **120 days**                                          |
 
 Mainnet deployments should verify TTL bumping is active and monitor for any contract approaching expiration. The keeper's heartbeat endpoint (`/api/health`) already tracks this.
 
 ### Pause Behavior
 
 While paused:
+
 - **Deposits are rejected** — new funds cannot enter
 - **Withdrawals remain open** — a pause can never trap user funds
 
@@ -219,10 +220,12 @@ If migration fails (slippage exceeded), funds never move — Soroban transaction
 #### 3. Compromised Admin Key
 
 **Immediate:**
+
 1. Pause the vault: `set_paused(true)` — requires the compromised key, so this is only viable if you still control it
 2. If the key is fully compromised and the attacker has not yet acted, use `transfer_admin()` to a new, uncompromised multisig before the attacker does
 
 **If the attacker already controls admin:**
+
 - There is no on-chain recovery mechanism. The vault's admin is immutable.
 - The only mitigation is to notify depositors to withdraw and migrate to a new vault.
 - This is why a 2-of-3 multisig is strongly recommended: a single compromised key cannot act alone.
@@ -236,12 +239,12 @@ If migration fails (slippage exceeded), funds never move — Soroban transaction
 
 ### Incident Response Playbook
 
-| Scenario | Detection | Response | Owner |
-|----------|-----------|----------|-------|
-| Unauthorized `migrate_adapter` | Event monitor alert (#707) | Immediate pause, investigate, rotate admin if key compromised | Security team |
-| Vault TTL approaching expiry | Keeper health endpoint | Trigger manual TTL bump via `extend_position_ttl` keeper endpoint | DevOps |
-| Slippage failure during migration | Failed transaction log | Retry with higher (but still capped) slippage; if repeated, investigate adapter | Engineering |
-| Pause event without authorization | Event monitor alert | Verify if authorized; if not, assume compromise and begin incident response | Security team |
+| Scenario                          | Detection                  | Response                                                                        | Owner         |
+| --------------------------------- | -------------------------- | ------------------------------------------------------------------------------- | ------------- |
+| Unauthorized `migrate_adapter`    | Event monitor alert (#707) | Immediate pause, investigate, rotate admin if key compromised                   | Security team |
+| Vault TTL approaching expiry      | Keeper health endpoint     | Trigger manual TTL bump via `extend_position_ttl` keeper endpoint               | DevOps        |
+| Slippage failure during migration | Failed transaction log     | Retry with higher (but still capped) slippage; if repeated, investigate adapter | Engineering   |
+| Pause event without authorization | Event monitor alert        | Verify if authorized; if not, assume compromise and begin incident response     | Security team |
 
 ---
 
@@ -284,4 +287,4 @@ Before calling any mainnet deployment "live", resolve or explicitly accept risk 
 
 ---
 
-*Last updated: 2026-09-06*
+_Last updated: 2026-09-06_
