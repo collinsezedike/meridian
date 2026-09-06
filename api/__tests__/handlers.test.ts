@@ -129,6 +129,25 @@ vi.mock("@meridian/stellar-sdk-helpers", () => ({
     totalAssets: 1050,
     paused: false,
   })),
+  loadAlertKeeperConfig: vi.fn(() => ({
+    network: {
+      network: "testnet",
+      rpcUrl: "https://rpc.example",
+      passphrase: "Test SDF Network ; September 2015",
+    },
+    webhookUrl: "https://hooks.example.com/webhook",
+    maxAttempts: 3,
+    baseDelayMs: 1,
+    rpcTimeoutMs: 100,
+  })),
+  runAlertKeeper: vi.fn(async () => ({
+    network: "testnet",
+    startedAt: "2026-08-06T00:00:00.000Z",
+    finishedAt: "2026-08-06T00:00:01.000Z",
+    vaultsChecked: 1,
+    alertsSent: [],
+    failures: [],
+  })),
 }));
 
 import txHandler from "../v1/tx/[action]";
@@ -150,6 +169,7 @@ import {
   getKeeperHeartbeat,
   isKeeperHealthy,
   fetchCoordinatorState,
+  runAlertKeeper,
 } from "@meridian/stellar-sdk-helpers";
 
 // A 56-char Stellar public key shape (only the length is validated).
@@ -684,6 +704,88 @@ describe("GET /api/v1/keepers/accrue", () => {
       expect(res.statusCode).toBe(503);
       expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("GET /api/v1/keepers/alert", () => {
+  it("rejects requests without the cron bearer token", async () => {
+    const res = makeRes();
+    await keepersHandler(
+      fakeReq({ query: { action: "alert" }, method: "GET", headers: {} }),
+      res
+    );
+
+    expect(res.statusCode).toBe(401);
+    expect(runAlertKeeper).not.toHaveBeenCalled();
+  });
+
+  it("runs the alert keeper for authorized cron calls", async () => {
+    const res = makeRes();
+    await keepersHandler(
+      fakeReq({
+        query: { action: "alert" },
+        method: "GET",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ vaultsChecked: 1, alertsSent: [] });
+    expect(runAlertKeeper).toHaveBeenCalledOnce();
+  });
+
+  it("returns 500 when an alert send fails so the cron run is observable", async () => {
+    vi.mocked(runAlertKeeper).mockResolvedValueOnce({
+      network: "testnet",
+      startedAt: "2026-08-06T00:00:00.000Z",
+      finishedAt: "2026-08-06T00:00:01.000Z",
+      vaultsChecked: 1,
+      alertsSent: [],
+      failures: [
+        {
+          vaultId: "meridian-usdc",
+          vaultContractId: "CVAULT",
+          stage: "send",
+          attempts: 3,
+          error: "alert webhook request failed with HTTP 500",
+        },
+      ],
+    });
+
+    const res = makeRes();
+    await keepersHandler(
+      fakeReq({
+        query: { action: "alert" },
+        method: "GET",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toMatchObject({
+      failures: [{ vaultId: "meridian-usdc" }],
+    });
+  });
+
+  it("redacts an unexpected keeper-run error instead of leaking it raw", async () => {
+    vi.mocked(runAlertKeeper).mockRejectedValueOnce(
+      new Error("connect ECONNREFUSED https://rpc.internal.example:443")
+    );
+
+    const res = makeRes();
+    await keepersHandler(
+      fakeReq({
+        query: { action: "alert" },
+        method: "GET",
+        headers: { authorization: "Bearer cron-secret" },
+      }),
+      res
+    );
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ error: "Keeper operation failed" });
   });
 });
 

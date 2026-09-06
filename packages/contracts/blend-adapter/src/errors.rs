@@ -11,6 +11,11 @@ pub enum ContractError {
     Overflow = 2,
     /// A state-mutating call was made before `initialize`.
     NotInitialized = 3,
+    /// A `checked_div` returned `None` because the divisor was zero.
+    /// Distinct from `Overflow`: this points to a degenerate adapter state
+    /// (e.g. a zero `b_rate` from a broken Blend pool) rather than a genuine
+    /// arithmetic overflow.
+    DivisionByZero = 4,
 }
 
 impl From<AdapterError> for ContractError {

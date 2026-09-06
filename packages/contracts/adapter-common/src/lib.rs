@@ -9,6 +9,29 @@
 use soroban_sdk::{contracterror, panic_with_error, symbol_short, Address, Env, Error, Symbol};
 
 // ---------------------------------------------------------------------------
+// TTL constants — shared across all adapters so a policy change (e.g.
+// adjusting the 30-day bump window) is made in one place rather than
+// independently in every adapter crate, where the copies can silently drift
+// out of sync.
+// ---------------------------------------------------------------------------
+
+/// Approximate number of ledgers in a 24-hour period (at ~5 s/ledger).
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Instance TTL extension amount: 30 days in ledgers.
+pub const INSTANCE_BUMP: u32 = 30 * DAY_IN_LEDGERS;
+/// Extend instance TTL when remaining lifetime drops below this threshold.
+pub const INSTANCE_THRESHOLD: u32 = INSTANCE_BUMP - DAY_IN_LEDGERS;
+
+/// Extends the contract instance's storage TTL. Called at the start of every
+/// state-changing entry point so the adapter's configuration never expires
+/// while it is actively used.
+pub fn extend_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_THRESHOLD, INSTANCE_BUMP);
+}
+
+// ---------------------------------------------------------------------------
 // Storage keys
 // ---------------------------------------------------------------------------
 

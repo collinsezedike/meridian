@@ -33,7 +33,7 @@ pub fn b_tokens_to_usdc(b_tokens: i128, b_rate: i128) -> Result<i128, ContractEr
         .checked_mul(b_rate)
         .ok_or(ContractError::Overflow)?
         .checked_div(RATE_SCALAR)
-        .ok_or(ContractError::Overflow)
+        .ok_or(ContractError::DivisionByZero)
 }
 
 #[contracttype]

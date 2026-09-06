@@ -422,6 +422,28 @@ describe("getRpcAdminHistory", () => {
     vi.restoreAllMocks();
   });
 
+  it("filters on a two-segment admin topic, not a one-segment one", async () => {
+    // Soroban RPC's getEvents topic filter matches an event's topic array by
+    // exact segment count. The vault's admin events all carry two segments —
+    // (admin, <action>) — so a filter missing the wildcarded second position
+    // would match zero real events, passing every other test here only
+    // because they mock getEvents directly instead of exercising this.
+    const getEventsSpy = vi
+      .spyOn(rpc.Server.prototype, "getEvents")
+      .mockResolvedValueOnce({
+        events: [adminEvent("paused", xdr.ScVal.scvBool(true))],
+        latestLedger: 100,
+      } as never);
+
+    await getRpcAdminHistory(network.rpcUrl, VAULT_ID);
+
+    const [request] = getEventsSpy.mock.calls[0]!;
+    const filter = (request as { filters: rpc.Api.EventFilter[] }).filters[0]!;
+    expect(filter.topics).toHaveLength(1);
+    expect(filter.topics![0]).toHaveLength(2);
+    expect(filter.topics![0]![1]).toBe("*");
+  });
+
   it("parses a paused event", async () => {
     vi.spyOn(rpc.Server.prototype, "getEvents").mockResolvedValueOnce({
       events: [adminEvent("paused", xdr.ScVal.scvBool(true))],

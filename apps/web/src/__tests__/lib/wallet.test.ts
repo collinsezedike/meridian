@@ -45,14 +45,18 @@ beforeEach(() => {
 });
 
 describe("wallet registry", () => {
-  it("lists Freighter, LOBSTR, and xBull as implemented adapters", () => {
+  it("lists Freighter, LOBSTR, and xBull as picker-wired adapters", () => {
+    // AlbedoWallet is implemented and tested (see albedo-wallet.test.ts) but
+    // deliberately not wired into WALLETS yet: wallet-picker UI exposure is
+    // out of scope for the PR that added it (#674), gated on #611.
     expect(WALLETS.map((w) => w.id)).toEqual(["freighter", "lobstr", "xbull"]);
   });
 
-  it("isWalletId accepts only registered ids", () => {
+  it("isWalletId accepts only picker-wired ids", () => {
     expect(isWalletId("freighter")).toBe(true);
     expect(isWalletId("lobstr")).toBe(true);
     expect(isWalletId("xbull")).toBe(true);
+    expect(isWalletId("albedo")).toBe(false);
     expect(isWalletId(null)).toBe(false);
   });
 

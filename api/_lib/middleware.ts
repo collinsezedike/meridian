@@ -43,11 +43,28 @@ export function resetRateLimitForTesting(): void {
 }
 
 /**
- * Set CORS headers and handle preflight. Returns true when the request was a
- * preflight OPTIONS and has been fully handled — the caller should return
- * immediately in that case.
+ * Sets baseline security headers common to every API response. Every
+ * response here is JSON, never HTML, so `default-src 'none'` is safe: there
+ * is nothing on these routes a CSP would need to permit loading.
+ */
+function applySecurityHeaders(res: VercelResponse): void {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader(
+    "Strict-Transport-Security",
+    "max-age=63072000; includeSubDomains; preload"
+  );
+  res.setHeader("Content-Security-Policy", "default-src 'none'");
+}
+
+/**
+ * Set CORS and baseline security headers, and handle preflight. Returns true
+ * when the request was a preflight OPTIONS and has been fully handled — the
+ * caller should return immediately in that case.
  */
 export function applyCors(req: VercelRequest, res: VercelResponse): boolean {
+  applySecurityHeaders(res);
   res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");

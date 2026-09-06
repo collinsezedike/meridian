@@ -1,7 +1,8 @@
 #![no_std]
 
 use adapter_common::{
-    get_usdc, require_not_initialized, require_vault_auth, store_vault_and_usdc, AdapterError,
+    extend_instance, get_usdc, require_not_initialized, require_vault_auth, store_vault_and_usdc,
+    AdapterError,
 };
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, panic_with_error, symbol_short,
@@ -13,6 +14,37 @@ use soroban_sdk::{
 // ---------------------------------------------------------------------------
 
 const DFX_VAULT: Symbol = symbol_short!("DFXVAULT");
+
+// ---------------------------------------------------------------------------
+// Slippage tolerance
+// ---------------------------------------------------------------------------
+
+/// Maximum tolerated execution-price slippage on either leg of a DeFindex
+/// interaction, in basis points. #117 and #432 established this floor
+/// off-chain in stellar-sdk-helpers/src/defindex.ts, but the on-chain path
+/// MeridianVault::deposit/withdraw actually invokes still passed a literal 0
+/// minimum, accepting any price the DeFindex vault happened to offer (#558).
+/// A floor set to the exact expected amount would revert on ordinary
+/// rounding, so this leaves headroom rather than demanding an exact match.
+/// Matches buildDefindexDepositTx/buildDefindexWithdrawTx's own default
+/// (packages/stellar-sdk-helpers/src/defindex.ts), so the on-chain floor
+/// this adapter enforces is no looser than the off-chain path already does.
+const SLIPPAGE_BPS: i128 = 10; // 0.1%
+const BPS_DENOMINATOR: i128 = 10_000;
+
+/// Floors `amount` by `SLIPPAGE_BPS`, giving the minimum acceptable amount to
+/// pass as the DeFindex vault's `amounts_min` / `min_amounts_out` leg. Uses
+/// checked arithmetic, matching the equivalent slippage-floor computation in
+/// `vault/src/lib.rs`'s `migrate_adapter`, so an overflow traps with a typed
+/// error instead of an unrecoverable panic.
+fn min_after_slippage(amount: i128) -> Result<i128, ContractError> {
+    let discount = amount
+        .checked_mul(SLIPPAGE_BPS)
+        .ok_or(ContractError::Overflow)?
+        .checked_div(BPS_DENOMINATOR)
+        .ok_or(ContractError::Overflow)?;
+    amount.checked_sub(discount).ok_or(ContractError::Overflow)
+}
 
 // ---------------------------------------------------------------------------
 // DeFindex vault interface
@@ -135,8 +167,14 @@ impl MeridianDefindexAdapter {
     /// Called by the vault after transferring `amount` USDC to this adapter.
     /// Deposits USDC into the DeFindex vault on behalf of the adapter and
     /// returns the dfToken shares received.
+    ///
+    /// `amounts_min` is floored `SLIPPAGE_BPS` below `amount` (the exact
+    /// desired deposit), not 0, so the DeFindex vault call rejects execution
+    /// that lands materially below what was requested instead of accepting
+    /// any price it happens to offer.
     pub fn deposit(env: Env, amount: i128) -> i128 {
         require_vault_auth(&env);
+        extend_instance(&env);
 
         let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
             &env,
@@ -146,7 +184,13 @@ impl MeridianDefindexAdapter {
 
         let client = DefindexVaultClient::new(&env, &dfx);
         let shares_before = client.balance(&adapter);
-        let _ = client.deposit(&vec![&env, amount], &vec![&env, 0_i128], &adapter, &true);
+        let min_amount = min_after_slippage(amount).unwrap_or_else(|e| panic_with_error!(&env, e));
+        let _ = client.deposit(
+            &vec![&env, amount],
+            &vec![&env, min_amount],
+            &adapter,
+            &true,
+        );
         let shares_after = client.balance(&adapter);
 
         // checked_sub alone only catches i128 overflow, not a merely
@@ -158,17 +202,32 @@ impl MeridianDefindexAdapter {
             panic_with_error!(&env, ContractError::Overflow);
         }
 
-        match shares_after.checked_sub(shares_before) {
+        let delta = match shares_after.checked_sub(shares_before) {
             Some(delta) => delta,
             None => panic_with_error!(&env, ContractError::Overflow),
-        }
+        };
+
+        env.events()
+            .publish((symbol_short!("deposit"),), (amount, delta));
+
+        delta
     }
 
     /// Called by the vault to redeem `shares` dfTokens from the DeFindex vault.
     /// DeFindex sends USDC to this adapter; the adapter forwards it to
     /// `recipient`. Returns the USDC amount received.
+    ///
+    /// `min_amounts_out` is floored `SLIPPAGE_BPS` below the payout DeFindex's
+    /// own `get_asset_amounts_per_shares` quotes for `shares` just before the
+    /// call, not 0, so a withdrawal executing at a materially worse rate than
+    /// quoted fails instead of paying out whatever DeFindex offers. The quote
+    /// itself is required to have a valid first element: a malformed or empty
+    /// response must not silently collapse the floor to 0, which would
+    /// reintroduce the exact "accept any price" bug this floor exists to
+    /// close, precisely when the DeFindex vault is misbehaving.
     pub fn withdraw(env: Env, shares: i128, recipient: Address) -> i128 {
         require_vault_auth(&env);
+        extend_instance(&env);
 
         let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
             &env,
@@ -177,8 +236,13 @@ impl MeridianDefindexAdapter {
         let usdc = get_usdc(&env);
         let adapter = env.current_contract_address();
 
-        let amounts =
-            DefindexVaultClient::new(&env, &dfx).withdraw(&shares, &vec![&env, 0_i128], &adapter);
+        let client = DefindexVaultClient::new(&env, &dfx);
+        let expected = match client.get_asset_amounts_per_shares(&shares).get(0) {
+            Some(value) => value,
+            None => panic_with_error!(&env, ContractError::MalformedProtocolResponse),
+        };
+        let min_out = min_after_slippage(expected).unwrap_or_else(|e| panic_with_error!(&env, e));
+        let amounts = client.withdraw(&shares, &vec![&env, min_out], &adapter);
 
         let usdc_out: i128 = match amounts.get(0) {
             Some(value) => value,
@@ -187,6 +251,9 @@ impl MeridianDefindexAdapter {
         if usdc_out > 0 {
             TokenClient::new(&env, &usdc).transfer(&adapter, &recipient, &usdc_out);
         }
+
+        env.events()
+            .publish((symbol_short!("withdraw"),), (shares, recipient, usdc_out));
 
         usdc_out
     }
@@ -252,7 +319,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         contract, contractimpl, symbol_short,
-        testutils::Address as _,
+        testutils::{Address as _, Events, Ledger as _},
         token::{StellarAssetClient, TokenClient},
         Address, Env,
     };
@@ -263,6 +330,9 @@ mod tests {
     // lets tests configure exactly what `withdraw` returns, so the
     // MalformedProtocolResponse edge case in the real adapter (a
     // differently-shaped or empty return vector) can be exercised directly.
+    // `deposit`/`withdraw` also record the `amounts_min`/`min_amounts_out`
+    // leg they were called with, so #558's regression tests can assert the
+    // adapter sent a real floor instead of a literal 0.
     // -----------------------------------------------------------------------
 
     const MDV_USDC: Symbol = symbol_short!("MDV_USDC");
@@ -270,6 +340,8 @@ mod tests {
     const MDV_WAMT: Symbol = symbol_short!("MDV_WAMT");
     const MDV_FAULTY: Symbol = symbol_short!("MDV_FT");
     const MDV_AAMT: Symbol = symbol_short!("MDV_AAMT");
+    const MDV_DMIN: Symbol = symbol_short!("MDV_DMIN");
+    const MDV_WMIN: Symbol = symbol_short!("MDV_WMIN");
 
     #[contract]
     pub struct MockDefindexVault;
@@ -293,10 +365,20 @@ mod tests {
             env.storage().instance().set(&MDV_AAMT, &amounts);
         }
 
+        // The `amounts_min` the last `deposit()` call was made with.
+        pub fn last_deposit_min(env: Env) -> i128 {
+            env.storage().instance().get(&MDV_DMIN).unwrap_or(0)
+        }
+
+        // The `min_amounts_out` the last `withdraw()` call was made with.
+        pub fn last_withdraw_min(env: Env) -> i128 {
+            env.storage().instance().get(&MDV_WMIN).unwrap_or(0)
+        }
+
         pub fn deposit(
             env: Env,
             amounts_desired: Vec<i128>,
-            _amounts_min: Vec<i128>,
+            amounts_min: Vec<i128>,
             from: Address,
             _invest: bool,
         ) -> Val {
@@ -307,6 +389,9 @@ mod tests {
             );
             // Vec.get() safely returns Option which defaults to 0, so unwrap_or is safe.
             let amount = amounts_desired.get(0).unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&MDV_DMIN, &amounts_min.get(0).unwrap_or(0));
             TokenClient::new(&env, &usdc).transfer(&from, &env.current_contract_address(), &amount);
 
             let faulty: bool = env.storage().instance().get(&MDV_FAULTY).unwrap_or(false);
@@ -326,9 +411,13 @@ mod tests {
         pub fn withdraw(
             env: Env,
             withdraw_shares: i128,
-            _min_amounts_out: Vec<i128>,
+            min_amounts_out: Vec<i128>,
             from: Address,
         ) -> Vec<i128> {
+            env.storage()
+                .instance()
+                .set(&MDV_WMIN, &min_amounts_out.get(0).unwrap_or(0));
+
             let prev: i128 = env.storage().instance().get(&MDV_SH).unwrap_or(0);
             env.storage()
                 .instance()
@@ -505,6 +594,59 @@ mod tests {
     }
 
     #[test]
+    fn deposit_passes_a_real_slippage_floor_not_zero() {
+        // Regression test for #558: deposit() must not pass 0 as
+        // amounts_min, letting the DeFindex vault execute at any price.
+        let (env, vault, usdc_id, adapter, dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        let expected_min = amount - (amount * 10) / 10_000;
+        assert!(expected_min > 0);
+        assert_eq!(dfx.last_deposit_min(), expected_min);
+    }
+
+    #[test]
+    fn withdraw_passes_a_real_slippage_floor_not_zero() {
+        // Regression test for #558: withdraw() must not pass 0 as
+        // min_amounts_out, letting the DeFindex vault execute at any price.
+        // The mock values 1:1, so the quoted payout equals `shares`.
+        let (env, vault, usdc_id, adapter, dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        let recipient = Address::generate(&env);
+        adapter.withdraw(&amount, &recipient);
+
+        let expected_min = amount - (amount * 10) / 10_000;
+        assert!(expected_min > 0);
+        assert_eq!(dfx.last_withdraw_min(), expected_min);
+    }
+
+    #[test]
+    fn withdraw_errs_on_malformed_price_quote() {
+        // The gap the original #558 fix left open: get_asset_amounts_per_shares
+        // (the pre-withdraw price quote used to compute the slippage floor)
+        // returning an empty vector must fail loudly, not silently collapse
+        // the floor to 0 and let the withdrawal proceed at any price.
+        let (env, vault, usdc_id, adapter, dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        adapter.deposit(&amount);
+
+        dfx.set_asset_amounts_per_shares(&Vec::new(&env));
+
+        let recipient = Address::generate(&env);
+        let result = adapter.try_withdraw(&amount, &recipient);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn withdraw_errs_on_malformed_defindex_response() {
         let (env, vault, usdc_id, adapter, dfx) = setup();
         let amount = 100_0000000_i128;
@@ -676,5 +818,86 @@ mod tests {
         let _ = ContractError::AlreadyInitialized;
         let _ = ContractError::Overflow;
         let _ = ContractError::NotInitialized;
+    }
+
+    #[test]
+    fn deposit_extends_instance_ttl() {
+        let (env, vault, usdc_id, adapter, _dfx) = setup();
+        let adapter_id = adapter.address.clone();
+        let amount = 100_0000000_i128;
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter_id, &amount);
+        adapter.deposit(&amount);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += adapter_common::INSTANCE_THRESHOLD - 1);
+        env.as_contract(&adapter_id, || {
+            assert!(env.storage().instance().has(&DFX_VAULT));
+        });
+    }
+
+    #[test]
+    fn withdraw_extends_instance_ttl() {
+        let (env, vault, usdc_id, adapter, _dfx) = setup();
+        let adapter_id = adapter.address.clone();
+        let amount = 100_0000000_i128;
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter_id, &amount);
+        adapter.deposit(&amount);
+        let recipient = Address::generate(&env);
+        adapter.withdraw(&amount, &recipient);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += adapter_common::INSTANCE_THRESHOLD - 1);
+        env.as_contract(&adapter_id, || {
+            assert!(env.storage().instance().has(&DFX_VAULT));
+        });
+    }
+
+    /// Finds the single-topic event published under `topic` from `address`.
+    fn find_event(
+        env: &Env,
+        address: &Address,
+        topic: Symbol,
+    ) -> Option<(
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> {
+        env.events().all().into_iter().find(|e| {
+            e.0 == *address
+                && e.1.len() == 1
+                && soroban_sdk::TryIntoVal::<_, Symbol>::try_into_val(&e.1.get(0).unwrap(), env)
+                    .map(|t: Symbol| t == topic)
+                    .unwrap_or(false)
+        })
+    }
+
+    #[test]
+    fn deposit_publishes_event_with_amount_and_credited_shares() {
+        let (env, vault, usdc_id, adapter, _dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        let event = find_event(&env, &adapter.address, symbol_short!("deposit"))
+            .expect("deposit event not found");
+        let data: (i128, i128) = soroban_sdk::TryIntoVal::try_into_val(&event.2, &env).unwrap();
+        assert_eq!(data, (amount, shares));
+    }
+
+    #[test]
+    fn withdraw_publishes_event_with_shares_recipient_and_usdc_out() {
+        let (env, vault, usdc_id, adapter, _dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        let recipient = Address::generate(&env);
+        let usdc_out = adapter.withdraw(&shares, &recipient);
+
+        let event = find_event(&env, &adapter.address, symbol_short!("withdraw"))
+            .expect("withdraw event not found");
+        let data: (i128, Address, i128) =
+            soroban_sdk::TryIntoVal::try_into_val(&event.2, &env).unwrap();
+        assert_eq!(data, (shares, recipient, usdc_out));
     }
 }
