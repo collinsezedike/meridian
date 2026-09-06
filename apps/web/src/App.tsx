@@ -23,6 +23,10 @@ function isAdminRoute(): boolean {
   return window.location.pathname.startsWith("/app/admin");
 }
 
+function isStatusRoute(): boolean {
+  return window.location.pathname.startsWith("/app/status");
+}
+
 function Dashboard() {
   const { t, i18n } = useTranslation();
   const toggleLanguage = useCallback(() => {
@@ -73,7 +77,7 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {isAdminRoute() ? <AdminLogin /> : <Dashboard />}
+      {isAdminRoute() ? <AdminLogin /> : isStatusRoute() ? <StatusPage /> : <Dashboard />}
       <Toasts />
     </QueryClientProvider>
   );
