@@ -1173,6 +1173,13 @@ mod tests {
             }
 
             pub fn mint(env: Env, to: Address, amount: i128) {
+                // Real Stellar Asset Contracts do not archive in practice;
+                // extending here keeps this mock alive across a migration
+                // test's ledger-gap jump the same way, since mint() (called
+                // from vault.deposit()) is its only touch before the jump.
+                env.storage()
+                    .instance()
+                    .extend_ttl(INSTANCE_THRESHOLD, INSTANCE_BUMP);
                 let balance = Self::read_balance(&env, &to);
                 Self::write_balance(&env, &to, balance + amount);
             }
@@ -1215,9 +1222,15 @@ mod tests {
             }
 
             fn write_balance(env: &Env, id: &Address, amount: i128) {
+                let key = MockMusdcKey::Balance(id.clone());
+                env.storage().persistent().set(&key, &amount);
+                // Persistent entries have their own TTL, separate from the
+                // contract instance (see MockMusdc::mint() above); a real
+                // Stellar Asset Contract balance entry does not archive in
+                // practice, so extend this mock's the same way.
                 env.storage()
                     .persistent()
-                    .set(&MockMusdcKey::Balance(id.clone()), &amount);
+                    .extend_ttl(&key, INSTANCE_THRESHOLD, INSTANCE_BUMP);
             }
         }
     }
@@ -1244,6 +1257,14 @@ mod tests {
         }
 
         pub fn deposit(env: Env, amount: i128) -> i128 {
+            // Matches every real adapter's deposit() extending its own
+            // instance TTL (#704): this is the old adapter's only touch
+            // before a migration test's ledger jump, and begin_migration()
+            // never calls anything on the *current* adapter, only the
+            // migration target.
+            env.storage()
+                .instance()
+                .extend_ttl(INSTANCE_THRESHOLD, INSTANCE_BUMP);
             let prev: i128 = env.storage().instance().get(&MA_SH).unwrap_or(0);
             env.storage().instance().set(&MA_SH, &(prev + amount));
             amount
@@ -1267,8 +1288,16 @@ mod tests {
             env.storage().instance().get(&MA_SH).unwrap_or(0)
         }
 
-        pub fn refresh(_env: Env) {
-            // No-op: MockAdapter already prices total_assets() live.
+        pub fn refresh(env: Env) {
+            // A real adapter's refresh()/accrue() extends its own instance
+            // TTL (#704); begin_migration()'s single refresh() call at the
+            // start of the (now much longer) migration timelock is the only
+            // thing that touches an idle target adapter before
+            // migrate_adapter() finishes the gap, so this mock must do the
+            // same or it archives mid-test.
+            env.storage()
+                .instance()
+                .extend_ttl(INSTANCE_THRESHOLD, INSTANCE_BUMP);
         }
     }
 
@@ -1330,8 +1359,11 @@ mod tests {
                 env.storage().instance().get(&LA_SH).unwrap_or(0)
             }
 
-            pub fn refresh(_env: Env) {
-                // No-op: LossyMockAdapter already prices total_assets() live.
+            pub fn refresh(env: Env) {
+                // See MockAdapter::refresh() above.
+                env.storage()
+                    .instance()
+                    .extend_ttl(INSTANCE_THRESHOLD, INSTANCE_BUMP);
             }
         }
     }
@@ -1385,8 +1417,11 @@ mod tests {
                 env.storage().instance().get(&ZS_SH).unwrap_or(0)
             }
 
-            pub fn refresh(_env: Env) {
-                // No-op: ZeroShareMockAdapter already prices total_assets() live.
+            pub fn refresh(env: Env) {
+                // See MockAdapter::refresh() above.
+                env.storage()
+                    .instance()
+                    .extend_ttl(INSTANCE_THRESHOLD, INSTANCE_BUMP);
             }
         }
     }
@@ -1454,8 +1489,13 @@ mod tests {
                 env.storage().instance().get(&MM_FIXED).unwrap_or(0)
             }
 
-            pub fn refresh(_env: Env) {
-                // No-op: total_assets is manually set by the test.
+            pub fn refresh(env: Env) {
+                // total_assets is still manually set by the test (see
+                // set_total_assets above); this only extends TTL, matching
+                // every other mock adapter's refresh() here.
+                env.storage()
+                    .instance()
+                    .extend_ttl(INSTANCE_THRESHOLD, INSTANCE_BUMP);
             }
         }
     }
