@@ -24,6 +24,7 @@ export default defineConfig({
           { text: "Introduction", link: "/overview/introduction" },
           { text: "Why Meridian", link: "/overview/why-meridian" },
           { text: "How It Works", link: "/overview/how-it-works" },
+          { text: "Trust Model", link: "/overview/trust-model" },
         ],
       },
       {
