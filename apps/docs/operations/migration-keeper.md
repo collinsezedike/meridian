@@ -225,22 +225,16 @@ chosen candidate:
    before. The keeper does not duplicate the contract's ledger-gap math to
    decide whether the cooldown has elapsed: if it hasn't, `migrate_adapter`
    itself rejects the call with `MigrationCooldownNotMet` during simulation
-   (no fee, nothing sent), which is reported as a `failures` entry and
-   naturally retried on a later scheduled run.
+   (no fee, nothing sent), which is reported as a `skipped` outcome, not a
+   `failures` entry.
 
-   This was deliberately simple rather than precise while `MIN_LEDGER_GAP`
-   was ~1 minute, since the cooldown had always long since elapsed by the
-   run after `begin_migration` fired. Now that it's ~1 day (#557), every
-   hourly run during that window hits the same rejection and reports it as
-   a `failures` entry, so a single migration currently produces roughly a
-   day's worth of expected-but-noisy failed runs before it can proceed.
-   Tracked as a follow-up to special-case `MigrationCooldownNotMet` as a
-   `skipped` outcome the same way a stale-adapter race already is.
+   That is the intended waiting period, not an operational failure, so it
+   no longer pages anyone while the ~1-day cooldown (#557) is in progress.
 
 A migration to a given candidate therefore now normally spans roughly a
-day's worth of scheduled runs: the one that calls `begin_migration`, then
-repeated (currently failing) attempts, and finally the run where
-`migrate_adapter` succeeds once the on-chain snapshot is old enough.
+day's worth of scheduled runs: the one that calls `begin_migration`, then a
+quiet series of cooldown skips, and finally the run where `migrate_adapter`
+succeeds once the on-chain snapshot is old enough.
 
 ## Retry And Failure Handling
 

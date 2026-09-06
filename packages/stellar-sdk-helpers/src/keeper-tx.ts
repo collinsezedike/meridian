@@ -153,6 +153,17 @@ export function isStaleAdapterError(err: unknown): boolean {
   return errorMessage(err).includes(STALE_ADAPTER_MESSAGE);
 }
 
+// MigrationCooldownNotMet (#20) is also a benign expected race rather than an
+// operational failure: after begin_migration, the keeper intentionally waits
+// for the 1-day ledger gap before it can migrate. Detecting that by the raw
+// contract error code lets callers classify it as skipped instead of paging.
+const MIGRATION_COOLDOWN_NOT_MET_ERROR =
+  /(?:^|\s)(?:MigrationCooldownNotMet|Error\(Contract, #20\))/;
+
+export function isMigrationCooldownNotMetError(err: unknown): boolean {
+  return MIGRATION_COOLDOWN_NOT_MET_ERROR.test(rawErrorText(err));
+}
+
 /**
  * Re-reads the vault's live `get_adapter()` and throws StaleAdapterError if
  * it no longer matches what this run discovered. A cheap, best-effort guard
