@@ -128,6 +128,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@albedo-link/intent':
+        specifier: ^0.13.0
+        version: 0.13.0
       '@creit.tech/xbull-wallet-connect':
         specifier: ^0.4.0
         version: 0.4.0
@@ -292,6 +295,9 @@ importers:
         version: 4.1.11(@edge-runtime/vm@3.2.0)(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12))
 
 packages:
+
+  '@albedo-link/intent@0.13.0':
+    resolution: {integrity: sha512-A8CBXqGQEBMXhwxNXj5inC6HLjyx5Do7jW99NOFeecYd1nPUq8gfM0tvoNoR8H8JQ11aTl9tyQBuu/+l3xeBnQ==}
 
   '@algolia/abtesting@1.18.1':
     resolution: {integrity: sha512-aehCadlWOGvrT91KUIZpC0MbB8KBW9yUuvTJFd2xesR7le/IsT4nJUnjCCZ4ZqZCeTcPHPV5mo//fZ5oxcSVYw==}
@@ -4050,6 +4056,8 @@ packages:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
+
+  '@albedo-link/intent@0.13.0': {}
 
   '@algolia/abtesting@1.18.1':
     dependencies:

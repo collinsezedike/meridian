@@ -83,4 +83,8 @@ pub enum ContractError {
     /// Minting vault shares against it would dilute every existing holder
     /// with nothing backing the new shares.
     AdapterCreditedNothing = 23,
+    /// A `checked_div` returned `None` because the divisor was zero.
+    /// Distinct from `Overflow`: this points to a degenerate adapter state
+    /// (e.g. zero `total_assets`) rather than a genuine arithmetic overflow.
+    DivisionByZero = 24,
 }

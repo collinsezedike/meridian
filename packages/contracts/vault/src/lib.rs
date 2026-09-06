@@ -22,6 +22,17 @@ use soroban_sdk::{
 const ADMIN_EVT: Symbol = symbol_short!("admin");
 
 // ---------------------------------------------------------------------------
+// TTL constants
+// ---------------------------------------------------------------------------
+
+use adapter_common::{DAY_IN_LEDGERS, INSTANCE_BUMP, INSTANCE_THRESHOLD};
+
+// Positions are bumped far harder than config: a saver who does nothing for
+// a quarter is the target user, not an edge case.
+const POSITION_BUMP: u32 = 120 * DAY_IN_LEDGERS;
+const POSITION_THRESHOLD: u32 = POSITION_BUMP - 7 * DAY_IN_LEDGERS;
+
+// ---------------------------------------------------------------------------
 // Adapter interface
 // ---------------------------------------------------------------------------
 
@@ -89,8 +100,43 @@ pub struct MeridianVault;
 
 #[contractimpl]
 impl MeridianVault {
-    /// Called once at deployment. Sets the admin, USDC token address, mUSDC
-    /// share token address, and the initial yield adapter address.
+    /// Sets the admin, USDC token address, mUSDC share token address, and
+    /// the initial yield adapter address, inside the deploying transaction's
+    /// own `CreateContract` operation. Unlike a separate `initialize()` call,
+    /// there is no intervening ledger where an attacker could land a
+    /// self-authorized call first: the deployer's transaction is the only
+    /// one that can ever set this contract's state (#551, same bug class as
+    /// #505, fixed for the adapters/mUSDC in #550).
+    ///
+    /// Unlike the adapters/mUSDC's constructor arguments, `admin` is a
+    /// human-held key, not a programmatically-derived contract address, so
+    /// `require_auth()` is called on it here too: without it, `DEPLOYER`
+    /// alone could set any address as admin with no proof it is controlled
+    /// by anyone, permanently bricking the vault on a typo (`transfer_admin`/
+    /// `accept_admin` both require the *current* admin's own signature to
+    /// move away from it). Soroban only honors `require_auth()` inside a
+    /// constructor for the address that is the deploying transaction's own
+    /// source account, so this requires `ADMIN` itself, not `DEPLOYER`, to
+    /// source the vault's deploy transaction. See
+    /// `apps/docs/operations/testnet-deployment.md`.
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        usdc: Address,
+        musdc: Address,
+        adapter: Address,
+    ) {
+        admin.require_auth();
+        Self::init_state(&env, &admin, &usdc, &musdc, &adapter);
+    }
+
+    /// Retained so the ABI of vaults already deployed from earlier WASM is
+    /// unchanged, and so an old vault can still be initialized by hand.
+    ///
+    /// On any vault deployed from this WASM it is unreachable: `__constructor`
+    /// has already set `ADMIN`, so every call returns `AlreadyInitialized`.
+    /// That is the intended behavior, not a leftover. An attacker calling
+    /// this against a freshly deployed vault is rejected instead of served.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -102,13 +148,20 @@ impl MeridianVault {
             return Err(ContractError::AlreadyInitialized);
         }
         admin.require_auth();
-        env.storage().instance().set(&ADMIN, &admin);
-        env.storage().instance().set(&USDC, &usdc);
-        env.storage().instance().set(&MUSDC, &musdc);
-        env.storage().instance().set(&ADAPTER, &adapter);
+        Self::init_state(&env, &admin, &usdc, &musdc, &adapter);
+        Ok(())
+    }
+
+    /// The write half of initialization, shared by `__constructor` and
+    /// `initialize` so the two can never set up different state. Not exported
+    /// (no `pub`), so it is not callable from outside the contract.
+    fn init_state(env: &Env, admin: &Address, usdc: &Address, musdc: &Address, adapter: &Address) {
+        env.storage().instance().set(&ADMIN, admin);
+        env.storage().instance().set(&USDC, usdc);
+        env.storage().instance().set(&MUSDC, musdc);
+        env.storage().instance().set(&ADAPTER, adapter);
         env.storage().instance().set(&TOTAL_SH, &0_i128);
         env.storage().instance().set(&ADPT_SH, &0_i128);
-        Ok(())
     }
 
     /// Deposit `amount` USDC into the vault. USDC is forwarded to the yield
@@ -122,6 +175,7 @@ impl MeridianVault {
         min_shares_out: i128,
     ) -> Result<i128, ContractError> {
         caller.require_auth();
+        Self::extend_instance(&env);
         if Self::is_paused(env.clone()) {
             return Err(ContractError::DepositsPaused);
         }
@@ -166,7 +220,7 @@ impl MeridianVault {
                     .checked_add(OFFSET)
                     .ok_or(ContractError::Overflow)?,
             )
-            .ok_or(ContractError::Overflow)?;
+            .ok_or(ContractError::DivisionByZero)?;
 
         if shares_to_mint <= 0 {
             return Err(ContractError::DepositTooSmall);
@@ -230,6 +284,13 @@ impl MeridianVault {
             .persistent()
             .set(&principal_key, &(prev_principal + amount));
 
+        Self::extend_position(&env, &caller);
+
+        env.events().publish(
+            (symbol_short!("deposit"),),
+            (caller, amount, shares_to_mint),
+        );
+
         Ok(shares_to_mint)
     }
 
@@ -253,6 +314,7 @@ impl MeridianVault {
         min_usdc_out: i128,
     ) -> Result<i128, ContractError> {
         caller.require_auth();
+        Self::extend_instance(&env);
         if shares <= 0 {
             return Err(ContractError::ZeroAmount);
         }
@@ -295,7 +357,7 @@ impl MeridianVault {
             .checked_mul(total_adapter_shares)
             .ok_or(ContractError::Overflow)?
             .checked_div(total_shares)
-            .ok_or(ContractError::Overflow)?;
+            .ok_or(ContractError::DivisionByZero)?;
 
         // Adapter redeems protocol shares, delivers USDC to vault, returns amount.
         let adapter_client = AdapterClient::new(&env, &adapter_addr);
@@ -334,7 +396,7 @@ impl MeridianVault {
             .checked_mul(shares)
             .ok_or(ContractError::Overflow)?
             .checked_div(caller_shares)
-            .ok_or(ContractError::Overflow)?;
+            .ok_or(ContractError::DivisionByZero)?;
         env.storage()
             .persistent()
             .set(&principal_key, &(principal - principal_out));
@@ -344,6 +406,11 @@ impl MeridianVault {
         if remaining == 0 {
             clear_position_records(&env, &caller);
         }
+
+        Self::extend_position(&env, &caller);
+
+        env.events()
+            .publish((symbol_short!("withdraw"),), (caller, shares, usdc_out));
 
         Ok(usdc_out)
     }
@@ -382,6 +449,7 @@ impl MeridianVault {
     ) -> Result<(), ContractError> {
         let musdc = Self::musdc(&env)?;
         musdc.require_auth();
+        Self::extend_instance(&env);
 
         let sender_principal_key = DataKey::Principal(from.clone());
         let sender_entry_key = DataKey::Entry(from.clone());
@@ -405,7 +473,7 @@ impl MeridianVault {
             .checked_mul(amount)
             .ok_or(ContractError::Overflow)?
             .checked_div(sender_balance_before)
-            .ok_or(ContractError::Overflow)?;
+            .ok_or(ContractError::DivisionByZero)?;
 
         // Sender side: retire the moved principal. A full transfer-out
         // clears both records, mirroring withdraw()'s full-exit branch,
@@ -476,7 +544,7 @@ impl MeridianVault {
                     )
                     .ok_or(ContractError::Overflow)?
                     .checked_div(total_principal)
-                    .ok_or(ContractError::Overflow)?;
+                    .ok_or(ContractError::DivisionByZero)?;
                 weighted as u64
             } else {
                 // Both principals are zero (e.g. a dust position with no
@@ -488,6 +556,9 @@ impl MeridianVault {
                 .persistent()
                 .set(&receiver_entry_key, &weighted_entry);
         }
+
+        Self::extend_position(&env, &from);
+        Self::extend_position(&env, &to);
 
         Ok(())
     }
@@ -567,6 +638,15 @@ impl MeridianVault {
         env.storage().persistent().get(&key).unwrap_or(0)
     }
 
+    /// Permissionless entry point that extends the TTL of instance storage
+    /// and the position records for `address`. Anyone can call it, so
+    /// off-chain keepers or the user themselves can keep a position alive
+    /// without needing a signature on the vault.
+    pub fn extend_position_ttl(env: Env, address: Address) {
+        Self::extend_instance(&env);
+        Self::extend_position(&env, &address);
+    }
+
     /// Total USDC value managed by the vault as reported by the adapter.
     /// Includes yield accrued by the underlying protocol.
     pub fn get_total_assets(env: Env) -> Result<i128, ContractError> {
@@ -591,6 +671,7 @@ impl MeridianVault {
     /// Withdrawals are deliberately left open so a pause can never trap funds.
     pub fn set_paused(env: Env, paused: bool) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
+        Self::extend_instance(&env);
         env.storage().instance().set(&PAUSED, &paused);
         env.events()
             .publish((ADMIN_EVT, symbol_short!("paused")), paused);
@@ -611,6 +692,7 @@ impl MeridianVault {
     /// not-yet-accepted nomination.
     pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
+        Self::extend_instance(&env);
         env.storage().instance().set(&PEND_ADM, &new_admin);
         env.events()
             .publish((ADMIN_EVT, symbol_short!("transfer")), new_admin.clone());
@@ -629,6 +711,7 @@ impl MeridianVault {
             .get(&PEND_ADM)
             .ok_or(ContractError::NoPendingAdmin)?;
         pending.require_auth();
+        Self::extend_instance(&env);
         env.storage().instance().set(&ADMIN, &pending);
         env.storage().instance().remove(&PEND_ADM);
         env.events()
@@ -665,6 +748,7 @@ impl MeridianVault {
     /// already zero) leaving `ADPT_SH` alone is a no-op.
     pub fn set_adapter(env: Env, new_adapter: Address) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
+        Self::extend_instance(&env);
         let total_adapter_shares: i128 = env.storage().instance().get(&ADPT_SH).unwrap_or(0);
         if Self::get_total_shares(env.clone()) > 0 || total_adapter_shares > 0 {
             return Err(ContractError::AdapterSwapUnsafe);
@@ -703,6 +787,7 @@ impl MeridianVault {
     /// the ledger gap to elapse before calling `migrate_adapter`.
     pub fn begin_migration(env: Env, new_adapter: Address) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
+        Self::extend_instance(&env);
 
         let old_adapter_addr = Self::get_adapter(env.clone())?;
         if new_adapter == old_adapter_addr {
@@ -800,6 +885,7 @@ impl MeridianVault {
         max_slippage_bps: u32,
     ) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
+        Self::extend_instance(&env);
 
         if max_slippage_bps > MAX_ADMIN_SLIPPAGE_BPS {
             return Err(ContractError::InvalidSlippageBps);
@@ -878,7 +964,7 @@ impl MeridianVault {
             .checked_mul(10_000i128 - max_slippage_bps as i128)
             .ok_or(ContractError::Overflow)?
             .checked_div(10_000i128)
-            .ok_or(ContractError::Overflow)?;
+            .ok_or(ContractError::DivisionByZero)?;
         if value_after < min_acceptable {
             return Err(ContractError::MigrationValueDrift);
         }
@@ -898,7 +984,7 @@ impl MeridianVault {
             .checked_mul(10_000i128 - max_slippage_bps as i128)
             .ok_or(ContractError::Overflow)?
             .checked_div(10_000i128)
-            .ok_or(ContractError::Overflow)?;
+            .ok_or(ContractError::DivisionByZero)?;
         if new_adapter_value_before < min_acceptable_from_snapshot {
             return Err(ContractError::MigrationStabilityDrift);
         }
@@ -957,6 +1043,30 @@ impl MeridianVault {
             .get(&MUSDC)
             .ok_or(ContractError::NotInitialized)
     }
+
+    /// Extends the TTL of the contract instance. Called at the start of
+    /// every state-changing entry point so the vault's configuration never
+    /// expires while it is actively used.
+    fn extend_instance(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_THRESHOLD, INSTANCE_BUMP);
+    }
+
+    /// Extends the TTL of an address's position records (entry time and
+    /// principal) whenever the position is read or written. Permissionless
+    /// `extend_position_ttl` calls this for keepers.
+    fn extend_position(env: &Env, address: &Address) {
+        let storage = env.storage().persistent();
+        for key in [
+            DataKey::Entry(address.clone()),
+            DataKey::Principal(address.clone()),
+        ] {
+            if storage.has(&key) {
+                storage.extend_ttl(&key, POSITION_THRESHOLD, POSITION_BUMP);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -968,7 +1078,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         contract, contractimpl, contracttype, panic_with_error, symbol_short,
-        testutils::{Address as _, Ledger as _},
+        testutils::{Address as _, Events, Ledger as _},
         token::{StellarAssetClient, TokenClient},
         Address, Env, Symbol,
     };
@@ -1460,13 +1570,20 @@ mod tests {
         let adapter_id = env.register(CachedMockAdapter, ());
         CachedMockAdapterClient::new(&env, &adapter_id).initialize(&usdc_id);
 
-        let vault_id = env.register(MeridianVault, ());
-        let vault = MeridianVaultClient::new(&env, &vault_id);
+        // See setup()'s comment below on why the vault's address is
+        // pre-generated and reserved via register_at rather than registered
+        // directly (#551).
+        let vault_id = Address::generate(&env);
 
         let musdc_id = env.register(MockMusdc, ());
         MockMusdcClient::new(&env, &musdc_id).initialize(&vault_id);
 
-        vault.initialize(&admin, &usdc_id, &musdc_id, &adapter_id);
+        env.register_at(
+            &vault_id,
+            MeridianVault,
+            (&admin, &usdc_id, &musdc_id, &adapter_id),
+        );
+        let vault = MeridianVaultClient::new(&env, &vault_id);
 
         StellarAssetClient::new(&env, &usdc_id).mint(&user, &10_000_000_000_i128);
 
@@ -1502,20 +1619,26 @@ mod tests {
         let adapter_id = env.register(MockAdapter, ());
         MockAdapterClient::new(&env, &adapter_id).initialize(&usdc_id);
 
-        // The vault must exist before mUSDC can be initialized with it as
-        // admin (mUSDC's admin is a contract address, not an account, so it
-        // can never itself sign an `initialize()` call the way a deploy
-        // script's admin key signs the vault's own `initialize()` — this
-        // mirrors the vault's own initialize() being callable by anyone
-        // before the real admin gets to it, see
-        // apps/docs/operations/testnet-deployment.md).
-        let vault_id = env.register(MeridianVault, ());
-        let vault = MeridianVaultClient::new(&env, &vault_id);
+        // The vault's real deployment wires mUSDC and the adapter through
+        // its own __constructor (#551), which needs their addresses already
+        // known, but mUSDC's admin (this vault's own address) needs to be
+        // known before *that* can happen either. Real deployments break this
+        // cycle with a precomputed, deterministic contract ID (`stellar
+        // contract id wasm --salt`, then `deploy --salt` to land on that same
+        // address); `register_at` is the test-env equivalent, reserving the
+        // vault's address up front so mUSDC can be told about it before the
+        // vault itself is actually registered.
+        let vault_id = Address::generate(&env);
 
         let musdc_id = env.register(MockMusdc, ());
         MockMusdcClient::new(&env, &musdc_id).initialize(&vault_id);
 
-        vault.initialize(&admin, &usdc_id, &musdc_id, &adapter_id);
+        env.register_at(
+            &vault_id,
+            MeridianVault,
+            (&admin, &usdc_id, &musdc_id, &adapter_id),
+        );
+        let vault = MeridianVaultClient::new(&env, &vault_id);
 
         // Fund the user with 1000 USDC (7 decimal places: 1000 * 10^7).
         StellarAssetClient::new(&env, &usdc_id).mint(&user, &10_000_000_000_i128);
@@ -2099,6 +2222,22 @@ mod tests {
     }
 
     #[test]
+    fn initialize_cannot_hijack_a_constructor_deployed_vault() {
+        // The #551 front-run, run against the fixed contract. An attacker
+        // watching the ledger calls initialize() with their own address as
+        // admin, hoping to land before the deployer's own call. There is no
+        // longer a window to land in: __constructor already ran inside the
+        // deploying transaction, so the attempt is rejected and the vault
+        // stays bound to the real admin.
+        let (env, admin, _user, usdc_id, musdc_id, adapter_id, vault) = setup();
+        let attacker = Address::generate(&env);
+
+        let result = vault.try_initialize(&attacker, &usdc_id, &musdc_id, &adapter_id);
+        assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
+        assert_eq!(vault.get_admin(), admin);
+    }
+
+    #[test]
     fn deposit_zero_amount_fails() {
         let (_env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
         let result = vault.try_deposit(&user, &0_i128, &0_i128);
@@ -2376,9 +2515,11 @@ mod tests {
         let musdc_id = env
             .register_stellar_asset_contract_v2(admin.clone())
             .address();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = env.register(
+            MeridianVault,
+            (&admin, &usdc, &musdc_id, &zero_share_adapter_id),
+        );
         let vault = MeridianVaultClient::new(&env, &vault_id);
-        vault.initialize(&admin, &usdc, &musdc_id, &zero_share_adapter_id);
 
         // Attempt deposit and assert it returns AdapterCreditedNothing
         let result = vault.try_deposit(&user, &amount, &0_i128);
@@ -2671,11 +2812,33 @@ mod tests {
         );
     }
 
+    // __constructor always sets ADMIN/USDC/MUSDC/ADAPTER on any real
+    // deployment (#551), so a genuinely uninitialized vault is unreachable in
+    // practice. These tests register a real vault through the constructor,
+    // then strip that state directly, to prove the NotInitialized guards
+    // still fire correctly if that invariant is ever violated by a future
+    // change (mirrors blend-adapter's
+    // refresh_panics_when_pool_key_is_unset).
+    fn register_uninitialized_vault(env: &Env) -> Address {
+        let admin = Address::generate(env);
+        let usdc = Address::generate(env);
+        let musdc = Address::generate(env);
+        let adapter = Address::generate(env);
+        let vault_id = env.register(MeridianVault, (&admin, &usdc, &musdc, &adapter));
+        env.as_contract(&vault_id, || {
+            env.storage().instance().remove(&ADMIN);
+            env.storage().instance().remove(&USDC);
+            env.storage().instance().remove(&MUSDC);
+            env.storage().instance().remove(&ADAPTER);
+        });
+        vault_id
+    }
+
     #[test]
     fn get_admin_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let result = vault.try_get_admin();
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
@@ -2685,7 +2848,7 @@ mod tests {
     fn get_adapter_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let result = vault.try_get_adapter();
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
@@ -2695,7 +2858,7 @@ mod tests {
     fn get_total_assets_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let result = vault.try_get_total_assets();
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
@@ -2705,7 +2868,7 @@ mod tests {
     fn set_paused_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let result = vault.try_set_paused(&true);
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
@@ -2715,7 +2878,7 @@ mod tests {
     fn transfer_admin_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let new_admin = Address::generate(&env);
         let result = vault.try_transfer_admin(&new_admin);
@@ -2726,7 +2889,7 @@ mod tests {
     fn set_adapter_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let new_adapter = Address::generate(&env);
         let result = vault.try_set_adapter(&new_adapter);
@@ -2737,7 +2900,7 @@ mod tests {
     fn deposit_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let user = Address::generate(&env);
         let result = vault.try_deposit(&user, &100_0000000_i128, &0_i128);
@@ -2748,7 +2911,7 @@ mod tests {
     fn withdraw_fails_before_initialize() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(MeridianVault, ());
+        let vault_id = register_uninitialized_vault(&env);
         let vault = MeridianVaultClient::new(&env, &vault_id);
         let user = Address::generate(&env);
         let result = vault.try_withdraw(&user, &100_0000000_i128, &0_i128);
@@ -3022,13 +3185,21 @@ mod tests {
                 .address();
             let adapter_id = env.register(MockAdapter, ());
             MockAdapterClient::new(&env, &adapter_id).initialize(&usdc_id);
-            let vault_id = env.register(MeridianVault, ());
-            let vault = MeridianVaultClient::new(&env, &vault_id);
+
+            // See setup()'s comment above on why the vault's address is
+            // pre-generated and reserved via register_at rather than
+            // registered directly (#551).
+            let vault_id = Address::generate(&env);
 
             let musdc_id = env.register(MockMusdc, ());
             MockMusdcClient::new(&env, &musdc_id).initialize(&vault_id);
 
-            vault.initialize(&admin, &usdc_id, &musdc_id, &adapter_id);
+            env.register_at(
+                &vault_id,
+                MeridianVault,
+                (&admin, &usdc_id, &musdc_id, &adapter_id),
+            );
+            let vault = MeridianVaultClient::new(&env, &vault_id);
 
             StellarAssetClient::new(&env, &usdc_id).mint(&user_a, &10_000_000_i128);
             StellarAssetClient::new(&env, &usdc_id).mint(&user_b, &10_000_i128);
@@ -3127,5 +3298,102 @@ mod tests {
         let exact_floor = amount;
         let usdc_out = vault.withdraw(&user, &shares, &exact_floor);
         assert_eq!(usdc_out, amount);
+    }
+
+    #[test]
+    fn extend_position_ttl_is_permissionless() {
+        let (_env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
+        vault.deposit(&user, &100_0000000_i128, &0_i128);
+        vault.extend_position_ttl(&user);
+    }
+
+    #[test]
+    fn position_records_survive_ttl_advance() {
+        let (env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
+        vault.deposit(&user, &100_0000000_i128, &0_i128);
+        // extend_position_ttl sets a 120-day position bump. To prove
+        // positions survive past the 30-day instance TTL without
+        // re-extending the positions, advance in phases: bump only the
+        // instance (via set_paused) at each phase boundary so the
+        // contract stays alive while the original position TTL carries
+        // the records through. 50 days total is well past the 30-day
+        // instance window but within the 120-day position window.
+        vault.extend_position_ttl(&user);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += 25 * DAY_IN_LEDGERS);
+        vault.set_paused(&true);
+        vault.set_paused(&false);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += 25 * DAY_IN_LEDGERS);
+        vault.set_paused(&true);
+        vault.set_paused(&false);
+        env.as_contract(&vault.address, || {
+            assert!(env
+                .storage()
+                .persistent()
+                .has(&DataKey::Entry(user.clone())));
+            assert!(env
+                .storage()
+                .persistent()
+                .has(&DataKey::Principal(user.clone())));
+        });
+    }
+
+    #[test]
+    fn admin_state_calls_extend_instance_ttl() {
+        let (env, _admin, _user, _usdc, _musdc, _adapter, vault) = setup();
+        vault.set_paused(&true);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += INSTANCE_THRESHOLD - 1);
+        vault.set_paused(&false);
+        assert!(!vault.is_paused());
+    }
+
+    /// Finds the single-topic event published under `topic` from `address`.
+    fn find_event(
+        env: &Env,
+        address: &Address,
+        topic: Symbol,
+    ) -> Option<(
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> {
+        env.events().all().into_iter().find(|e| {
+            e.0 == *address
+                && e.1.len() == 1
+                && soroban_sdk::TryIntoVal::<_, Symbol>::try_into_val(&e.1.get(0).unwrap(), env)
+                    .map(|t: Symbol| t == topic)
+                    .unwrap_or(false)
+        })
+    }
+
+    #[test]
+    fn deposit_publishes_event_with_caller_amount_and_shares() {
+        let (env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
+        let amount = 100_0000000_i128;
+
+        let shares = vault.deposit(&user, &amount, &0_i128);
+
+        let event = find_event(&env, &vault.address, symbol_short!("deposit"))
+            .expect("deposit event not found");
+        let data: (Address, i128, i128) =
+            soroban_sdk::TryIntoVal::try_into_val(&event.2, &env).unwrap();
+        assert_eq!(data, (user, amount, shares));
+    }
+
+    #[test]
+    fn withdraw_publishes_event_with_caller_shares_and_usdc_out() {
+        let (env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
+        let amount = 100_0000000_i128;
+        let shares = vault.deposit(&user, &amount, &0_i128);
+
+        let usdc_out = vault.withdraw(&user, &shares, &0_i128);
+
+        let event = find_event(&env, &vault.address, symbol_short!("withdraw"))
+            .expect("withdraw event not found");
+        let data: (Address, i128, i128) =
+            soroban_sdk::TryIntoVal::try_into_val(&event.2, &env).unwrap();
+        assert_eq!(data, (user, shares, usdc_out));
     }
 }

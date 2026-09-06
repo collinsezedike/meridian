@@ -15,11 +15,15 @@ mUSDC is a **freely transferable** share token, and the vault treats it as one: 
 
 ## Interface
 
+### `__constructor(admin, usdc, musdc, adapter)`
+
+Sets the admin, USDC contract address, mUSDC contract address, and the initial yield adapter address, inside the deploying transaction's own `CreateContract` operation. Like the adapters (see [Adapter Contracts](#adapter-contracts) below), the vault no longer follows a two-step `deploy` then `initialize` pattern: there is no intervening ledger where an attacker could land a self-authorized `initialize()` call first and become admin (#551, same bug class as #505, fixed for the adapters/mUSDC in #550).
+
+Unlike the adapters/mUSDC's constructor arguments, `admin` is a human-held key, not a programmatically-derived contract address, so `__constructor` calls `admin.require_auth()` too. Soroban only honors `require_auth()` inside a constructor for the address that is the deploying transaction's own source account, so deploying with a separate `admin` requires that address itself to source and sign the deploy transaction, not just the deployer paying its fees. See "Standing up a fresh environment" in [Testnet Deployment](../operations/testnet-deployment.md) for how `deploy-testnet.sh` handles this, and for how the vault's constructor arguments get the mUSDC/adapter addresses it needs, given those two contracts' own constructors need the vault's address first.
+
 ### `initialize(admin, usdc, musdc, adapter) -> Result<(), ContractError>`
 
-Called once at deployment. Sets the admin, USDC contract address, mUSDC contract address, and the initial yield adapter address. Requires `admin.require_auth()`. Fails with `AlreadyInitialized` if called again.
-
-Unlike the adapters (see [Adapter Contracts](#adapter-contracts) below), the vault does not use a `__constructor` — it still follows the two-step `deploy` then `initialize` pattern, so a deployed-but-uninitialized vault is claimable by whoever calls `initialize` first. See the deploy scripts for how this window is closed in practice.
+Retained so the ABI of vaults already deployed from earlier WASM is unchanged, and so an old vault can still be initialized by hand. Requires `admin.require_auth()`. Fails with `AlreadyInitialized` if called again. On any vault deployed from current WASM it always returns `AlreadyInitialized`, because `__constructor` has already set the admin.
 
 ### `deposit(caller, amount, min_shares_out) -> Result<i128, ContractError>`
 

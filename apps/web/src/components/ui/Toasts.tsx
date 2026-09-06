@@ -13,7 +13,7 @@ const STYLES: Record<string, string> = {
 };
 
 export function Toasts() {
-  const { toasts, dismiss } = useToastStore();
+  const { toasts, dismiss, pauseTimer, resumeTimer } = useToastStore();
 
   return (
     <div
@@ -29,6 +29,13 @@ export function Toasts() {
           role={t.kind === "error" ? "alert" : undefined}
           aria-live={t.kind === "error" ? "assertive" : undefined}
           aria-atomic="true"
+          // Pausing on hover and on focus (focus events bubble in React, so
+          // this also covers a keyboard user reaching the dismiss button)
+          // keeps a toast on screen for as long as it's being read.
+          onMouseEnter={() => pauseTimer(t.id)}
+          onMouseLeave={() => resumeTimer(t.id)}
+          onFocus={() => pauseTimer(t.id)}
+          onBlur={() => resumeTimer(t.id)}
           className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-sm shadow-lg backdrop-blur-sm animate-in fade-in slide-in-from-right-4 duration-200 ${STYLES[t.kind]}`}
         >
           <span className="font-bold shrink-0" aria-hidden="true">

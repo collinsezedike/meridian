@@ -1405,6 +1405,228 @@ describe("runMigrationKeeper", () => {
     ]);
   });
 
+  // #699: When an active migration snapshot exists for a configured
+  // candidate adapter that differs from the freshly-derived "best"
+  // candidate, but the snapshotted adapter still clears
+  // minImprovementBps, the keeper should prefer completing the existing
+  // migration instead of overwriting the snapshot with a new
+  // begin_migration for a different adapter. Without this, alternating
+  // rates between two adapters across scheduled runs would reset the
+  // ledger-gap cooldown on every run, and a real migration opportunity
+  // could never reach migrate_adapter.
+  it("preserves an active migration snapshot whose adapter still clears the improvement threshold (#699)", async () => {
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+
+    // Two candidate adapters: "defindex" (the existing CONFIG candidate)
+    // and "blendv2" (a second one that will hold the active snapshot).
+    const configWithTwoCandidates: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {
+        defindex: "CDEFINDEXADAPTER",
+        blendv2: "CBLENDV2ADAPTER",
+      },
+    };
+
+    // The snapshot on-chain is for blendv2 (CBLENDV2ADAPTER), not the
+    // best candidate defindex (CDEFINDEXADAPTER) that findBestCandidate
+    // will derive this run.
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CBLENDV2ADAPTER"
+    );
+
+    // Rates: current (blend) = 500, defindex = 700 (best, improvement 200),
+    // blendv2 = 650 (still clears minImprovementBps=50, improvement 150).
+    // findBestCandidate picks defindex (700), but the #699 check should
+    // override to blendv2 (650) because that's what the snapshot holds.
+    const rateSource = vi.fn(async ({ adapterId }: { adapterId: string }) => {
+      if (adapterId === "CBLENDADAPTER") return 500;
+      if (adapterId === "CDEFINDEXADAPTER") return 700;
+      if (adapterId === "CBLENDV2ADAPTER") return 650;
+      return null;
+    });
+
+    const result = await runMigrationKeeper(configWithTwoCandidates, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CSOMEPOOL",
+      sleep: vi.fn(),
+    });
+
+    // migrate_adapter should have been submitted (not begin_migration),
+    // and the migration target should be the snapshotted adapter
+    // (CBLENDV2ADAPTER), not the "best" one (CDEFINDEXADAPTER).
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(result.migrations).toHaveLength(1);
+    expect(result.migrations[0]).toMatchObject({
+      vaultId: "meridian-usdc",
+      fromAdapterId: "CBLENDADAPTER",
+      toAdapterId: "CBLENDV2ADAPTER",
+      toProtocol: "blendv2",
+      improvementBps: 150,
+    });
+    expect(result.skipped).toEqual([]);
+  });
+
+  // #699: When the snapshotted adapter's rate has genuinely decayed below
+  // the threshold, the keeper should let the snapshot lapse and pick the
+  // fresh best candidate instead. This is the "only let the snapshot
+  // lapse once the snapshotted adapter's rate genuinely stops clearing
+  // the threshold" half of the fix.
+  it("replaces a stale migration snapshot whose adapter no longer clears the threshold (#699)", async () => {
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+
+    const configWithTwoCandidates: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {
+        defindex: "CDEFINDEXADAPTER",
+        blendv2: "CBLENDV2ADAPTER",
+      },
+    };
+
+    // Snapshot is for blendv2, but blendv2's rate has dropped to 510
+    // (only 10 bps over current=500, below minImprovementBps=50).
+    // defindex is still 700 (200 bps over current), so findBestCandidate
+    // picks defindex, and the #699 check should NOT override it.
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CBLENDV2ADAPTER"
+    );
+
+    const rateSource = vi.fn(async ({ adapterId }: { adapterId: string }) => {
+      if (adapterId === "CBLENDADAPTER") return 500;
+      if (adapterId === "CDEFINDEXADAPTER") return 700;
+      if (adapterId === "CBLENDV2ADAPTER") return 510;
+      return null;
+    });
+
+    const result = await runMigrationKeeper(configWithTwoCandidates, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CSOMEPOOL",
+      sleep: vi.fn(),
+    });
+
+    // begin_migration should have been submitted for the fresh best
+    // (defindex), not migrate_adapter for the stale snapshot (blendv2).
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(result.migrations).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        reason: expect.stringContaining("begin_migration submitted"),
+      },
+    ]);
+  });
+
+  // Coverage for the branch where candidates is empty but a pinned snapshot
+  // exists (the pinned adapter is the only non-current candidate).
+  it("migrates via pinned candidate when it is the only non-current candidate (#699)", async () => {
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+
+    // Only one candidate adapter, which is also the pinned snapshot adapter.
+    const configWithOneCandidate: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {
+        blendv2: "CBLENDV2ADAPTER",
+      },
+    };
+
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CBLENDV2ADAPTER"
+    );
+
+    const rateSource = vi.fn(async ({ adapterId }: { adapterId: string }) => {
+      if (adapterId === "CBLENDADAPTER") return 500;
+      if (adapterId === "CBLENDV2ADAPTER") return 600; // 100 bps improvement, clears 50
+      return null;
+    });
+
+    const result = await runMigrationKeeper(configWithOneCandidate, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CSOMEPOOL",
+      sleep: vi.fn(),
+    });
+
+    // migrate_adapter should have been submitted for the pinned adapter.
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(result.migrations).toHaveLength(1);
+    expect(result.migrations[0]).toMatchObject({
+      vaultId: "meridian-usdc",
+      fromAdapterId: "CBLENDADAPTER",
+      toAdapterId: "CBLENDV2ADAPTER",
+      toProtocol: "blendv2",
+      improvementBps: 100,
+    });
+  });
+
+  // Coverage for clearsImprovementThreshold at the exact boundary.
+  it("preserves a snapshot whose improvement is exactly at the threshold boundary (#699)", async () => {
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+
+    const configWithTwoCandidates: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {
+        defindex: "CDEFINDEXADAPTER",
+        blendv2: "CBLENDV2ADAPTER",
+      },
+    };
+
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CBLENDV2ADAPTER"
+    );
+
+    // blendv2 rate = 550, current = 500, improvement = 50 (exactly at threshold).
+    const rateSource = vi.fn(async ({ adapterId }: { adapterId: string }) => {
+      if (adapterId === "CBLENDADAPTER") return 500;
+      if (adapterId === "CDEFINDEXADAPTER") return 700;
+      if (adapterId === "CBLENDV2ADAPTER") return 550;
+      return null;
+    });
+
+    const result = await runMigrationKeeper(configWithTwoCandidates, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CSOMEPOOL",
+      sleep: vi.fn(),
+    });
+
+    // The pinned candidate clears the threshold (>=), so it should be preferred.
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(result.migrations).toHaveLength(1);
+    expect(result.migrations[0]).toMatchObject({
+      toAdapterId: "CBLENDV2ADAPTER",
+      improvementBps: 50,
+    });
+  });
+
   it("releases the submission lease after begin_migration so a later run isn't blocked", async () => {
     const server = makeServer();
     stellarMocks.getRpcServer.mockReturnValue(server);
@@ -1462,6 +1684,96 @@ describe("runMigrationKeeper", () => {
       {
         vaultId: "meridian-usdc",
         reason: "no candidate adapters configured",
+      },
+    ]);
+  });
+
+  it("does not read the migration snapshot when no candidate clears the threshold (#705)", async () => {
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    const rateSource = vi.fn(async ({ adapterId }: { adapterId: string }) => {
+      if (adapterId === "CBLENDADAPTER") return 500;
+      return 510; // 10 bps is below CONFIG.minImprovementBps (50).
+    });
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
+    expect(result.skipped).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        reason: "no candidate clears the improvement threshold",
+      },
+    ]);
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(stellarMocks.simulateView).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      "get_migration_snapshot"
+    );
+  });
+
+  // A failed candidate must not discard a healthy candidate that already
+  // succeeded in the same batch. The active snapshot's adapter failed, so
+  // it cannot qualify for preservation; the healthy fresh candidate is
+  // allowed to proceed instead of being blocked indefinitely.
+  it("does not let a failed pinned snapshot block a healthy non-pinned candidate (#705)", async () => {
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+
+    const configWithTwoCandidates: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {
+        defindex: "CDEFINDEXADAPTER",
+        blendv2: "CBLENDV2ADAPTER",
+      },
+    };
+
+    // Snapshot pins blendv2 as the in-progress migration target.
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CBLENDV2ADAPTER"
+    );
+
+    // The snapshotted adapter (blendv2) throws; defindex succeeds and
+    // remains a valid migration because its rate was already obtained.
+    const rateSource = vi.fn(async ({ adapterId }: { adapterId: string }) => {
+      if (adapterId === "CBLENDADAPTER") return 500;
+      if (adapterId === "CBLENDV2ADAPTER")
+        throw new Error("RPC error: blendv2 rate fetch failed");
+      if (adapterId === "CDEFINDEXADAPTER") return 700; // 200 bps improvement
+      return null;
+    });
+
+    const result = await runMigrationKeeper(configWithTwoCandidates, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CSOMEPOOL",
+      sleep: vi.fn(),
+    });
+
+    // begin_migration should be submitted for the healthy candidate.
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
+    expect(result.migrations).toEqual([]);
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        reason: expect.stringContaining("begin_migration submitted"),
       },
     ]);
   });

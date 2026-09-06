@@ -11,6 +11,58 @@ import {
 } from "@lobstrco/signer-extension-api";
 import { xBullWalletConnect } from "@creit.tech/xbull-wallet-connect";
 
+// Closing the Albedo popup does not reject the request the way a genuine
+// failure does: @albedo-link/intent's transportCloseHandler() resolves every
+// pending request with intentErrors.actionRejectedByUser
+// ({ message: "Action request was rejected by the user.", code: -4 }, no
+// `.error` field), since handleIntentResponsePromise only rejects when
+// `.error` is present. A successful response never carries `code`, so its
+// presence (specifically -4) is what distinguishes a user cancellation from
+// a real failure on an otherwise-empty result.
+const ALBEDO_USER_REJECTED_CODE = -4;
+
+type AlbedoModule = {
+  publicKey: (params: Record<string, unknown>) => Promise<{
+    pubkey?: string;
+    signed_message?: string;
+    signature?: string;
+    code?: number;
+    message?: string;
+  }>;
+  tx: (params: {
+    xdr: string;
+    network?: string;
+    submit?: boolean;
+    pubkey?: string;
+  }) => Promise<{
+    signed_envelope_xdr?: string;
+    xdr?: string;
+    tx_hash?: string;
+    network?: string;
+    result?: unknown;
+    code?: number;
+    message?: string;
+  }>;
+};
+
+async function getAlbedo(): Promise<AlbedoModule> {
+  try {
+    const mod = (await import("@albedo-link/intent")) as unknown as {
+      default: AlbedoModule;
+    } & AlbedoModule;
+    return (mod.default ?? mod) as AlbedoModule;
+  } catch {
+    return {
+      publicKey: async () => {
+        throw new Error("Albedo not available");
+      },
+      tx: async () => {
+        throw new Error("Albedo not available");
+      },
+    };
+  }
+}
+
 // Freighter's real API talks to the browser extension via an internal
 // postMessage protocol, which isn't practical to fake from outside the app.
 // Playwright e2e tests inject this global before the app loads (see
@@ -110,8 +162,8 @@ class FreighterWallet implements WalletAdapter {
 }
 
 // Shared by every wallet whose API offers no passive "is site authorized"
-// query (LOBSTR, xBull): each stores its own paired-public-key signal in
-// sessionStorage under a wallet-specific key, set on connect() and read by
+// query (LOBSTR, xBull, Albedo): each stores its own paired-public-key signal
+// in sessionStorage under a wallet-specific key, set on connect() and read by
 // isAuthorized(). Session scope means a returning browser session
 // re-validates against the extension instead of trusting a stale key from a
 // previous session.
@@ -273,11 +325,82 @@ export class XBullWallet implements WalletAdapter {
   }
 }
 
+// Albedo is a web-based Stellar signer that authorizes through a popup at
+// albedo.link. Unlike extension wallets it needs no install, so
+// isInstalled() is always true and the popup flow itself is the install
+// check. It has no passive "is site authorized" query without prompting, so
+// isAuthorized() is treated the same way as for LOBSTR/xBull: installed plus
+// a public key stored by a prior connect(). The key is kept in sessionStorage
+// so a returning session re-validates instead of trusting a stale value.
+const ALBEDO_PUBLIC_KEY_STORAGE_KEY = "meridian-albedo-public-key";
+
+function albedoNetworkFromPassphrase(passphrase: string): string {
+  if (passphrase === "Public Global Stellar Network ; September 2015")
+    return "public";
+  if (passphrase === "Test SDF Network ; September 2015") return "testnet";
+  return passphrase;
+}
+
+export class AlbedoWallet implements WalletAdapter {
+  async isInstalled(): Promise<boolean> {
+    return withMockWallet(
+      (mock) => mock.installed,
+      async () => true
+    );
+  }
+
+  // Albedo's API has no non-prompting "is site authorized" query. Calling
+  // publicKey() would open the Albedo popup, which must not happen on every
+  // tab focus (store/wallet.ts revalidate() runs isAuthorized on mount and
+  // focus). Treat "installed + a public key stored by a prior connect()" as
+  // authorized instead.
+  async isAuthorized(): Promise<boolean> {
+    return withMockWallet(
+      (mock) => mock.installed && mock.authorized,
+      async () => {
+        const installed = await this.isInstalled();
+        if (!installed) return false;
+        return readStoredPublicKey(ALBEDO_PUBLIC_KEY_STORAGE_KEY) !== null;
+      }
+    );
+  }
+
+  async connect(): Promise<string> {
+    return withMockWallet(
+      (mock) => mock.address,
+      async () => {
+        const albedo = await getAlbedo();
+        const result = await albedo.publicKey({});
+        if (result?.code === ALBEDO_USER_REJECTED_CODE) {
+          throw new Error("Connection cancelled");
+        }
+        if (!result?.pubkey)
+          throw new Error("Albedo wallet returned no public key");
+        storePublicKey(ALBEDO_PUBLIC_KEY_STORAGE_KEY, result.pubkey);
+        return result.pubkey;
+      }
+    );
+  }
+
+  async sign(xdr: string, networkPassphrase: string): Promise<string> {
+    return withMockWallet(
+      (mock) => mock.sign(xdr, networkPassphrase),
+      async () => {
+        const albedo = await getAlbedo();
+        const network = albedoNetworkFromPassphrase(networkPassphrase);
+        const result = await albedo.tx({ xdr, network, submit: false });
+        if (!result?.signed_envelope_xdr) throw new Error("Signing cancelled");
+        return result.signed_envelope_xdr;
+      }
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Wallet registry (#611)
 // ---------------------------------------------------------------------------
 
-export type WalletId = "freighter" | "lobstr" | "xbull";
+export type WalletId = "freighter" | "lobstr" | "xbull" | "albedo";
 
 export interface WalletMeta {
   id: WalletId;
@@ -310,6 +433,9 @@ export const WALLETS: WalletMeta[] = [
     installUrl: "https://xbull.app",
     adapter: new XBullWallet(),
   },
+  // AlbedoWallet is implemented and tested but deliberately not wired in
+  // here yet: wallet-picker UI exposure is out of scope for the PR that
+  // added it (#674), gated on #611 landing separately.
 ];
 
 const DEFAULT_WALLET_ID: WalletId = "freighter";

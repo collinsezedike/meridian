@@ -3,7 +3,8 @@
   "outputDirectory": "dist",
   "functions": {
     "api/v1/keepers/accrue.ts": { "maxDuration": 60 },
-    "api/v1/keepers/rebalance.ts": { "maxDuration": 60 }
+    "api/v1/keepers/rebalance.ts": { "maxDuration": 60 },
+    "api/v1/keepers/alert.ts": { "maxDuration": 60 }
   },
   "rewrites": [
     { "source": "/app/:path*", "destination": "/app/index.html" },

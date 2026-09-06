@@ -296,11 +296,15 @@ export async function getRpcAdminHistory(
   const server = new rpc.Server(rpcUrl);
   const limit = options.limit ?? 200;
 
+  // Soroban RPC's getEvents topic filter matches an event's topic array by
+  // exact segment count; a shorter filter does not match a longer one. The
+  // vault's admin events all carry two segments — (admin, <action>) — so the
+  // filter needs a second, wildcarded position to match them at all.
   const filters: rpc.Api.EventFilter[] = [
     {
       type: "contract",
       contractIds: [vaultContractId],
-      topics: [[ADMIN_TOPIC_XDR]],
+      topics: [[ADMIN_TOPIC_XDR, "*"]],
     },
   ];
 
