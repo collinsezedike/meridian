@@ -24,11 +24,7 @@ const ADMIN_EVT: Symbol = symbol_short!("admin");
 // TTL constants
 // ---------------------------------------------------------------------------
 
-// One ledger closes in roughly five seconds, so ~17,280 ledgers per day.
-const DAY_IN_LEDGERS: u32 = 17_280;
-
-const INSTANCE_BUMP: u32 = 30 * DAY_IN_LEDGERS;
-const INSTANCE_THRESHOLD: u32 = INSTANCE_BUMP - DAY_IN_LEDGERS;
+use adapter_common::{DAY_IN_LEDGERS, INSTANCE_BUMP, INSTANCE_THRESHOLD};
 
 // Positions are bumped far harder than config: a saver who does nothing for
 // a quarter is the target user, not an edge case.
@@ -3269,9 +3265,22 @@ mod tests {
     fn position_records_survive_ttl_advance() {
         let (env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
         vault.deposit(&user, &100_0000000_i128, &0_i128);
+        // extend_position_ttl sets a 120-day position bump. To prove
+        // positions survive past the 30-day instance TTL without
+        // re-extending the positions, advance in phases: bump only the
+        // instance (via set_paused) at each phase boundary so the
+        // contract stays alive while the original position TTL carries
+        // the records through. 50 days total is well past the 30-day
+        // instance window but within the 120-day position window.
         vault.extend_position_ttl(&user);
         env.ledger()
-            .with_mut(|li| li.sequence_number += INSTANCE_THRESHOLD - 1);
+            .with_mut(|li| li.sequence_number += 25 * DAY_IN_LEDGERS);
+        vault.set_paused(&true);
+        vault.set_paused(&false);
+        env.ledger()
+            .with_mut(|li| li.sequence_number += 25 * DAY_IN_LEDGERS);
+        vault.set_paused(&true);
+        vault.set_paused(&false);
         env.as_contract(&vault.address, || {
             assert!(env
                 .storage()

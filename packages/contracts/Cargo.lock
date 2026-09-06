@@ -855,6 +855,7 @@ dependencies = [
 name = "meridian-vault"
 version = "0.1.0"
 dependencies = [
+ "adapter-common",
  "soroban-sdk",
 ]
 
