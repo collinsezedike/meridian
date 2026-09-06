@@ -694,6 +694,23 @@ async function findBestCandidate(
     })
   );
 
+  // When a pinned candidate exists but its rate fetch failed, we cannot
+  // safely fall back to a non-pinned winner: the pinned entry represents
+  // an in-progress migration that must complete, and letting a transient
+  // RPC blip on the pinned adapter allow another candidate to win would
+  // reset the cooldown. Surface the failure so it is retried.
+  if (pinned) {
+    const pinnedIndex = entries.findIndex((e) => e.pinned);
+    const pinnedOutcome = pinnedIndex >= 0 ? settled[pinnedIndex] : undefined;
+    if (pinnedOutcome?.status === "rejected") {
+      throw new CandidateEvaluationError(
+        pinned.protocol,
+        pinned.adapterId,
+        pinnedOutcome.reason
+      );
+    }
+  }
+
   // A candidate that failed to evaluate must never discard a different
   // candidate that succeeded: an unrelated RPC blip on one protocol
   // shouldn't block a genuine, already-computed migration opportunity on
@@ -989,7 +1006,6 @@ export async function runMigrationKeeper(
     // the existing migration instead of resetting the ledger-gap cooldown.
     let hasMatchingSnapshot = deps.submitMigration != null;
     let snapshotReadFailed = false;
-    let existingSnapshotAdapter: string | null = null;
     let pinned: PinnedCandidate | undefined;
 
     if (!hasMatchingSnapshot) {
@@ -1000,17 +1016,14 @@ export async function runMigrationKeeper(
           config.network.passphrase,
           "get_migration_snapshot"
         )) as { adapter: string } | null;
-        existingSnapshotAdapter = snapshot?.adapter ?? null;
-        if (
-          existingSnapshotAdapter &&
-          existingSnapshotAdapter !== vault.currentAdapterId
-        ) {
+        const snapshotAdapter = snapshot?.adapter ?? null;
+        if (snapshotAdapter && snapshotAdapter !== vault.currentAdapterId) {
           const snapshotProtocol = Object.entries(
             config.candidateAdapters
-          ).find(([, id]) => id === existingSnapshotAdapter)?.[0];
+          ).find(([, id]) => id === snapshotAdapter)?.[0];
           if (snapshotProtocol) {
             pinned = {
-              adapterId: existingSnapshotAdapter,
+              adapterId: snapshotAdapter,
               protocol: snapshotProtocol,
             };
           }
@@ -1018,6 +1031,23 @@ export async function runMigrationKeeper(
       } catch (err) {
         snapshotReadFailed = isTransientKeeperError(err);
       }
+    }
+
+    // If reading the on-chain snapshot failed, don't waste deadline/RPC
+    // budget evaluating candidates only to discard the result below.
+    if (snapshotReadFailed) {
+      failures.push({
+        vaultId: vault.vaultId,
+        vaultContractId: vault.vaultContractId,
+        adapterId: vault.currentAdapterId,
+        protocol: vault.currentProtocol,
+        stage: "evaluate",
+        attempts: 1,
+        transient: true,
+        error:
+          "could not read the migration snapshot; skipped rather than risk resetting an existing cooldown",
+      });
+      continue;
     }
 
     let evaluation: { best: BestCandidate | null; skipReason?: string };
@@ -1136,25 +1166,7 @@ export async function runMigrationKeeper(
     // snapshotted adapter's rate is fetched once, not twice, and the
     // improvement-threshold comparison is in one logical place.
     hasMatchingSnapshot =
-      hasMatchingSnapshot ||
-      (existingSnapshotAdapter != null &&
-        existingSnapshotAdapter === best.adapterId);
-
-    if (snapshotReadFailed) {
-      failures.push({
-        vaultId: vault.vaultId,
-        vaultContractId: vault.vaultContractId,
-        adapterId: best.adapterId,
-        protocol: best.protocol,
-        stage: "submit",
-        attempts: 1,
-        transient: true,
-        error:
-          "could not read the migration snapshot; skipped rather than risk resetting an existing cooldown",
-      });
-      await lease.releaseIfUnsent();
-      continue;
-    }
+      hasMatchingSnapshot || pinned?.adapterId === best.adapterId;
 
     if (!hasMatchingSnapshot) {
       try {
