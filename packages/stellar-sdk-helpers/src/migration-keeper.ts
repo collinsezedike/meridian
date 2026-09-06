@@ -125,6 +125,33 @@ function isUsableRate(rate: number | null): rate is number {
   return rate !== null && Number.isFinite(rate);
 }
 
+/** Returns true when `rate - currentRate >= minImprovementBps`. Extracted
+ *  so the fresh-candidate path and the snapshot-preservation path share one
+ *  comparison. A future change to threshold semantics (e.g. rounding-aware
+ *  or percentage-based) only changes the comparison in one place. */
+function clearsImprovementThreshold(
+  rate: number,
+  currentRate: number,
+  minImprovementBps: number
+): boolean {
+  return rate - currentRate >= minImprovementBps;
+}
+
+/** A successfully evaluated candidate, retained so the caller can prefer an
+ *  already-snapshotted adapter without fetching its rate a second time. */
+interface CandidateRate {
+  protocol: string;
+  adapterId: string;
+  rate: number;
+}
+
+interface FindBestCandidateResult {
+  best: BestCandidate | null;
+  currentRate: number | null;
+  candidateRates: Map<string, CandidateRate>;
+  skipReason?: string;
+}
+
 export interface MigrationKeeperConfig {
   network: StellarNetwork;
   secretKey: string;
@@ -521,13 +548,18 @@ async function findBestCandidate(
   logger: KeeperLogger,
   sleepFn: (ms: number) => Promise<void>,
   deadlineAt: number
-): Promise<{ best: BestCandidate | null; skipReason?: string }> {
+): Promise<FindBestCandidateResult> {
   // Nothing to compare against: don't pay for a retried rate lookup (up to
   // maxAttempts, with backoff) just to discover there was never a candidate
   // to evaluate. This is the documented default state today (no
   // MERIDIAN_ADAPTER_<PROTOCOL>_ID configured), not a rare edge case.
   if (Object.keys(config.candidateAdapters).length === 0) {
-    return { best: null, skipReason: "no candidate adapters configured" };
+    return {
+      best: null,
+      currentRate: null,
+      candidateRates: new Map(),
+      skipReason: "no candidate adapters configured",
+    };
   }
 
   // Only excludes the vault's literal current adapter, not same-protocol
@@ -546,6 +578,8 @@ async function findBestCandidate(
   if (candidates.length === 0) {
     return {
       best: null,
+      currentRate: null,
+      candidateRates: new Map(),
       skipReason: "every configured candidate is the vault's current adapter",
     };
   }
@@ -585,37 +619,51 @@ async function findBestCandidate(
     );
   }
   if (!isUsableRate(currentRate)) {
-    return { best: null, skipReason: "current rate unavailable" };
+    return {
+      best: null,
+      currentRate: null,
+      candidateRates: new Map(),
+      skipReason: "current rate unavailable",
+    };
   }
 
-  // Evaluated concurrently, like discovery above: each candidate's pool
-  // resolution and rate lookup is independent of every other candidate, so
-  // running them one at a time would let the deadline budget get eaten by
-  // earlier candidates before later ones are even attempted.
+  const candidateRates = new Map<string, CandidateRate>();
+
+  // Evaluated concurrently: every candidate's pool resolution and rate
+  // lookup is independent of every other entry, so running them one at a
+  // time would let the deadline budget get eaten by earlier entries before
+  // later ones are even attempted.
+  const evaluate = (protocol: string, adapterId: string) =>
+    withKeeperRetry(
+      async () => {
+        const poolId = await resolveCandidatePool(adapterId);
+        return rateSource({
+          protocol,
+          adapterId,
+          poolId,
+          ...(vault.assetId !== undefined && { assetId: vault.assetId }),
+        });
+      },
+      {
+        maxAttempts: config.maxAttempts,
+        baseDelayMs: config.baseDelayMs,
+        deadlineAt,
+      },
+      logger,
+      { vaultId: vault.vaultId, adapterId, protocol, stage: "evaluate" },
+      sleepFn,
+      isTransientKeeperError,
+      "migration-keeper"
+    );
+
   const settled = await Promise.allSettled(
     candidates.map(async ([protocol, adapterId]) => {
-      const result = await withKeeperRetry(
-        async () => {
-          const poolId = await resolveCandidatePool(adapterId);
-          return rateSource({
-            protocol,
-            adapterId,
-            poolId,
-            ...(vault.assetId !== undefined && { assetId: vault.assetId }),
-          });
-        },
-        {
-          maxAttempts: config.maxAttempts,
-          baseDelayMs: config.baseDelayMs,
-          deadlineAt,
-        },
-        logger,
-        { vaultId: vault.vaultId, adapterId, protocol, stage: "evaluate" },
-        sleepFn,
-        isTransientKeeperError,
-        "migration-keeper"
-      );
-      return { protocol, adapterId, rate: result.value };
+      const result = await evaluate(protocol, adapterId);
+      return {
+        protocol,
+        adapterId,
+        rate: result.value,
+      };
     })
   );
 
@@ -646,22 +694,35 @@ async function findBestCandidate(
         protocol,
         error: errorMessage(outcome.reason),
       });
-      firstFailure ??= { protocol, adapterId, reason: outcome.reason };
+      firstFailure ??= {
+        protocol,
+        adapterId,
+        reason: outcome.reason,
+      };
       continue;
     }
     const { rate } = outcome.value;
     if (!isUsableRate(rate)) continue;
     anyRateKnown = true;
+    candidateRates.set(adapterId, { protocol, adapterId, rate });
 
     const improvementBps = rate - currentRate;
-    if (improvementBps < config.minImprovementBps) continue;
+    if (
+      !clearsImprovementThreshold(rate, currentRate, config.minImprovementBps)
+    )
+      continue;
+
     if (!best || improvementBps > best.improvementBps) {
-      best = { protocol, adapterId, improvementBps };
+      best = {
+        protocol,
+        adapterId,
+        improvementBps,
+      };
     }
   }
 
   if (best) {
-    return { best };
+    return { best, currentRate, candidateRates };
   }
   // A failed candidate must never block a valid decision reached from a
   // different candidate, this applies just as much when that decision is
@@ -684,6 +745,8 @@ async function findBestCandidate(
   // compared when they weren't.
   return {
     best: null,
+    currentRate,
+    candidateRates,
     skipReason: anyRateKnown
       ? "no candidate clears the improvement threshold"
       : "no candidate rate was available to compare",
@@ -871,7 +934,7 @@ export async function runMigrationKeeper(
       });
     }
 
-    let evaluation: { best: BestCandidate | null; skipReason?: string };
+    let evaluation: FindBestCandidateResult;
     try {
       evaluation = await findBestCandidate(
         vault,
@@ -913,7 +976,7 @@ export async function runMigrationKeeper(
       continue;
     }
 
-    const { best } = evaluation;
+    let { best } = evaluation;
 
     // Re-checked here, not just at the top of the loop: evaluation itself
     // can retry and consume most of the budget, and this is an
@@ -937,6 +1000,75 @@ export async function runMigrationKeeper(
       });
       continue;
     }
+
+    // Read the snapshot only after a qualifying fresh candidate exists.
+    // In steady state no candidate clears the threshold, so this avoids
+    // one on-chain read per vault per run (#705) while preserving #699:
+    // the snapshotted adapter was already evaluated in the same concurrent
+    // candidate batch, and a still-qualifying snapshot is preferred here.
+    let hasMatchingSnapshot = deps.submitMigration != null;
+    let snapshotReadFailed = false;
+    if (!hasMatchingSnapshot) {
+      try {
+        const snapshot = (await simulateView(
+          server as never,
+          vault.vaultContractId,
+          config.network.passphrase,
+          "get_migration_snapshot"
+        )) as { adapter: string } | null;
+        const snapshotAdapter = snapshot?.adapter ?? null;
+        const snapshotCandidate =
+          snapshotAdapter === null
+            ? undefined
+            : evaluation.candidateRates.get(snapshotAdapter);
+        if (
+          snapshotAdapter !== null &&
+          snapshotAdapter !== vault.currentAdapterId &&
+          snapshotCandidate !== undefined &&
+          clearsImprovementThreshold(
+            snapshotCandidate.rate,
+            evaluation.currentRate ?? 0,
+            config.minImprovementBps
+          )
+        ) {
+          best = {
+            protocol: snapshotCandidate.protocol,
+            adapterId: snapshotCandidate.adapterId,
+            improvementBps:
+              snapshotCandidate.rate - (evaluation.currentRate ?? 0),
+          };
+          hasMatchingSnapshot = true;
+        }
+      } catch (err) {
+        // A genuine "no snapshot" (or one for a different adapter) traps
+        // with MigrationNotInitialized, which is not a transient failure by
+        // isTransientKeeperError's classification, that's the case this
+        // falls through to begin_migration for. A real RPC/network failure
+        // reading the snapshot must NOT be treated the same way: assuming
+        // "no snapshot" and firing begin_migration would reset a possibly
+        // already cooldown-elapsed snapshot's ledger_seq back to now,
+        // pushing a ready-to-migrate vault's migration back a full
+        // MIN_LEDGER_GAP for no reason. Report it as a retryable failure
+        // instead, same as this file's other on-chain read checks.
+        snapshotReadFailed = isTransientKeeperError(err);
+      }
+    }
+
+    if (snapshotReadFailed) {
+      failures.push({
+        vaultId: vault.vaultId,
+        vaultContractId: vault.vaultContractId,
+        adapterId: best.adapterId,
+        protocol: best.protocol,
+        stage: "submit",
+        attempts: 1,
+        transient: true,
+        error:
+          "could not read the migration snapshot; skipped rather than risk resetting an existing cooldown",
+      });
+      continue;
+    }
+
     // Taken before anything is built: a plain "no record" read is not a
     // claim on the vault, so two concurrent invocations could otherwise both
     // pass the check above and both broadcast.
@@ -964,7 +1096,7 @@ export async function runMigrationKeeper(
     // cooldown hasn't elapsed yet, the contract itself rejects the call
     // with MigrationCooldownNotMet during simulation (no fee, nothing
     // sent), which falls through to the existing failure handling below
-    // and is retried on a later run — comfortably fine given
+    // and is retried on a later run. That is comfortably fine given
     // MIN_LEDGER_GAP is ~1 minute and this keeper runs far less often
     // than that.
     //
@@ -974,49 +1106,6 @@ export async function runMigrationKeeper(
     // network/mocks regardless of the injected override, same as
     // assertAdapterUnchanged inside submitMigrationTransaction only runs
     // on the real path.
-    let hasMatchingSnapshot = deps.submitMigration != null;
-    let snapshotReadFailed = false;
-    if (!hasMatchingSnapshot) {
-      try {
-        const snapshot = (await simulateView(
-          server as never,
-          vault.vaultContractId,
-          config.network.passphrase,
-          "get_migration_snapshot"
-        )) as { adapter: string } | null;
-        hasMatchingSnapshot = snapshot?.adapter === best.adapterId;
-      } catch (err) {
-        // A genuine "no snapshot" (or one for a different adapter) traps
-        // with MigrationNotInitialized, which is not a transient failure by
-        // isTransientKeeperError's classification — that's the case this
-        // falls through to begin_migration for. A real RPC/network failure
-        // reading the snapshot must NOT be treated the same way: assuming
-        // "no snapshot" and firing begin_migration would reset a possibly
-        // already cooldown-elapsed snapshot's ledger_seq back to now,
-        // pushing a ready-to-migrate vault's migration back a full
-        // MIN_LEDGER_GAP for no reason. Report it as a retryable failure
-        // instead, same as this file's other on-chain read checks.
-        hasMatchingSnapshot = false;
-        snapshotReadFailed = isTransientKeeperError(err);
-      }
-    }
-
-    if (snapshotReadFailed) {
-      failures.push({
-        vaultId: vault.vaultId,
-        vaultContractId: vault.vaultContractId,
-        adapterId: best.adapterId,
-        protocol: best.protocol,
-        stage: "submit",
-        attempts: 1,
-        transient: true,
-        error:
-          "could not read the migration snapshot; skipped rather than risk resetting an existing cooldown",
-      });
-      await lease.releaseIfUnsent();
-      continue;
-    }
-
     if (!hasMatchingSnapshot) {
       try {
         await submitKeeperOperation(
