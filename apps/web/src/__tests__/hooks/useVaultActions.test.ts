@@ -161,7 +161,13 @@ describe("useVaultActions — deposit", () => {
 
     let ok: boolean | undefined;
     await act(async () => {
-      ok = await result.current.deposit("10", "blend-usdc-fixed", "USDC");
+      ok = await result.current.deposit(
+        "10",
+        "blend-usdc-fixed",
+        "USDC",
+        undefined,
+        true
+      );
     });
 
     expect(ok).toBe(true);
@@ -170,6 +176,7 @@ describe("useVaultActions — deposit", () => {
       vaultId: "blend-usdc-fixed",
       amount: "10",
       min_shares_out: undefined,
+      riskAcknowledged: true,
     });
     expect(wallet.sign).toHaveBeenCalledWith(
       "DEPOSIT_XDR",
@@ -192,7 +199,8 @@ describe("useVaultActions — deposit", () => {
         "10",
         "blend-usdc-fixed",
         "USDC",
-        "9.5"
+        "9.5",
+        true
       );
     });
 
@@ -202,7 +210,20 @@ describe("useVaultActions — deposit", () => {
       vaultId: "blend-usdc-fixed",
       amount: "10",
       min_shares_out: "9.5",
+      riskAcknowledged: true,
     });
+  });
+
+  it("returns false without calling the API when risk has not been acknowledged", async () => {
+    const { result } = renderHook(() => useVaultActions());
+
+    let ok: boolean | undefined;
+    await act(async () => {
+      ok = await result.current.deposit("10", "blend-usdc-fixed", "USDC");
+    });
+
+    expect(ok).toBe(false);
+    expect(api.buildDeposit).not.toHaveBeenCalled();
   });
 
   it("returns false without calling the API when no publicKey", async () => {

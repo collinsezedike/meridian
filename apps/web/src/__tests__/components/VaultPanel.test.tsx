@@ -171,7 +171,8 @@ describe("VaultPanel — deposit", () => {
         "25",
         "meridian-usdc",
         "USDC",
-        undefined
+        undefined,
+        true
       );
     });
     await waitFor(() => {
@@ -195,7 +196,8 @@ describe("VaultPanel — deposit", () => {
         "25",
         "meridian-usdc",
         "USDC",
-        "12.4375000"
+        "12.4375000",
+        true
       );
     });
   });
@@ -220,9 +222,62 @@ describe("VaultPanel — deposit", () => {
         "25",
         "meridian-usdc",
         "USDC",
-        undefined
+        undefined,
+        true
       );
     });
+  });
+});
+
+describe("VaultPanel — risk disclosure", () => {
+  it("shows the disclosure and blocks submission for a first-time depositor", () => {
+    render(<VaultPanel />);
+
+    expect(screen.getByTestId("deposit-risk-disclosure")).toBeDefined();
+    fireEvent.change(screen.getByPlaceholderText("0.00"), {
+      target: { value: "25" },
+    });
+    expect(
+      (screen.getByTestId("vault-deposit-submit") as HTMLButtonElement).disabled
+    ).toBe(true);
+  });
+
+  it("hides the disclosure and unblocks submission once acknowledged, persisting across remounts for the same wallet", () => {
+    const { unmount } = render(<VaultPanel />);
+    fireEvent.click(screen.getByTestId("deposit-risk-acknowledgement"));
+
+    expect(
+      window.localStorage.getItem(
+        "meridian.deposit-risk-disclosure:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+      )
+    ).toBe("true");
+    expect(screen.queryByTestId("deposit-risk-disclosure")).toBeNull();
+    unmount();
+
+    render(<VaultPanel />);
+    expect(screen.queryByTestId("deposit-risk-disclosure")).toBeNull();
+  });
+
+  it("does not carry one wallet's acknowledgement over to a different wallet", () => {
+    const { unmount } = render(<VaultPanel />);
+    fireEvent.click(screen.getByTestId("deposit-risk-acknowledgement"));
+    unmount();
+
+    useWalletStore.setState({
+      publicKey: "GB8OTHERWALLETADDRESSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      connected: true,
+      network: "testnet",
+    });
+    render(<VaultPanel />);
+
+    expect(screen.getByTestId("deposit-risk-disclosure")).toBeDefined();
+  });
+
+  it("does not show the disclosure while positions are still loading, to avoid flashing it at an existing depositor", () => {
+    mockPositions({ isLoading: true, data: undefined });
+    render(<VaultPanel />);
+
+    expect(screen.queryByTestId("deposit-risk-disclosure")).toBeNull();
   });
 });
 

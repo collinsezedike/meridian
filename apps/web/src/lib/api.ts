@@ -68,6 +68,7 @@ export const api = {
     vaultId: string;
     amount: string;
     min_shares_out?: string;
+    riskAcknowledged: true;
   }) =>
     apiFetch<{ xdr: string; fee: string }>("/api/v1/tx/deposit", {
       method: "POST",

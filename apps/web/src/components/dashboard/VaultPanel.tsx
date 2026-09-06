@@ -31,6 +31,7 @@ export function VaultPanel() {
   } = useWalletConnect();
   const {
     data: positions = [],
+    isLoading: positionsLoading,
     isError: positionsError,
     refetch: refetchPositions,
   } = usePositions(publicKey);
@@ -79,6 +80,35 @@ export function VaultPanel() {
       )
     : false;
 
+  // Keyed by wallet, not by browser: this product supports multiple wallets
+  // (#476), so a shared browser with two different wallets must not let one
+  // wallet's acknowledgement cover the other's first deposit.
+  const riskAcknowledgementKey = publicKey
+    ? `meridian.deposit-risk-disclosure:${publicKey}`
+    : null;
+  const [, setRiskAckVersion] = useState(0);
+  const hasAcknowledgedRisk = riskAcknowledgementKey
+    ? window.localStorage.getItem(riskAcknowledgementKey) === "true"
+    : false;
+  // A wallet that already held a position in this vault before the notice
+  // existed is exempted going forward, same as hasAcknowledgedRisk.
+  const riskRequirementSatisfied =
+    hasPositionInBestVault || hasAcknowledgedRisk;
+  // While positions are still loading, hasPositionInBestVault defaults to
+  // false, which would otherwise flash the disclosure at an existing,
+  // pre-feature depositor for a moment on every fresh page load before
+  // their position data resolves. Wait for it to settle before deciding.
+  const showRiskDisclosure =
+    Boolean(riskAcknowledgementKey) &&
+    !positionsLoading &&
+    !riskRequirementSatisfied;
+
+  function acknowledgeRisk() {
+    if (!riskAcknowledgementKey) return;
+    window.localStorage.setItem(riskAcknowledgementKey, "true");
+    setRiskAckVersion((v) => v + 1);
+  }
+
   async function handleDeposit() {
     if (!amount || !bestVault) return;
     // Only a position actually held in bestVault carries a share price
@@ -107,7 +137,8 @@ export function VaultPanel() {
       amount,
       bestVault.id,
       bestVault.asset,
-      minSharesOut
+      minSharesOut,
+      riskRequirementSatisfied
     );
     if (ok) setAmount("");
   }
@@ -300,9 +331,9 @@ export function VaultPanel() {
             bestVault={bestVault}
             position={position}
             hasPosition={!!hasPosition}
-            hasPositionInBestVault={hasPositionInBestVault}
+            showRiskDisclosure={showRiskDisclosure}
+            onAcknowledgeRisk={acknowledgeRisk}
             isDepositing={isDepositing}
-            walletAddress={publicKey}
             onSubmit={handleDeposit}
           />
         ) : (

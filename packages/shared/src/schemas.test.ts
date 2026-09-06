@@ -16,6 +16,7 @@ describe("DepositRequestSchema", () => {
       walletAddress: VALID_ADDRESS,
       vaultId: "meridian-usdc",
       amount: "100.5",
+      riskAcknowledged: true,
     });
     expect(result.success).toBe(true);
   });
@@ -44,6 +45,7 @@ describe("DepositRequestSchema", () => {
       vaultId: "meridian-usdc",
       amount: "100.5",
       min_shares_out: "99.0",
+      riskAcknowledged: true,
     });
     expect(result.success).toBe(true);
     if (result.success) {
@@ -51,11 +53,31 @@ describe("DepositRequestSchema", () => {
     }
   });
 
+  it("rejects a deposit request missing risk acknowledgement", () => {
+    const result = DepositRequestSchema.safeParse({
+      walletAddress: VALID_ADDRESS,
+      vaultId: "meridian-usdc",
+      amount: "100.5",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a deposit request with risk acknowledgement set to false", () => {
+    const result = DepositRequestSchema.safeParse({
+      walletAddress: VALID_ADDRESS,
+      vaultId: "meridian-usdc",
+      amount: "100.5",
+      riskAcknowledged: false,
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("defaults min_shares_out to 0 when omitted", () => {
     const result = DepositRequestSchema.safeParse({
       walletAddress: VALID_ADDRESS,
       vaultId: "meridian-usdc",
       amount: "100.5",
+      riskAcknowledged: true,
     });
     expect(result.success).toBe(true);
     if (result.success) {
@@ -159,7 +181,7 @@ describe("formatZodError", () => {
     expect(result.success).toBe(false);
     if (result.success) return;
     expect(formatZodError(result.error)).toBe(
-      "walletAddress: Invalid input: expected string, received undefined; vaultId: Invalid input: expected string, received undefined; amount: Invalid input: expected string, received undefined"
+      "walletAddress: Invalid input: expected string, received undefined; vaultId: Invalid input: expected string, received undefined; amount: Invalid input: expected string, received undefined; riskAcknowledged: Invalid input: expected true"
     );
   });
 });

@@ -19,6 +19,16 @@ export const DepositRequestSchema = z.object({
     .regex(/^\d+(\.\d{1,7})?$/)
     .optional()
     .default("0"),
+  // The caller attests the wallet has satisfied the deposit risk-disclosure
+  // requirement (#720): either it already acknowledged the smart-contract
+  // and adapter/protocol risk notice, or it already held a position in this
+  // vault before the notice existed. This does not cryptographically prove
+  // a human read the notice, a caller can simply set it, but it closes the
+  // silent default gap where any client, including one that never showed
+  // the notice at all, could build a deposit with no acknowledgment of any
+  // kind. See apps/web/src/components/dashboard/VaultPanel.tsx for where
+  // the frontend derives this value.
+  riskAcknowledged: z.literal(true),
 });
 
 export const WithdrawRequestSchema = z.object({

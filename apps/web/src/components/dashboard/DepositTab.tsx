@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AmountInput } from "../ui/AmountInput";
 import type { ApiPosition, ApiVault } from "../../lib/api";
@@ -11,10 +10,10 @@ interface DepositTabProps {
   bestVault: ApiVault | undefined;
   position: ApiPosition | undefined;
   hasPosition: boolean;
-  hasPositionInBestVault: boolean;
+  showRiskDisclosure: boolean;
+  onAcknowledgeRisk: () => void;
   isDepositing: boolean;
   onSubmit: () => void;
-  walletAddress?: string | null;
 }
 
 export function DepositTab({
@@ -24,24 +23,12 @@ export function DepositTab({
   bestVault,
   position,
   hasPosition,
-  hasPositionInBestVault,
+  showRiskDisclosure,
+  onAcknowledgeRisk,
   isDepositing,
   onSubmit,
-  walletAddress,
 }: DepositTabProps) {
   const { t, i18n } = useTranslation();
-  const riskAcknowledgementKey = walletAddress
-    ? `meridian.deposit-risk-disclosure:${walletAddress}`
-    : null;
-  const [, setAcknowledgementVersion] = useState(0);
-  const hasAcknowledgedRisk = riskAcknowledgementKey
-    ? window.localStorage.getItem(riskAcknowledgementKey) === "true"
-    : true;
-
-  const showRiskDisclosure =
-    Boolean(riskAcknowledgementKey) &&
-    !hasPositionInBestVault &&
-    !hasAcknowledgedRisk;
 
   return (
     <div className="space-y-4">
@@ -69,12 +56,7 @@ export function DepositTab({
               type="checkbox"
               data-testid="deposit-risk-acknowledgement"
               onChange={(event) => {
-                if (!event.currentTarget.checked || !riskAcknowledgementKey) {
-                  return;
-                }
-
-                window.localStorage.setItem(riskAcknowledgementKey, "true");
-                setAcknowledgementVersion((version) => version + 1);
+                if (event.currentTarget.checked) onAcknowledgeRisk();
               }}
               className="mt-0.5"
             />
