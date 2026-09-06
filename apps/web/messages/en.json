@@ -2,7 +2,6 @@
   "header": {
     "title": "Meridian"
   },
-
   "walletConnect": {
     "disconnect": "Disconnect",
     "copyAddress": "Copy Address",
@@ -13,7 +12,6 @@
     "chooseWallet": "Choose a wallet",
     "installed": "Installed"
   },
-
   "vaultPanel": {
     "deposit": "Deposit",
     "withdraw": "Withdraw",
@@ -32,7 +30,6 @@
     "waiting": "Waiting for signature...",
     "positionsError": "Couldn't load your position. Deposits and withdrawals still work."
   },
-
   "vaultActions": {
     "failedAssets": "Failed to add vault assets",
     "depositFailed": "Deposit failed",
@@ -45,14 +42,12 @@
     "walletFunded": "Testnet wallet funded",
     "faucetFailed": "Failed to fund testnet wallet"
   },
-
   "common": {
     "connectWallet": "Connect Wallet",
     "connecting": "Connecting...",
     "installWallet": "Install {{name}}",
     "retry": "Retry"
   },
-
   "admin": {
     "title": "Admin Dashboard",
     "connectPrompt": "Connect an authorized admin wallet to view the dashboard.",
@@ -80,7 +75,6 @@
       "loadError": "Couldn't load vault state."
     }
   },
-
   "adminHistory": {
     "title": "Admin Action History",
     "subtitle": "Chronological log of vault administration calls",
@@ -88,9 +82,26 @@
     "empty": "No admin actions recorded yet",
     "viewTx": "View tx"
   },
-
   "errorBoundary": {
     "title": "Something went wrong. Please reload the page.",
     "reload": "Reload"
+  },
+  "statusPage": {
+    "title": "Meridian",
+    "heading": "System Status",
+    "description": "Verify what's deployed on-chain, review current parameters, and check pause history.",
+    "backToApp": "Back to app",
+    "vault": "Vault",
+    "musdc": "mUSDC",
+    "usdc": "USDC",
+    "eurc": "EURC",
+    "blendPool": "Blend Pool",
+    "defindexFactory": "DeFindex Factory",
+    "defindexVault": "DeFindex Vault",
+    "parameters": "Parameters",
+    "pauseHistory": "Pause History",
+    "pauseHistoryPlaceholder": "Pause history will be shown here once event monitoring is enabled.",
+    "audit": "Audit Report",
+    "auditPlaceholder": "No audit report is currently available."
   }
 }

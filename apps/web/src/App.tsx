@@ -7,6 +7,7 @@ import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { useWalletStore } from "./store/wallet";
 import { useTranslation } from "react-i18next";
 import { AdminLogin } from "./pages/AdminLogin";
+import { StatusPage } from "./pages/StatusPage";
 
 const queryClient = new QueryClient();
 
@@ -21,6 +22,10 @@ const queryClient = new QueryClient();
 // rewrite and never reaches the SPA in production.
 function isAdminRoute(): boolean {
   return window.location.pathname.startsWith("/app/admin");
+}
+
+function isStatusRoute(): boolean {
+  return window.location.pathname.startsWith("/app/status");
 }
 
 function Dashboard() {
@@ -73,7 +78,9 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {isAdminRoute() ? <AdminLogin /> : <Dashboard />}
+      {isAdminRoute() ? <AdminLogin />
+        : isStatusRoute() ? <StatusPage />
+        : <Dashboard />}
       <Toasts />
     </QueryClientProvider>
   );
