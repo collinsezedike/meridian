@@ -30,8 +30,18 @@ describe("handleDepositRequest", () => {
     expect(result.status).toBe(400);
     expect(result.body).toEqual({
       error:
-        "vaultId: Invalid input: expected string, received undefined; amount: Invalid input: expected string, received undefined",
+        "vaultId: Invalid input: expected string, received undefined; amount: Invalid input: expected string, received undefined; riskAcknowledged: Invalid input: expected true",
     });
+  });
+
+  it("rejects a deposit request missing risk acknowledgement", async () => {
+    const result = await handleDepositRequest({
+      walletAddress: PUBKEY,
+      vaultId: "blend-usdc-fixed",
+      amount: "10",
+    });
+    expect(result.status).toBe(400);
+    expect(buildDepositTx).not.toHaveBeenCalled();
   });
 
   it("builds the deposit transaction and returns the XDR", async () => {
@@ -39,6 +49,7 @@ describe("handleDepositRequest", () => {
       walletAddress: PUBKEY,
       vaultId: "blend-usdc-fixed",
       amount: "10",
+      riskAcknowledged: true,
     });
     expect(result.status).toBe(200);
     expect(result.body).toEqual({ xdr: "DEPOSIT_XDR", fee: "100" });
@@ -58,6 +69,7 @@ describe("handleDepositRequest", () => {
       vaultId: "blend-usdc-fixed",
       amount: "10",
       min_shares_out: "9.5",
+      riskAcknowledged: true,
     });
     expect(result.status).toBe(200);
     expect(buildDepositTx).toHaveBeenCalledWith(
@@ -76,6 +88,7 @@ describe("handleDepositRequest", () => {
       walletAddress: PUBKEY,
       vaultId: "blend-usdc-fixed",
       amount: "10",
+      riskAcknowledged: true,
     });
     expect(result.status).toBe(500);
     expect(result.body).toEqual({ error: "USDC trustline missing" });

@@ -67,6 +67,31 @@ export function VaultPanel() {
   const hasPosition =
     position && Number.isFinite(position.deposited) && position.deposited > 0;
 
+  // Keyed by wallet, not by browser: this product supports multiple wallets
+  // (#476), so a shared browser with two different wallets must not let one
+  // wallet's acknowledgement cover the other's first deposit.
+  const riskAcknowledgementKey = publicKey
+    ? `meridian.deposit-risk-disclosure:${publicKey}`
+    : null;
+  const [, setRiskAckVersion] = useState(0);
+  const riskRequirementSatisfied = riskAcknowledgementKey
+    ? window.localStorage.getItem(riskAcknowledgementKey) === "true"
+    : false;
+  // Deliberately not exempted by holding a position: `deposited` in
+  // usePositions is current share value, not cost basis, so a wallet that
+  // only ever received shares via a peer-to-peer transfer (#578) would
+  // otherwise be silently exempted from ever seeing this on its own first
+  // real deposit. Every wallet acknowledges once, no exceptions, including
+  // pre-existing depositors from before this notice existed.
+  const showRiskDisclosure =
+    Boolean(riskAcknowledgementKey) && !riskRequirementSatisfied;
+
+  function acknowledgeRisk() {
+    if (!riskAcknowledgementKey) return;
+    window.localStorage.setItem(riskAcknowledgementKey, "true");
+    setRiskAckVersion((v) => v + 1);
+  }
+
   async function handleDeposit() {
     if (!amount || !bestVault) return;
     // Only a position actually held in bestVault carries a share price
@@ -95,7 +120,8 @@ export function VaultPanel() {
       amount,
       bestVault.id,
       bestVault.asset,
-      minSharesOut
+      minSharesOut,
+      riskRequirementSatisfied
     );
     if (ok) setAmount("");
   }
@@ -288,6 +314,8 @@ export function VaultPanel() {
             bestVault={bestVault}
             position={position}
             hasPosition={!!hasPosition}
+            showRiskDisclosure={showRiskDisclosure}
+            onAcknowledgeRisk={acknowledgeRisk}
             isDepositing={isDepositing}
             onSubmit={handleDeposit}
           />

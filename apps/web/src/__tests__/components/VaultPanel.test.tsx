@@ -44,6 +44,11 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
+function acknowledgeRiskDisclosureIfPresent() {
+  const acknowledgement = screen.queryByTestId("deposit-risk-acknowledgement");
+  if (acknowledgement) fireEvent.click(acknowledgement);
+}
+
 function mockVaultsLoaded() {
   vi.mocked(useVaults).mockReturnValue({
     data: { vaults: [VAULT], recommendedVaultId: "meridian-usdc" },
@@ -62,6 +67,7 @@ function mockPositions(overrides: Partial<ReturnType<typeof usePositions>>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
   useWalletStore.setState({
     publicKey: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
     connected: true,
@@ -96,6 +102,7 @@ describe("VaultPanel — position load error", () => {
   it("keeps the deposit tab usable while positions fail to load", () => {
     mockPositions({ isError: true });
     render(<VaultPanel />);
+    acknowledgeRiskDisclosureIfPresent();
 
     const amountInput = screen.getByPlaceholderText("0.00");
     fireEvent.change(amountInput, { target: { value: "10" } });
@@ -152,6 +159,7 @@ describe("VaultPanel — deposit", () => {
     // that has already accrued yield, and would revert every first deposit
     // with SlippageExceeded. min_shares_out must be omitted, not guessed.
     render(<VaultPanel />);
+    acknowledgeRiskDisclosureIfPresent();
 
     fireEvent.change(screen.getByPlaceholderText("0.00"), {
       target: { value: "25" },
@@ -163,7 +171,8 @@ describe("VaultPanel — deposit", () => {
         "25",
         "meridian-usdc",
         "USDC",
-        undefined
+        undefined,
+        true
       );
     });
     await waitFor(() => {
@@ -174,6 +183,7 @@ describe("VaultPanel — deposit", () => {
   it("derives the slippage floor from the caller's own position in the recommended vault", async () => {
     mockPositions({ isError: false, data: [POSITION] });
     render(<VaultPanel />);
+    acknowledgeRiskDisclosureIfPresent();
 
     fireEvent.change(screen.getByPlaceholderText("0.00"), {
       target: { value: "25" },
@@ -187,7 +197,8 @@ describe("VaultPanel — deposit", () => {
         "25",
         "meridian-usdc",
         "USDC",
-        "12.4375000"
+        "12.4375000",
+        true
       );
     });
   });
@@ -200,6 +211,7 @@ describe("VaultPanel — deposit", () => {
       data: [{ ...POSITION, vaultId: "blend-usdc-fixed" }],
     });
     render(<VaultPanel />);
+    acknowledgeRiskDisclosureIfPresent();
 
     fireEvent.change(screen.getByPlaceholderText("0.00"), {
       target: { value: "25" },
@@ -211,9 +223,65 @@ describe("VaultPanel — deposit", () => {
         "25",
         "meridian-usdc",
         "USDC",
-        undefined
+        undefined,
+        true
       );
     });
+  });
+});
+
+describe("VaultPanel — risk disclosure", () => {
+  it("shows the disclosure and blocks submission for a first-time depositor", () => {
+    render(<VaultPanel />);
+
+    expect(screen.getByTestId("deposit-risk-disclosure")).toBeDefined();
+    fireEvent.change(screen.getByPlaceholderText("0.00"), {
+      target: { value: "25" },
+    });
+    expect(
+      (screen.getByTestId("vault-deposit-submit") as HTMLButtonElement).disabled
+    ).toBe(true);
+  });
+
+  it("hides the disclosure and unblocks submission once acknowledged, persisting across remounts for the same wallet", () => {
+    const { unmount } = render(<VaultPanel />);
+    fireEvent.click(screen.getByTestId("deposit-risk-acknowledgement"));
+
+    expect(
+      window.localStorage.getItem(
+        "meridian.deposit-risk-disclosure:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+      )
+    ).toBe("true");
+    expect(screen.queryByTestId("deposit-risk-disclosure")).toBeNull();
+    unmount();
+
+    render(<VaultPanel />);
+    expect(screen.queryByTestId("deposit-risk-disclosure")).toBeNull();
+  });
+
+  it("does not carry one wallet's acknowledgement over to a different wallet", () => {
+    const { unmount } = render(<VaultPanel />);
+    fireEvent.click(screen.getByTestId("deposit-risk-acknowledgement"));
+    unmount();
+
+    useWalletStore.setState({
+      publicKey: "GB8OTHERWALLETADDRESSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      connected: true,
+      network: "testnet",
+    });
+    render(<VaultPanel />);
+
+    expect(screen.getByTestId("deposit-risk-disclosure")).toBeDefined();
+  });
+
+  it("still shows the disclosure to a wallet that already holds a position but never acknowledged, e.g. shares received via a peer-to-peer transfer rather than an actual deposit", () => {
+    // deposited here reflects current share value, not cost basis, so this
+    // is indistinguishable from a real deposit using position data alone.
+    // The disclosure must not be inferred from holding shares.
+    mockPositions({ isError: false, data: [POSITION] });
+    render(<VaultPanel />);
+
+    expect(screen.getByTestId("deposit-risk-disclosure")).toBeDefined();
   });
 });
 

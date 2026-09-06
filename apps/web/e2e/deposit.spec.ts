@@ -21,6 +21,10 @@ test.describe("deposit", () => {
       .click();
     await expect(page.getByTestId("vault-tab-deposit")).toBeVisible();
 
+    await expect(page.getByTestId("deposit-risk-disclosure")).toBeVisible();
+    await page.getByTestId("deposit-risk-acknowledgement").click();
+    await expect(page.getByTestId("deposit-risk-disclosure")).toBeHidden();
+
     await page.getByPlaceholder("0.00").fill("10");
     await page.getByTestId("vault-deposit-submit").click();
 
