@@ -253,8 +253,6 @@ impl MeridianDefindexAdapter {
     /// Live USDC value of the adapter's dfToken position, computed by the
     /// DeFindex vault's exchange rate. Updates automatically as yield accrues.
     pub fn total_assets(env: Env) -> i128 {
-        extend_instance(&env);
-
         let dfx: Address = adapter_common::get_or_not_initialized::<_, ContractError>(
             &env,
             env.storage().instance().get(&DFX_VAULT),
