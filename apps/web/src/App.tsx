@@ -7,20 +7,26 @@ import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { useWalletStore } from "./store/wallet";
 import { useTranslation } from "react-i18next";
 import { AdminLogin } from "./pages/AdminLogin";
+import { StatusPage } from "./pages/StatusPage";
 
 const queryClient = new QueryClient();
 
-// No router dependency for a single extra route: the app has exactly two
-// pages, and pulling in react-router for one static path split would be a
-// heavier change than the admin dashboard itself (#615) needs.
+// No router dependency for a few extra routes: the app has a handful of
+// pages, and pulling in react-router for a couple of static path splits
+// would be a heavier change than the admin dashboard itself (#615) needs.
 //
 // The app is served under /app/* (see the root vercel.json rewrite,
-// "/app/:path*" -> "/app/index.html"), so the admin route lives at
-// /app/admin — that existing rewrite already covers it, no routing config
-// change needed. A bare /admin (no /app prefix) is not covered by any
-// rewrite and never reaches the SPA in production.
+// "/app/:path*" -> "/app/index.html"), so both the admin and status routes
+// live at /app/admin and /app/status — that existing rewrite already covers
+// them, no routing config change needed. A bare /admin or /status (no /app
+// prefix) is not covered by any rewrite and never reaches the SPA in
+// production.
 function isAdminRoute(): boolean {
   return window.location.pathname.startsWith("/app/admin");
+}
+
+function isStatusRoute(): boolean {
+  return window.location.pathname.startsWith("/app/status");
 }
 
 function Dashboard() {
@@ -71,9 +77,17 @@ export default function App() {
     return () => window.removeEventListener("focus", revalidate);
   }, []);
 
+  const page = isAdminRoute() ? (
+    <AdminLogin />
+  ) : isStatusRoute() ? (
+    <StatusPage />
+  ) : (
+    <Dashboard />
+  );
+
   return (
     <QueryClientProvider client={queryClient}>
-      {isAdminRoute() ? <AdminLogin /> : <Dashboard />}
+      {page}
       <Toasts />
     </QueryClientProvider>
   );

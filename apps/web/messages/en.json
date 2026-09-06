@@ -92,5 +92,31 @@
   "errorBoundary": {
     "title": "Something went wrong. Please reload the page.",
     "reload": "Reload"
+  },
+
+  "status": {
+    "title": "Contract Status",
+    "subtitle": "Verify what's actually deployed and in control of this vault, without reading source or querying RPC directly.",
+    "network": "Network",
+    "addresses": {
+      "title": "Contract Addresses",
+      "vault": "Vault",
+      "adapter": "Adapter",
+      "musdc": "mUSDC",
+      "usdc": "USDC",
+      "eurc": "EURC",
+      "notDeployed": "Not yet deployed",
+      "viewOnExplorer": "View on Explorer"
+    },
+    "parameters": {
+      "title": "Protocol Parameters",
+      "migrationCooldown": "Migration Cooldown",
+      "migrationCooldownValue": "{{ledgers}} ledgers (~1 minute)",
+      "note": "Fixed contract constants, not admin-configurable. Verify against the contract source directly rather than trusting this page alone."
+    },
+    "audit": {
+      "title": "Security Audit",
+      "notYetAvailable": "No independent security audit has been completed yet. A report will be linked here once one exists."
+    }
   }
 }
