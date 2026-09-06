@@ -405,6 +405,8 @@ impl MeridianVault {
             clear_position_records(&env, &caller);
         }
 
+        Self::extend_position(&env, &caller);
+
         Ok(usdc_out)
     }
 
@@ -548,6 +550,9 @@ impl MeridianVault {
                 .persistent()
                 .set(&receiver_entry_key, &weighted_entry);
         }
+
+        Self::extend_position(&env, &from);
+        Self::extend_position(&env, &to);
 
         Ok(())
     }
