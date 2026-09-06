@@ -201,9 +201,7 @@ describe("DepositTab", () => {
   });
 
   it("does not show the disclosure after a wallet already has a position", () => {
-    window.localStorage.removeItem(
-      "meridian.deposit-risk-disclosure:GA7NEW"
-    );
+    window.localStorage.removeItem("meridian.deposit-risk-disclosure:GA7NEW");
     renderDepositTab({
       amount: "25",
       walletAddress: "GA7NEW",

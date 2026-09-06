@@ -44,6 +44,11 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
+function acknowledgeRiskDisclosureIfPresent() {
+  const acknowledgement = screen.queryByTestId("deposit-risk-acknowledgement");
+  if (acknowledgement) fireEvent.click(acknowledgement);
+}
+
 function mockVaultsLoaded() {
   vi.mocked(useVaults).mockReturnValue({
     data: { vaults: [VAULT], recommendedVaultId: "meridian-usdc" },
@@ -62,6 +67,7 @@ function mockPositions(overrides: Partial<ReturnType<typeof usePositions>>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
   useWalletStore.setState({
     publicKey: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
     connected: true,
@@ -96,6 +102,7 @@ describe("VaultPanel — position load error", () => {
   it("keeps the deposit tab usable while positions fail to load", () => {
     mockPositions({ isError: true });
     render(<VaultPanel />);
+    acknowledgeRiskDisclosureIfPresent();
 
     const amountInput = screen.getByPlaceholderText("0.00");
     fireEvent.change(amountInput, { target: { value: "10" } });
@@ -152,6 +159,7 @@ describe("VaultPanel — deposit", () => {
     // that has already accrued yield, and would revert every first deposit
     // with SlippageExceeded. min_shares_out must be omitted, not guessed.
     render(<VaultPanel />);
+    acknowledgeRiskDisclosureIfPresent();
 
     fireEvent.change(screen.getByPlaceholderText("0.00"), {
       target: { value: "25" },
