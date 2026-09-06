@@ -31,7 +31,6 @@ export function VaultPanel() {
   } = useWalletConnect();
   const {
     data: positions = [],
-    isLoading: positionsLoading,
     isError: positionsError,
     refetch: refetchPositions,
   } = usePositions(publicKey);
@@ -67,18 +66,6 @@ export function VaultPanel() {
     : positions[0];
   const hasPosition =
     position && Number.isFinite(position.deposited) && position.deposited > 0;
-  // Distinct from hasPosition (which falls back to any legacy position so
-  // the balance line stays visible): the risk disclosure must gate on
-  // whether this wallet has ever deposited into the vault it's about to
-  // deposit into, not on holding an unrelated position elsewhere.
-  const hasPositionInBestVault = bestVault
-    ? positions.some(
-        (p) =>
-          p.vaultId === bestVault.id &&
-          Number.isFinite(p.deposited) &&
-          p.deposited > 0
-      )
-    : false;
 
   // Keyed by wallet, not by browser: this product supports multiple wallets
   // (#476), so a shared browser with two different wallets must not let one
@@ -87,21 +74,17 @@ export function VaultPanel() {
     ? `meridian.deposit-risk-disclosure:${publicKey}`
     : null;
   const [, setRiskAckVersion] = useState(0);
-  const hasAcknowledgedRisk = riskAcknowledgementKey
+  const riskRequirementSatisfied = riskAcknowledgementKey
     ? window.localStorage.getItem(riskAcknowledgementKey) === "true"
     : false;
-  // A wallet that already held a position in this vault before the notice
-  // existed is exempted going forward, same as hasAcknowledgedRisk.
-  const riskRequirementSatisfied =
-    hasPositionInBestVault || hasAcknowledgedRisk;
-  // While positions are still loading, hasPositionInBestVault defaults to
-  // false, which would otherwise flash the disclosure at an existing,
-  // pre-feature depositor for a moment on every fresh page load before
-  // their position data resolves. Wait for it to settle before deciding.
+  // Deliberately not exempted by holding a position: `deposited` in
+  // usePositions is current share value, not cost basis, so a wallet that
+  // only ever received shares via a peer-to-peer transfer (#578) would
+  // otherwise be silently exempted from ever seeing this on its own first
+  // real deposit. Every wallet acknowledges once, no exceptions, including
+  // pre-existing depositors from before this notice existed.
   const showRiskDisclosure =
-    Boolean(riskAcknowledgementKey) &&
-    !positionsLoading &&
-    !riskRequirementSatisfied;
+    Boolean(riskAcknowledgementKey) && !riskRequirementSatisfied;
 
   function acknowledgeRisk() {
     if (!riskAcknowledgementKey) return;

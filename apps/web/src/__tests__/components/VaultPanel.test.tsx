@@ -183,6 +183,7 @@ describe("VaultPanel — deposit", () => {
   it("derives the slippage floor from the caller's own position in the recommended vault", async () => {
     mockPositions({ isError: false, data: [POSITION] });
     render(<VaultPanel />);
+    acknowledgeRiskDisclosureIfPresent();
 
     fireEvent.change(screen.getByPlaceholderText("0.00"), {
       target: { value: "25" },
@@ -273,11 +274,14 @@ describe("VaultPanel — risk disclosure", () => {
     expect(screen.getByTestId("deposit-risk-disclosure")).toBeDefined();
   });
 
-  it("does not show the disclosure while positions are still loading, to avoid flashing it at an existing depositor", () => {
-    mockPositions({ isLoading: true, data: undefined });
+  it("still shows the disclosure to a wallet that already holds a position but never acknowledged, e.g. shares received via a peer-to-peer transfer rather than an actual deposit", () => {
+    // deposited here reflects current share value, not cost basis, so this
+    // is indistinguishable from a real deposit using position data alone.
+    // The disclosure must not be inferred from holding shares.
+    mockPositions({ isError: false, data: [POSITION] });
     render(<VaultPanel />);
 
-    expect(screen.queryByTestId("deposit-risk-disclosure")).toBeNull();
+    expect(screen.getByTestId("deposit-risk-disclosure")).toBeDefined();
   });
 });
 
