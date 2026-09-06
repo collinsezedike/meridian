@@ -53,15 +53,19 @@ export const CONTRACT_ADDRESSES = {
     usdc: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
     // Stellar Asset Contract for Circle's testnet EURC (issuer: GB3Q6QDZYTHWT7...).
     eurc: "CCUUDM434BMZMYWYDITHFXHDMIVTGGD6T2I5UKNX5BSLXLW7HVR4MCGZ",
-    musdc: "CDJ6A3ISCVLZRHVUQC6SWVZDFMMXSK5I6XUUUO3FKJWCQSMXKOZK3YIO",
+    musdc: "CCU7RWT246CODH2455WTSGUYKXRL3J4F5C2QXIEVCN7QHCRC4BAWGKV7",
     // Redeployed for #701: the previous vault
     // (CBOQTI3C7UHTBRHSF3AJEQYXDINJ354XRWIZKSEV6PFIEUSJF2YWZPME) predated
     // #704/#705/#711/#710 (TTL management, event emission, migration-keeper
     // fix, admin slippage cap and timelock), all landed after that vault was
-    // last deployed. See apps/docs/operations/testnet-deployment.md's "Vault
-    // migration history" for the old address and its (empty) pre-cutover
-    // balance.
-    vault: "CBNXROTWUVHNRRI2LRKHEXJXIWPJTOZOMMMMX7KNQEJAY5ZOGSM7LYZ7",
+    // last deployed. Built from a Linux CI job rather than locally, so its
+    // bytecode is guaranteed to match what
+    // .github/workflows/verify-contract-addresses.yml independently
+    // rebuilds and checks (a Windows-built WASM cannot be guaranteed
+    // byte-identical). See apps/docs/operations/testnet-deployment.md's
+    // "Vault migration history" for the old address and its (empty)
+    // pre-cutover balance.
+    vault: "CAIQBVLBIUWQGE6DQUHDMZ2QWI7QP6KTCN7GP2BIZ6JZC4ES47JO4SSM",
   },
   mainnet: {
     blend: {

@@ -259,12 +259,14 @@ This contract is not deleted or disabled: Soroban has no such operation, it keep
 
 | Field               | Value                                                      |
 | ------------------- | ---------------------------------------------------------- |
-| Vault contract      | `CBNXROTWUVHNRRI2LRKHEXJXIWPJTOZOMMMMX7KNQEJAY5ZOGSM7LYZ7` |
-| Blend adapter       | `CB2GNYVHJ6O2QX2ZEP5EIHRBC26W6VE3APVPU3PD6JVQR5KQIVBOLALC` |
-| mUSDC (share token) | `CDJ6A3ISCVLZRHVUQC6SWVZDFMMXSK5I6XUUUO3FKJWCQSMXKOZK3YIO` |
+| Vault contract      | `CAIQBVLBIUWQGE6DQUHDMZ2QWI7QP6KTCN7GP2BIZ6JZC4ES47JO4SSM` |
+| Blend adapter       | `CCKOKEMM7X6NQ6C6XXRRH6BPKLINDZBNHHCHY4YDR3VZNOLOQJCSZCEA` |
+| mUSDC (share token) | `CCU7RWT246CODH2455WTSGUYKXRL3J4F5C2QXIEVCN7QHCRC4BAWGKV7` |
 | Admin               | `GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD` |
 
-The admin is the same durable key as all three prior cutovers, kept across this one too. Deployed via `scripts/deploy-testnet.sh` with `DEPLOYER=cutover-deployer` (a pre-funded throwaway testnet identity) and `ADMIN`/`ADMIN_KEY` set explicitly to that durable admin key, built with `stellar-cli` v28.0.0, matching what `.github/workflows/verify-contract-addresses.yml` resolves at the time of this cutover. `extend_position_ttl`, `begin_migration`, `migrate_adapter`, and `on_transfer` all confirmed present in the deployed vault's exported function list, and `begin_migration`'s own doc text in that output already reflects the ~1-day timelock. `get_total_assets()`, `get_adapter()`, and the resulting Blend adapter's `get_pool()`/`get_protocol()` confirmed resolving correctly.
+The admin is the same durable key as all three prior cutovers, kept across this one too. `DEPLOYER=cutover-deployer` (a pre-funded throwaway testnet identity), `ADMIN`/`ADMIN_KEY` set explicitly to that durable admin key.
+
+The WASM itself was built in a Linux GitHub Actions job rather than locally, then uploaded and deployed with `stellar contract upload`/`stellar contract deploy` directly rather than through `scripts/deploy-testnet.sh` (which always builds locally). An earlier attempt at this same cutover, built locally on Windows, produced a vault whose bytecode hash did not match what `.github/workflows/verify-contract-addresses.yml` independently rebuilds on Linux and checks against `CONTRACT_ADDRESSES.testnet.vault`, since `stellar contract build`'s `--remap-path-prefix` only normalizes Linux-style registry paths and cannot make a Windows build byte-identical to a Linux one. That attempt (vault `CBNXROTWUVHNRRI2LRKHEXJXIWPJTOZOMMMMX7KNQEJAY5ZOGSM7LYZ7`, blend adapter `CB2GNYVHJ6O2QX2ZEP5EIHRBC26W6VE3APVPU3PD6JVQR5KQIVBOLALC`, mUSDC `CDJ6A3ISCVLZRHVUQC6SWVZDFMMXSK5I6XUUUO3FKJWCQSMXKOZK3YIO`) never had its address recorded in `CONTRACT_ADDRESSES`/`KNOWN_POOLS` and is not counted as a real cutover, so it is noted here rather than given its own history entry. `extend_position_ttl`, `begin_migration`, `migrate_adapter`, and `on_transfer` all confirmed present in the deployed vault's exported function list, and `begin_migration`'s own doc text in that output already reflects the ~1-day timelock. `get_total_assets()`, `get_adapter()`, and the resulting Blend adapter's `get_pool()`/`get_protocol()` confirmed resolving correctly.
 
 ## Run the signing flow end-to-end
 
