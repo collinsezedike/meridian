@@ -1040,6 +1040,16 @@ export async function runMigrationKeeper(
           hasMatchingSnapshot = true;
         }
       } catch (err) {
+        // A genuine "no snapshot" (or one for a different adapter) traps
+        // with MigrationNotInitialized, which is not a transient failure by
+        // isTransientKeeperError's classification, that's the case this
+        // falls through to begin_migration for. A real RPC/network failure
+        // reading the snapshot must NOT be treated the same way: assuming
+        // "no snapshot" and firing begin_migration would reset a possibly
+        // already cooldown-elapsed snapshot's ledger_seq back to now,
+        // pushing a ready-to-migrate vault's migration back a full
+        // MIN_LEDGER_GAP for no reason. Report it as a retryable failure
+        // instead, same as this file's other on-chain read checks.
         snapshotReadFailed = isTransientKeeperError(err);
       }
     }
@@ -1096,7 +1106,6 @@ export async function runMigrationKeeper(
     // network/mocks regardless of the injected override, same as
     // assertAdapterUnchanged inside submitMigrationTransaction only runs
     // on the real path.
-    //
     if (!hasMatchingSnapshot) {
       try {
         await submitKeeperOperation(
