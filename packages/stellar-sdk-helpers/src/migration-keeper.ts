@@ -39,6 +39,7 @@ import {
   expectString,
   isStaleAdapterError,
   isTransientKeeperError,
+  isMigrationCooldownNotMetError,
   submitKeeperOperation,
   SubmissionInFlightError,
   type KeeperRpcServer,
@@ -1232,6 +1233,21 @@ export async function runMigrationKeeper(
         });
         logger.info(
           "[migration-keeper] migration skipped; adapter changed since discovery",
+          {
+            vaultId: vault.vaultId,
+            detail: errorMessage(err),
+          }
+        );
+        continue;
+      }
+      if (isMigrationCooldownNotMetError(err)) {
+        skipped.push({
+          vaultId: vault.vaultId,
+          reason:
+            "MigrationCooldownNotMet; waiting for the ledger-gap cooldown to elapse",
+        });
+        logger.info(
+          "[migration-keeper] migration skipped; ledger-gap cooldown not yet elapsed",
           {
             vaultId: vault.vaultId,
             detail: errorMessage(err),

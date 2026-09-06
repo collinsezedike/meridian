@@ -1256,6 +1256,52 @@ describe("runMigrationKeeper", () => {
     ]);
   });
 
+  it("treats a cooldown-in-progress MigrationCooldownNotMet rejection as a skip, not a failure", async () => {
+    // #557 lengthened the cooldown from ~1 minute to ~1 day. That made the
+    // expected waiting state last many scheduled runs, so treating it like a
+    // generic submission failure turns a healthy migration into a day of
+    // false-positive paging. It has to stay in skipped, alongside the other
+    // benign, expected races.
+    const server = makeServer({
+      simulateTransaction: vi.fn(async () => ({
+        kind: "error",
+        error: "Error(Contract, #20)",
+      })),
+    });
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.isSimulationError.mockImplementation(
+      (sim) => sim?.kind === "error"
+    );
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CDEFINDEXADAPTER"
+    );
+    const rateSource = vi.fn(async ({ protocol }: { protocol: string }) =>
+      protocol === "blend" ? 500 : 700
+    );
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
+    expect(result.migrations).toEqual([]);
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        reason: expect.stringContaining("MigrationCooldownNotMet; waiting"),
+      },
+    ]);
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+  });
+
   it("keeps the stale-adapter skip reason informative even with real-length contract addresses", async () => {
     // Regression test: sanitizeTxError redacts any message containing a
     // 50+ char C-address to a generic fallback. A real Stellar address is
