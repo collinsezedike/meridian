@@ -258,6 +258,127 @@ export interface AlertKeeperDeps {
  * past it, so the failed action (and anything after it in the same page)
  * is retried on the next scheduled run instead of being silently skipped.
  */
+/** One vault's worth of work for a single run: resolve its start ledger,
+ *  fetch admin history since it, alert on every qualifying action, and
+ *  persist however far the cursor actually got. Extracted so `runAlertKeeper`
+ *  can run every vault concurrently, the same reasoning
+ *  `accrual-keeper.ts`'s discovery uses for its own per-vault work: each
+ *  vault's RPC fetch and webhook sends are independent of every other
+ *  vault's, so running them one at a time would let the endpoint's 60s
+ *  `maxDuration` (see vercel.json) get eaten by earlier vaults before later
+ *  ones are even attempted. */
+async function processVaultAlerts(
+  target: AlertVaultTarget,
+  config: AlertKeeperConfig,
+  cursorStore: KeeperHeartbeatStore,
+  fetchImpl: typeof fetch,
+  logger: KeeperLogger
+): Promise<{ alertsSent: AlertSuccess[]; failures: AlertFailure[] }> {
+  const key = alertCursorKey(target.vaultContractId, config.network.network);
+  const alertsSent: AlertSuccess[] = [];
+  const failures: AlertFailure[] = [];
+
+  let startLedger: number;
+  try {
+    const stored = await cursorStore.get(key);
+    if (stored !== null) {
+      startLedger = stored;
+    } else {
+      // No cursor yet: start from the current ledger rather than replaying
+      // this vault's entire history as alerts on first deploy. Restart
+      // safety only needs to cover events since the keeper started
+      // watching, not events that predate it.
+      const server = new rpc.Server(config.network.rpcUrl);
+      const latest = await withRaceTimeout(
+        () => server.getLatestLedger(),
+        config.rpcTimeoutMs,
+        "Soroban RPC"
+      );
+      startLedger = latest.sequence;
+    }
+  } catch (err) {
+    failures.push({
+      vaultId: target.vaultId,
+      vaultContractId: target.vaultContractId,
+      stage: "discover",
+      attempts: 1,
+      error: errorMessage(err),
+    });
+    return { alertsSent, failures };
+  }
+
+  let actions: RpcAdminAction[];
+  try {
+    const result = await withRetry(
+      () =>
+        withRaceTimeout(
+          () =>
+            getRpcAdminHistory(config.network.rpcUrl, target.vaultContractId, {
+              startLedger,
+            }),
+          config.rpcTimeoutMs,
+          "Soroban RPC"
+        ),
+      config.maxAttempts,
+      config.baseDelayMs
+    );
+    actions = result.actions;
+  } catch (err) {
+    failures.push({
+      vaultId: target.vaultId,
+      vaultContractId: target.vaultContractId,
+      stage: "discover",
+      attempts: config.maxAttempts,
+      error: errorMessage(err),
+    });
+    return { alertsSent, failures };
+  }
+
+  let cursor = startLedger;
+  for (const action of actions) {
+    if (ALERTABLE_ACTIONS.has(action.action)) {
+      try {
+        await sendAlert(
+          config.webhookUrl,
+          formatAlertMessage(target.vaultId, action),
+          {
+            maxAttempts: config.maxAttempts,
+            baseDelayMs: config.baseDelayMs,
+            timeoutMs: config.rpcTimeoutMs,
+            fetchImpl,
+          }
+        );
+        alertsSent.push({
+          vaultId: target.vaultId,
+          action: action.action,
+          ledgerSequence: action.ledgerSequence,
+        });
+      } catch (err) {
+        failures.push({
+          vaultId: target.vaultId,
+          vaultContractId: target.vaultContractId,
+          stage: "send",
+          attempts: config.maxAttempts,
+          error: errorMessage(err),
+        });
+        break;
+      }
+    }
+    cursor = action.ledgerSequence + 1;
+  }
+
+  try {
+    await cursorStore.set(key, cursor);
+  } catch (err) {
+    logger.warn("[alert-keeper] could not persist cursor", {
+      vaultId: target.vaultId,
+      error: errorMessage(err),
+    });
+  }
+
+  return { alertsSent, failures };
+}
+
 export async function runAlertKeeper(
   config: AlertKeeperConfig,
   deps: AlertKeeperDeps = {}
@@ -268,105 +389,14 @@ export async function runAlertKeeper(
   const cursorStore = deps.cursorStore ?? createInMemoryKeeperHeartbeatStore();
   const targets = deps.targets ?? discoverAlertVaultTargets(config.network);
 
-  const alertsSent: AlertSuccess[] = [];
-  const failures: AlertFailure[] = [];
+  const settled = await Promise.all(
+    targets.map((target) =>
+      processVaultAlerts(target, config, cursorStore, fetchImpl, logger)
+    )
+  );
 
-  for (const target of targets) {
-    const key = alertCursorKey(target.vaultContractId, config.network.network);
-
-    let startLedger: number;
-    try {
-      const stored = await cursorStore.get(key);
-      if (stored !== null) {
-        startLedger = stored;
-      } else {
-        // No cursor yet: start from the current ledger rather than replaying
-        // this vault's entire history as alerts on first deploy. Restart
-        // safety only needs to cover events since the keeper started
-        // watching, not events that predate it.
-        const server = new rpc.Server(config.network.rpcUrl);
-        const latest = await withRaceTimeout(
-          () => server.getLatestLedger(),
-          config.rpcTimeoutMs,
-          "Soroban RPC"
-        );
-        startLedger = latest.sequence;
-      }
-    } catch (err) {
-      failures.push({
-        vaultId: target.vaultId,
-        vaultContractId: target.vaultContractId,
-        stage: "discover",
-        attempts: 1,
-        error: errorMessage(err),
-      });
-      continue;
-    }
-
-    let actions: RpcAdminAction[];
-    try {
-      const result = await withRetry(
-        () =>
-          getRpcAdminHistory(config.network.rpcUrl, target.vaultContractId, {
-            startLedger,
-          }),
-        config.maxAttempts,
-        config.baseDelayMs
-      );
-      actions = result.actions;
-    } catch (err) {
-      failures.push({
-        vaultId: target.vaultId,
-        vaultContractId: target.vaultContractId,
-        stage: "discover",
-        attempts: config.maxAttempts,
-        error: errorMessage(err),
-      });
-      continue;
-    }
-
-    let cursor = startLedger;
-    for (const action of actions) {
-      if (ALERTABLE_ACTIONS.has(action.action)) {
-        try {
-          await sendAlert(
-            config.webhookUrl,
-            formatAlertMessage(target.vaultId, action),
-            {
-              maxAttempts: config.maxAttempts,
-              baseDelayMs: config.baseDelayMs,
-              timeoutMs: config.rpcTimeoutMs,
-              fetchImpl,
-            }
-          );
-          alertsSent.push({
-            vaultId: target.vaultId,
-            action: action.action,
-            ledgerSequence: action.ledgerSequence,
-          });
-        } catch (err) {
-          failures.push({
-            vaultId: target.vaultId,
-            vaultContractId: target.vaultContractId,
-            stage: "send",
-            attempts: config.maxAttempts,
-            error: errorMessage(err),
-          });
-          break;
-        }
-      }
-      cursor = action.ledgerSequence + 1;
-    }
-
-    try {
-      await cursorStore.set(key, cursor);
-    } catch (err) {
-      logger.warn("[alert-keeper] could not persist cursor", {
-        vaultId: target.vaultId,
-        error: errorMessage(err),
-      });
-    }
-  }
+  const alertsSent = settled.flatMap((r) => r.alertsSent);
+  const failures = settled.flatMap((r) => r.failures);
 
   return {
     network: config.network.network,
