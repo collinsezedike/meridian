@@ -30,7 +30,14 @@
     "max": "Max",
     "position": "You have no active position to withdraw from.",
     "waiting": "Waiting for signature...",
-    "positionsError": "Couldn't load your position. Deposits and withdrawals still work."
+    "positionsError": "Couldn't load your position. Deposits and withdrawals still work.",
+    "riskDisclosure": {
+      "title": "Before your first deposit",
+      "description": "Meridian is a smart-contract product. Please read these risks before continuing.",
+      "smartContractRisk": "Smart-contract risk: bugs or exploits in Meridian contracts could affect deposited funds.",
+      "adapterRisk": "Adapter/protocol risk: deposits are routed through external adapters and protocols, so their performance or failures can affect your balance and returns.",
+      "acknowledgement": "I understand this is a smart-contract-risk product and I accept the deposit risks."
+    }
   },
 
   "vaultActions": {

@@ -19,6 +19,20 @@ export const DepositRequestSchema = z.object({
     .regex(/^\d+(\.\d{1,7})?$/)
     .optional()
     .default("0"),
+  // The caller attests the wallet has explicitly acknowledged the deposit
+  // risk-disclosure notice (#720), the smart-contract and adapter/protocol
+  // risk warning shown before a wallet's first deposit into a vault.
+  // Deliberately not satisfiable by already holding a position: `deposited`
+  // in usePositions is current share value, not cost basis, so a wallet
+  // that only ever received shares via a peer-to-peer transfer (#578) would
+  // otherwise never have to acknowledge anything on its own first real
+  // deposit. This does not cryptographically prove a human read the
+  // notice, a caller can simply set it, but it closes the silent default
+  // gap where any client, including one that never showed the notice at
+  // all, could build a deposit with no acknowledgment of any kind. See
+  // apps/web/src/components/dashboard/VaultPanel.tsx for where the
+  // frontend derives this value.
+  riskAcknowledged: z.literal(true),
 });
 
 export const WithdrawRequestSchema = z.object({

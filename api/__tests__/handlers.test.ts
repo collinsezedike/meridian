@@ -265,8 +265,25 @@ describe("POST /api/v1/tx/deposit", () => {
     expect(res.statusCode).toBe(400);
     expect(res.body).toEqual({
       error:
-        "vaultId: Invalid input: expected string, received undefined; amount: Invalid input: expected string, received undefined",
+        "vaultId: Invalid input: expected string, received undefined; amount: Invalid input: expected string, received undefined; riskAcknowledged: Invalid input: expected true",
     });
+  });
+
+  it("rejects a deposit request missing risk acknowledgement", async () => {
+    const res = makeRes();
+    await depositHandler(
+      fakeReq({
+        method: "POST",
+        body: {
+          walletAddress: PUBKEY,
+          vaultId: "blend-usdc-fixed",
+          amount: "10",
+        },
+      }),
+      res
+    );
+    expect(res.statusCode).toBe(400);
+    expect(buildDepositTx).not.toHaveBeenCalled();
   });
 
   it("builds the deposit transaction and returns the XDR", async () => {
@@ -279,6 +296,7 @@ describe("POST /api/v1/tx/deposit", () => {
           walletAddress: PUBKEY,
           vaultId: "blend-usdc-fixed",
           amount: "10",
+          riskAcknowledged: true,
         },
       }),
       res
@@ -299,6 +317,7 @@ describe("POST /api/v1/tx/deposit", () => {
           vaultId: "blend-usdc-fixed",
           amount: "10",
           min_shares_out: "9.5",
+          riskAcknowledged: true,
         },
       }),
       res
@@ -326,6 +345,7 @@ describe("POST /api/v1/tx/deposit", () => {
           walletAddress: PUBKEY,
           vaultId: "blend-usdc-fixed",
           amount: "10",
+          riskAcknowledged: true,
         },
       }),
       res

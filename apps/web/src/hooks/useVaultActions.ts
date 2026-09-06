@@ -27,8 +27,10 @@ export function useVaultActions() {
     amount: string,
     vaultId: string,
     asset: string,
-    minSharesOut?: string
+    minSharesOut?: string,
+    riskAcknowledged?: boolean
   ): Promise<boolean> {
+    if (!riskAcknowledged) return false;
     if (!publicKey || !passphrase) return false;
     setIsDepositing(true);
     try {
@@ -56,6 +58,7 @@ export function useVaultActions() {
         vaultId,
         amount,
         min_shares_out: minSharesOut,
+        riskAcknowledged: true,
       });
       await signAndSubmit(xdr);
       queryClient.invalidateQueries({ queryKey: ["positions", publicKey] });

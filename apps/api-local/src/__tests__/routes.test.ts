@@ -97,6 +97,7 @@ describe("POST /api/v1/tx/deposit", () => {
     walletAddress: WALLET,
     vaultId: "blend-usdc-fixed",
     amount: "10",
+    riskAcknowledged: true,
   };
 
   it("returns 200 with xdr and fee from the SDK", async () => {
@@ -389,6 +390,7 @@ describe("rate limiting on /api/v1/tx/deposit", () => {
         walletAddress: WALLET,
         vaultId: "blend-usdc-fixed",
         amount: "10",
+        riskAcknowledged: true,
       }),
     };
 
