@@ -11,6 +11,7 @@ interface DepositTabProps {
   bestVault: ApiVault | undefined;
   position: ApiPosition | undefined;
   hasPosition: boolean;
+  hasPositionInBestVault: boolean;
   isDepositing: boolean;
   onSubmit: () => void;
   walletAddress?: string | null;
@@ -23,6 +24,7 @@ export function DepositTab({
   bestVault,
   position,
   hasPosition,
+  hasPositionInBestVault,
   isDepositing,
   onSubmit,
   walletAddress,
@@ -37,7 +39,9 @@ export function DepositTab({
     : true;
 
   const showRiskDisclosure =
-    Boolean(riskAcknowledgementKey) && !hasPosition && !hasAcknowledgedRisk;
+    Boolean(riskAcknowledgementKey) &&
+    !hasPositionInBestVault &&
+    !hasAcknowledgedRisk;
 
   return (
     <div className="space-y-4">

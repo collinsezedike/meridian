@@ -66,6 +66,18 @@ export function VaultPanel() {
     : positions[0];
   const hasPosition =
     position && Number.isFinite(position.deposited) && position.deposited > 0;
+  // Distinct from hasPosition (which falls back to any legacy position so
+  // the balance line stays visible): the risk disclosure must gate on
+  // whether this wallet has ever deposited into the vault it's about to
+  // deposit into, not on holding an unrelated position elsewhere.
+  const hasPositionInBestVault = bestVault
+    ? positions.some(
+        (p) =>
+          p.vaultId === bestVault.id &&
+          Number.isFinite(p.deposited) &&
+          p.deposited > 0
+      )
+    : false;
 
   async function handleDeposit() {
     if (!amount || !bestVault) return;
@@ -288,6 +300,7 @@ export function VaultPanel() {
             bestVault={bestVault}
             position={position}
             hasPosition={!!hasPosition}
+            hasPositionInBestVault={hasPositionInBestVault}
             isDepositing={isDepositing}
             walletAddress={publicKey}
             onSubmit={handleDeposit}

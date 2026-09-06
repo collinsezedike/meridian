@@ -77,6 +77,7 @@ function renderDepositTab(
       bestVault={VAULT}
       position={undefined}
       hasPosition={false}
+      hasPositionInBestVault={false}
       isDepositing={false}
       onSubmit={onSubmit}
       {...overrides}
@@ -200,15 +201,29 @@ describe("DepositTab", () => {
     expect(screen.getByTestId("deposit-risk-disclosure")).toBeDefined();
   });
 
-  it("does not show the disclosure after a wallet already has a position", () => {
+  it("does not show the disclosure after a wallet already has a position in this vault", () => {
     window.localStorage.removeItem("meridian.deposit-risk-disclosure:GA7NEW");
     renderDepositTab({
       amount: "25",
       walletAddress: "GA7NEW",
       hasPosition: true,
+      hasPositionInBestVault: true,
       position: POSITION,
     });
 
     expect(screen.queryByTestId("deposit-risk-disclosure")).toBeNull();
+  });
+
+  it("still shows the disclosure for a first deposit into this vault even if the wallet holds a position in a different, legacy vault", () => {
+    window.localStorage.removeItem("meridian.deposit-risk-disclosure:GA7NEW");
+    renderDepositTab({
+      amount: "25",
+      walletAddress: "GA7NEW",
+      hasPosition: true,
+      hasPositionInBestVault: false,
+      position: { ...POSITION, vaultId: "legacy-vault" },
+    });
+
+    expect(screen.getByTestId("deposit-risk-disclosure")).toBeDefined();
   });
 });

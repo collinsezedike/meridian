@@ -208,6 +208,7 @@ describe("VaultPanel — deposit", () => {
       data: [{ ...POSITION, vaultId: "blend-usdc-fixed" }],
     });
     render(<VaultPanel />);
+    acknowledgeRiskDisclosureIfPresent();
 
     fireEvent.change(screen.getByPlaceholderText("0.00"), {
       target: { value: "25" },
