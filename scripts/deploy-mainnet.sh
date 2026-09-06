@@ -32,6 +32,12 @@ if ((BASH_VERSINFO[0] < 4)); then
   exit 1
 fi
 
+# These two must match STELLAR_NETWORKS.mainnet in packages/shared/src/constants.ts
+# exactly. Not read from that file at runtime (this script has no Node/TS
+# dependency), so if that entry is ever updated, update this one by hand in
+# the same change: a stale RPC URL fails loudly on the first call, but a
+# stale-but-still-valid passphrase would sign transactions for the wrong
+# network without any error at all.
 RPC_URL="https://soroban-mainnet.stellar.org"
 NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
 
@@ -62,8 +68,10 @@ NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
 # already documented for CONTRACT_ADDRESSES.mainnet.usdc in
 # packages/shared/src/constants.ts.
 declare -A ALLOWED_USDC_IDS=(
-  # Circle mainnet USDC Stellar Asset Contract (issuer: GA5ZSEJYB37J...),
-  # matching packages/shared/src/constants.ts's CONTRACT_ADDRESSES.mainnet.usdc.
+  # Circle mainnet USDC Stellar Asset Contract (issuer: GA5ZSEJYB37J...). Must
+  # match CONTRACT_ADDRESSES.mainnet.usdc in packages/shared/src/constants.ts
+  # exactly; not read from that file at runtime (see the RPC_URL comment
+  # above for why), so if it's ever updated there, update it here too.
   ["CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75"]="Circle mainnet USDC"
 )
 
@@ -144,104 +152,15 @@ if [ "$CONFIRMATION" != "MAINNET" ]; then
   exit 1
 fi
 
-echo "Building contracts..."
-cd "$(dirname "$0")/../packages/contracts"
-stellar contract build
-
-# `stellar contract build` targets wasm32v1-none, not wasm32-unknown-unknown.
-WASM_DIR="target/wasm32v1-none/release"
-WASM_VAULT="$WASM_DIR/meridian_vault.wasm"
-WASM_BLEND_ADAPTER="$WASM_DIR/meridian_blend_adapter.wasm"
-WASM_MUSDC_TOKEN="$WASM_DIR/meridian_musdc_token.wasm"
-
-upload() {
-  stellar contract upload --rpc-url "$RPC_URL" --network-passphrase "$NETWORK_PASSPHRASE" --source "$DEPLOYER" --wasm "$1"
-}
-# The second argument is a salt (pass "" for none, letting the CLI pick one),
-# used by the vault deploy below to land at a precomputed address. The third
-# is the signing/source identity: DEPLOYER for blend-adapter/mUSDC, which
-# need no human auth, or ADMIN_KEY for the vault, whose constructor requires
-# ADMIN's own auth. Any arguments after `--` are forwarded to
-# `stellar contract deploy` as constructor arguments:
-# `deploy "$hash" "" "$DEPLOYER" -- --a 1`.
-deploy() {
-  local hash="$1"
-  local salt="$2"
-  local source="$3"
-  shift 3
-  if [ -n "$salt" ]; then
-    stellar contract deploy --rpc-url "$RPC_URL" --network-passphrase "$NETWORK_PASSPHRASE" --source "$source" --wasm-hash "$hash" --salt "$salt" "$@"
-  else
-    stellar contract deploy --rpc-url "$RPC_URL" --network-passphrase "$NETWORK_PASSPHRASE" --source "$source" --wasm-hash "$hash" "$@"
-  fi
-}
-
-echo "Uploading vault WASM..."
-VAULT_HASH=$(upload "$WASM_VAULT")
-echo "Uploading blend-adapter WASM..."
-BLEND_ADAPTER_HASH=$(upload "$WASM_BLEND_ADAPTER")
-echo "Uploading mUSDC token WASM..."
-MUSDC_TOKEN_HASH=$(upload "$WASM_MUSDC_TOKEN")
-
-# The vault takes admin/usdc/musdc/adapter as constructor arguments (#551,
-# same fix #505/#550 already applied to the adapters/mUSDC), so its state is
-# set inside its own deploying transaction with no intervening ledger for a
-# front-run to land in. But blend-adapter and mUSDC's own constructors need
-# the vault's address, and the vault won't exist to hand out an address
-# until it is deployed. Soroban contract IDs are deterministic from
-# (network, source account, salt) alone, independent of the wasm being
-# deployed, so a random salt lets the vault's address be computed up front,
-# handed to blend-adapter/mUSDC, and then the vault is deployed to that
-# exact same address with a matching --salt. The source account used here
-# must be ADMIN (not DEPLOYER), since it must match whoever actually sources
-# the vault's own deploy below.
-VAULT_SALT=$(openssl rand -hex 32)
-VAULT_ID=$(stellar contract id wasm --rpc-url "$RPC_URL" --network-passphrase "$NETWORK_PASSPHRASE" --source-account "$ADMIN_ADDRESS" --salt "$VAULT_SALT")
-echo "Reserved vault contract ID: $VAULT_ID"
-
-# The adapter's vault/pool/USDC wiring is passed as constructor arguments, so
-# it is set inside this same CreateContract operation. There is deliberately
-# no separate initialize() step: that gap was front-runnable (#505).
-echo "Deploying blend-adapter (vault=$VAULT_ID, pool=$BLEND_POOL_ID, usdc=$USDC_ID)..."
-BLEND_ADAPTER_ID=$(deploy "$BLEND_ADAPTER_HASH" "" "$DEPLOYER" \
-  -- --vault "$VAULT_ID" --pool "$BLEND_POOL_ID" --usdc "$USDC_ID")
-echo "blend-adapter contract ID: $BLEND_ADAPTER_ID"
-
-# mUSDC (#578) is a custom SEP-41 token, not a Stellar Asset Contract: it
-# carries a transfer callback into the vault so cost basis and entry time
-# split correctly between sender and receiver on a transfer, which a bare
-# SAC has no hook to support. Its admin ($VAULT_ID) is passed as a
-# constructor argument for the same reason as blend-adapter's own wiring
-# above: initialize() has no identity to authorize against yet, so a
-# deploy-then-initialize gap would be front-runnable the same way #505's
-# adapter gap was.
-echo "Deploying mUSDC token (admin=$VAULT_ID)..."
-MUSDC_ID=$(deploy "$MUSDC_TOKEN_HASH" "" "$DEPLOYER" \
-  -- --admin "$VAULT_ID" --decimals 7 --name "Meridian USDC" --symbol mUSDC)
-echo "mUSDC contract ID: $MUSDC_ID"
-
-# Deploying with the same salt used to reserve VAULT_ID above lands the
-# vault at that exact address. Its constructor sets admin/usdc/musdc/adapter
-# in this same transaction and requires admin.require_auth(), which Soroban
-# only honors here for the transaction's own source account, so this is
-# sourced by ADMIN_KEY, not DEPLOYER.
-echo "Deploying vault (admin=$ADMIN_ADDRESS, usdc=$USDC_ID, musdc=$MUSDC_ID, adapter=$BLEND_ADAPTER_ID)..."
-ACTUAL_VAULT_ID=$(deploy "$VAULT_HASH" "$VAULT_SALT" "$ADMIN_KEY" \
-  -- --admin "$ADMIN_ADDRESS" --usdc "$USDC_ID" --musdc "$MUSDC_ID" --adapter "$BLEND_ADAPTER_ID")
-
-# blend-adapter and mUSDC above were already deployed with VAULT_ID
-# permanently baked into their constructor state, and neither has an
-# in-place upgrade path. This should never fail (the same source account
-# and salt computed VAULT_ID and are used again here), but if it ever did,
-# silently trusting the precomputed address instead of checking would leave
-# both permanently wired to a vault address that isn't the one actually
-# deployed.
-if [ "$ACTUAL_VAULT_ID" != "$VAULT_ID" ]; then
-  echo "ERROR: vault deployed to $ACTUAL_VAULT_ID, but blend-adapter and mUSDC" >&2
-  echo "were already wired to the precomputed address $VAULT_ID." >&2
-  exit 1
-fi
-echo "vault contract ID: $VAULT_ID"
+# The actual build/upload/deploy sequence is shared with deploy-testnet.sh
+# (#717): see scripts/lib/deploy-vault-stack.sh's own header comment for why.
+# ADMIN_KEY was already hard-required above, so deploy_vault_stack's
+# missing-ADMIN_KEY fallback path (needed for deploy-testnet.sh) is dead
+# code here, not a mainnet-unsafe convenience reintroduced through the back door.
+STELLAR_NETWORK_FLAGS=(--rpc-url "$RPC_URL" --network-passphrase "$NETWORK_PASSPHRASE")
+# shellcheck source=lib/deploy-vault-stack.sh
+source "$(dirname "$0")/lib/deploy-vault-stack.sh"
+deploy_vault_stack
 
 echo ""
 echo "Done. Add these to CONTRACT_ADDRESSES.mainnet / KNOWN_POOLS.mainnet per"
