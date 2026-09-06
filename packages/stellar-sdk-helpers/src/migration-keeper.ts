@@ -127,7 +127,7 @@ function isUsableRate(rate: number | null): rate is number {
 
 /** Returns true when `rate - currentRate >= minImprovementBps`. Extracted
  *  so the fresh-candidate path and the snapshot-preservation path share one
- *  comparison — a future change to threshold semantics (e.g. rounding-aware
+ *  comparison. A future change to threshold semantics (e.g. rounding-aware
  *  or percentage-based) only changes the comparison in one place. */
 function clearsImprovementThreshold(
   rate: number,
@@ -1096,7 +1096,7 @@ export async function runMigrationKeeper(
     // cooldown hasn't elapsed yet, the contract itself rejects the call
     // with MigrationCooldownNotMet during simulation (no fee, nothing
     // sent), which falls through to the existing failure handling below
-    // and is retried on a later run — comfortably fine given
+    // and is retried on a later run. That is comfortably fine given
     // MIN_LEDGER_GAP is ~1 minute and this keeper runs far less often
     // than that.
     //

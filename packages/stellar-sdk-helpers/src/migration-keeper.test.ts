@@ -1476,7 +1476,7 @@ describe("runMigrationKeeper", () => {
 
   // #699: When the snapshotted adapter's rate has genuinely decayed below
   // the threshold, the keeper should let the snapshot lapse and pick the
-  // fresh best candidate instead — this is the "only let the snapshot
+  // fresh best candidate instead. This is the "only let the snapshot
   // lapse once the snapshotted adapter's rate genuinely stops clearing
   // the threshold" half of the fix.
   it("replaces a stale migration snapshot whose adapter no longer clears the threshold (#699)", async () => {
