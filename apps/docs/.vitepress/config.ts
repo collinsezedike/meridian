@@ -56,6 +56,10 @@ export default defineConfig({
             text: "Migration Keeper",
             link: "/operations/migration-keeper",
           },
+          {
+            text: "Admin-Event Alert Keeper",
+            link: "/operations/alert-keeper",
+          },
         ],
       },
     ],
