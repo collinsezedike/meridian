@@ -150,17 +150,11 @@ vi.mock("@meridian/stellar-sdk-helpers", () => ({
   })),
 }));
 
-import depositHandler from "../v1/tx/deposit";
-import withdrawHandler from "../v1/tx/withdraw";
-import trustlineHandler from "../v1/tx/add-trustline";
-import submitHandler from "../v1/tx/submit";
+import txHandler from "../v1/tx/[action]";
 import vaultsHandler from "../v1/vaults/index";
 import positionsHandler from "../v1/positions/[publicKey]";
-import keeperHandler from "../v1/keepers/accrue";
-import rebalanceHandler from "../v1/keepers/rebalance";
-import keeperHealthHandler from "../v1/keepers/health";
-import alertHandler from "../v1/keepers/alert";
-import vaultStateHandler from "../v1/admin/vault-state";
+import keepersHandler from "../v1/keepers/[action]";
+import adminHandler from "../v1/admin/[resource]";
 import {
   checkRateLimit,
   resetRateLimitForTesting,
@@ -226,8 +220,9 @@ describe("POST /api/v1/tx/deposit", () => {
     );
 
     const res = makeRes();
-    await depositHandler(
+    await txHandler(
       fakeReq({
+        query: { action: "deposit" },
         method: "POST",
         body: {
           walletAddress: PUBKEY,
@@ -246,14 +241,25 @@ describe("POST /api/v1/tx/deposit", () => {
 
   it("rejects non-POST methods with 405", async () => {
     const res = makeRes();
-    await depositHandler(fakeReq({ method: "GET", body: {} }), res);
+    await txHandler(
+      fakeReq({
+        query: { action: "deposit" },
+        method: "GET",
+        body: {},
+      }),
+      res
+    );
     expect(res.statusCode).toBe(405);
   });
 
   it("returns 400 listing the missing fields", async () => {
     const res = makeRes();
-    await depositHandler(
-      fakeReq({ method: "POST", body: { walletAddress: PUBKEY } }),
+    await txHandler(
+      fakeReq({
+        query: { action: "deposit" },
+        method: "POST",
+        body: { walletAddress: PUBKEY },
+      }),
       res
     );
     expect(res.statusCode).toBe(400);
@@ -265,8 +271,9 @@ describe("POST /api/v1/tx/deposit", () => {
 
   it("rejects a deposit request missing risk acknowledgement", async () => {
     const res = makeRes();
-    await depositHandler(
+    await txHandler(
       fakeReq({
+        query: { action: "deposit" },
         method: "POST",
         body: {
           walletAddress: PUBKEY,
@@ -282,8 +289,9 @@ describe("POST /api/v1/tx/deposit", () => {
 
   it("builds the deposit transaction and returns the XDR", async () => {
     const res = makeRes();
-    await depositHandler(
+    await txHandler(
       fakeReq({
+        query: { action: "deposit" },
         method: "POST",
         body: {
           walletAddress: PUBKEY,
@@ -301,8 +309,9 @@ describe("POST /api/v1/tx/deposit", () => {
 
   it("accepts and forwards min_shares_out in deposit request", async () => {
     const res = makeRes();
-    await depositHandler(
+    await txHandler(
       fakeReq({
+        query: { action: "deposit" },
         method: "POST",
         body: {
           walletAddress: PUBKEY,
@@ -329,8 +338,9 @@ describe("POST /api/v1/tx/deposit", () => {
       new Error("USDC trustline missing")
     );
     const res = makeRes();
-    await depositHandler(
+    await txHandler(
       fakeReq({
+        query: { action: "deposit" },
         method: "POST",
         body: {
           walletAddress: PUBKEY,
@@ -349,8 +359,9 @@ describe("POST /api/v1/tx/deposit", () => {
 describe("POST /api/v1/tx/withdraw", () => {
   it("returns 400 when shares is missing", async () => {
     const res = makeRes();
-    await withdrawHandler(
+    await txHandler(
       fakeReq({
+        query: { action: "withdraw" },
         method: "POST",
         body: { walletAddress: PUBKEY, vaultId: "v" },
       }),
@@ -364,8 +375,9 @@ describe("POST /api/v1/tx/withdraw", () => {
 
   it("builds the withdraw transaction", async () => {
     const res = makeRes();
-    await withdrawHandler(
+    await txHandler(
       fakeReq({
+        query: { action: "withdraw" },
         method: "POST",
         body: {
           walletAddress: PUBKEY,
@@ -380,8 +392,9 @@ describe("POST /api/v1/tx/withdraw", () => {
 
   it("accepts and forwards min_usdc_out in withdraw request", async () => {
     const res = makeRes();
-    await withdrawHandler(
+    await txHandler(
       fakeReq({
+        query: { action: "withdraw" },
         method: "POST",
         body: {
           walletAddress: PUBKEY,
@@ -406,14 +419,25 @@ describe("POST /api/v1/tx/withdraw", () => {
 describe("POST /api/v1/tx/add-trustline", () => {
   it("returns 400 without a wallet address", async () => {
     const res = makeRes();
-    await trustlineHandler(fakeReq({ method: "POST", body: {} }), res);
+    await txHandler(
+      fakeReq({
+        query: { action: "add-trustline" },
+        method: "POST",
+        body: {},
+      }),
+      res
+    );
     expect(res.statusCode).toBe(400);
   });
 
   it("returns the trustline XDR", async () => {
     const res = makeRes();
-    await trustlineHandler(
-      fakeReq({ method: "POST", body: { walletAddress: PUBKEY } }),
+    await txHandler(
+      fakeReq({
+        query: { action: "add-trustline" },
+        method: "POST",
+        body: { walletAddress: PUBKEY },
+      }),
       res
     );
     expect(res.body).toEqual({ xdr: "TRUST_XDR" });
@@ -423,14 +447,25 @@ describe("POST /api/v1/tx/add-trustline", () => {
 describe("POST /api/v1/tx/submit", () => {
   it("returns 400 without an xdr", async () => {
     const res = makeRes();
-    await submitHandler(fakeReq({ method: "POST", body: {} }), res);
+    await txHandler(
+      fakeReq({
+        query: { action: "submit" },
+        method: "POST",
+        body: {},
+      }),
+      res
+    );
     expect(res.statusCode).toBe(400);
   });
 
   it("submits and returns the tx hash", async () => {
     const res = makeRes();
-    await submitHandler(
-      fakeReq({ method: "POST", body: { xdr: "SIGNED" } }),
+    await txHandler(
+      fakeReq({
+        query: { action: "submit" },
+        method: "POST",
+        body: { xdr: "SIGNED" },
+      }),
       res
     );
     expect(res.body).toEqual({ hash: "HASH" });
@@ -497,7 +532,14 @@ describe("GET /api/v1/positions/:publicKey", () => {
 describe("GET /api/v1/keepers/accrue", () => {
   it("rejects requests without the cron bearer token", async () => {
     const res = makeRes();
-    await keeperHandler(fakeReq({ method: "GET", headers: {} }), res);
+    await keepersHandler(
+      fakeReq({
+        query: { action: "accrue" },
+        method: "GET",
+        headers: {},
+      }),
+      res
+    );
 
     expect(res.statusCode).toBe(401);
     expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
@@ -513,8 +555,9 @@ describe("GET /api/v1/keepers/accrue", () => {
     let lastRes = makeRes();
     for (let i = 0; i < 101; i++) {
       lastRes = makeRes();
-      await keeperHandler(
+      await keepersHandler(
         fakeReq({
+          query: { action: "accrue" },
           method: "GET",
           headers: { "x-forwarded-for": ip },
         }),
@@ -528,8 +571,9 @@ describe("GET /api/v1/keepers/accrue", () => {
 
   it("runs the accrual keeper for authorized cron calls", async () => {
     const res = makeRes();
-    await keeperHandler(
+    await keepersHandler(
       fakeReq({
+        query: { action: "accrue" },
         method: "GET",
         headers: { authorization: "Bearer cron-secret" },
       }),
@@ -569,8 +613,9 @@ describe("GET /api/v1/keepers/accrue", () => {
     });
 
     const res = makeRes();
-    await keeperHandler(
+    await keepersHandler(
       fakeReq({
+        query: { action: "accrue" },
         method: "GET",
         headers: { authorization: "Bearer cron-secret" },
       }),
@@ -590,8 +635,9 @@ describe("GET /api/v1/keepers/accrue", () => {
     );
 
     const res = makeRes();
-    await keeperHandler(
+    await keepersHandler(
       fakeReq({
+        query: { action: "accrue" },
         method: "GET",
         headers: { authorization: "Bearer cron-secret" },
       }),
@@ -627,7 +673,14 @@ describe("GET /api/v1/keepers/accrue", () => {
       process.env.VERCEL_ENV = "production";
 
       const res = makeRes();
-      await keeperHandler(fakeReq({ method: "GET", headers: {} }), res);
+      await keepersHandler(
+        fakeReq({
+          query: { action: "accrue" },
+          method: "GET",
+          headers: {},
+        }),
+        res
+      );
 
       expect(res.statusCode).toBe(503);
       expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
@@ -638,7 +691,14 @@ describe("GET /api/v1/keepers/accrue", () => {
       delete process.env.NODE_ENV;
 
       const res = makeRes();
-      await keeperHandler(fakeReq({ method: "GET", headers: {} }), res);
+      await keepersHandler(
+        fakeReq({
+          query: { action: "accrue" },
+          method: "GET",
+          headers: {},
+        }),
+        res
+      );
 
       expect(res.statusCode).toBe(200);
       expect(runBlendAccrualKeeper).toHaveBeenCalledOnce();
@@ -653,7 +713,14 @@ describe("GET /api/v1/keepers/accrue", () => {
       process.env.VERCEL_ENV = "preview";
 
       const res = makeRes();
-      await keeperHandler(fakeReq({ method: "GET", headers: {} }), res);
+      await keepersHandler(
+        fakeReq({
+          query: { action: "accrue" },
+          method: "GET",
+          headers: {},
+        }),
+        res
+      );
 
       expect(res.statusCode).toBe(503);
       expect(runBlendAccrualKeeper).not.toHaveBeenCalled();
@@ -664,7 +731,10 @@ describe("GET /api/v1/keepers/accrue", () => {
 describe("GET /api/v1/keepers/alert", () => {
   it("rejects requests without the cron bearer token", async () => {
     const res = makeRes();
-    await alertHandler(fakeReq({ method: "GET", headers: {} }), res);
+    await keepersHandler(
+      fakeReq({ query: { action: "alert" }, method: "GET", headers: {} }),
+      res
+    );
 
     expect(res.statusCode).toBe(401);
     expect(runAlertKeeper).not.toHaveBeenCalled();
@@ -672,8 +742,9 @@ describe("GET /api/v1/keepers/alert", () => {
 
   it("runs the alert keeper for authorized cron calls", async () => {
     const res = makeRes();
-    await alertHandler(
+    await keepersHandler(
       fakeReq({
+        query: { action: "alert" },
         method: "GET",
         headers: { authorization: "Bearer cron-secret" },
       }),
@@ -704,8 +775,9 @@ describe("GET /api/v1/keepers/alert", () => {
     });
 
     const res = makeRes();
-    await alertHandler(
+    await keepersHandler(
       fakeReq({
+        query: { action: "alert" },
         method: "GET",
         headers: { authorization: "Bearer cron-secret" },
       }),
@@ -724,8 +796,9 @@ describe("GET /api/v1/keepers/alert", () => {
     );
 
     const res = makeRes();
-    await alertHandler(
+    await keepersHandler(
       fakeReq({
+        query: { action: "alert" },
         method: "GET",
         headers: { authorization: "Bearer cron-secret" },
       }),
@@ -741,8 +814,9 @@ describe("GET /api/v1/keepers/rebalance", () => {
   it("reports disabled instead of a noisy 500 when the migration secret key isn't configured", async () => {
     delete process.env.MERIDIAN_MIGRATION_KEEPER_SECRET_KEY;
     const res = makeRes();
-    await rebalanceHandler(
+    await keepersHandler(
       fakeReq({
+        query: { action: "rebalance" },
         method: "GET",
         headers: { authorization: "Bearer cron-secret" },
       }),
@@ -756,7 +830,14 @@ describe("GET /api/v1/keepers/rebalance", () => {
 
   it("rejects requests without the cron bearer token", async () => {
     const res = makeRes();
-    await rebalanceHandler(fakeReq({ method: "GET", headers: {} }), res);
+    await keepersHandler(
+      fakeReq({
+        query: { action: "rebalance" },
+        method: "GET",
+        headers: {},
+      }),
+      res
+    );
 
     expect(res.statusCode).toBe(401);
     expect(runMigrationKeeper).not.toHaveBeenCalled();
@@ -770,8 +851,9 @@ describe("GET /api/v1/keepers/rebalance", () => {
     let lastRes = makeRes();
     for (let i = 0; i < 101; i++) {
       lastRes = makeRes();
-      await rebalanceHandler(
+      await keepersHandler(
         fakeReq({
+          query: { action: "rebalance" },
           method: "GET",
           headers: { "x-forwarded-for": ip },
         }),
@@ -785,8 +867,9 @@ describe("GET /api/v1/keepers/rebalance", () => {
 
   it("runs the migration keeper for authorized cron calls", async () => {
     const res = makeRes();
-    await rebalanceHandler(
+    await keepersHandler(
       fakeReq({
+        query: { action: "rebalance" },
         method: "GET",
         headers: { authorization: "Bearer cron-secret" },
       }),
@@ -829,8 +912,9 @@ describe("GET /api/v1/keepers/rebalance", () => {
     });
 
     const res = makeRes();
-    await rebalanceHandler(
+    await keepersHandler(
       fakeReq({
+        query: { action: "rebalance" },
         method: "GET",
         headers: { authorization: "Bearer cron-secret" },
       }),
@@ -850,8 +934,9 @@ describe("GET /api/v1/keepers/rebalance", () => {
     );
 
     const res = makeRes();
-    await rebalanceHandler(
+    await keepersHandler(
       fakeReq({
+        query: { action: "rebalance" },
         method: "GET",
         headers: { authorization: "Bearer cron-secret" },
       }),
@@ -866,7 +951,14 @@ describe("GET /api/v1/keepers/rebalance", () => {
 describe("GET /api/v1/keepers/health", () => {
   it("is public — no cron bearer token required", async () => {
     const res = makeRes();
-    await keeperHealthHandler(fakeReq({ method: "GET", headers: {} }), res);
+    await keepersHandler(
+      fakeReq({
+        query: { action: "health" },
+        method: "GET",
+        headers: {},
+      }),
+      res
+    );
 
     expect(res.statusCode).toBe(200);
   });
@@ -878,7 +970,14 @@ describe("GET /api/v1/keepers/health", () => {
     vi.mocked(isKeeperHealthy).mockImplementation((id) => id === "accrual");
 
     const res = makeRes();
-    await keeperHealthHandler(fakeReq({ method: "GET", headers: {} }), res);
+    await keepersHandler(
+      fakeReq({
+        query: { action: "health" },
+        method: "GET",
+        headers: {},
+      }),
+      res
+    );
 
     expect(res.statusCode).toBe(200);
     const body = res.body as { keepers: Array<Record<string, unknown>> };
@@ -896,14 +995,28 @@ describe("GET /api/v1/keepers/health", () => {
 describe("GET /api/v1/admin/vault-state", () => {
   it("is public — no cron bearer token required", async () => {
     const res = makeRes();
-    await vaultStateHandler(fakeReq({ method: "GET", headers: {} }), res);
+    await adminHandler(
+      fakeReq({
+        query: { resource: "vault-state" },
+        method: "GET",
+        headers: {},
+      }),
+      res
+    );
 
     expect(res.statusCode).toBe(200);
   });
 
   it("returns the coordinator vault's on-chain state", async () => {
     const res = makeRes();
-    await vaultStateHandler(fakeReq({ method: "GET", headers: {} }), res);
+    await adminHandler(
+      fakeReq({
+        query: { resource: "vault-state" },
+        method: "GET",
+        headers: {},
+      }),
+      res
+    );
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({
@@ -921,7 +1034,14 @@ describe("GET /api/v1/admin/vault-state", () => {
     );
 
     const res = makeRes();
-    await vaultStateHandler(fakeReq({ method: "GET", headers: {} }), res);
+    await adminHandler(
+      fakeReq({
+        query: { resource: "vault-state" },
+        method: "GET",
+        headers: {},
+      }),
+      res
+    );
 
     expect(res.statusCode).toBe(503);
   });

@@ -28,7 +28,7 @@ jobs:
     # continue-on-error defaults to false; stated here so the intent is clear
     # to anyone reading this file.
     continue-on-error: false
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6.0.10
@@ -43,12 +43,38 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/contracts
+      - name: Resolve latest Stellar CLI version
+        # Cache key below is pinned to this version, not to time or branch, so
+        # a new stellar-cli release always forces a fresh install and rebuild
+        # on the next run. This is what actually catches toolchain drift, not
+        # skipping the cache entirely; a cache hit for an unchanged version
+        # restores the exact same bytes a from-scratch build would produce.
+        id: stellar-cli-version
+        run: |
+          # crates.io's API rejects requests with no User-Agent (403), which
+          # silently empties VERSION inside this command substitution rather
+          # than failing the step - the check below turns that into a loud
+          # failure instead of a permanently-broken cache key.
+          VERSION=$(curl -sSf -H "User-Agent: meridian-ci (github.com/drydocs/meridian)" https://crates.io/api/v1/crates/stellar-cli | jq -r '.crate.max_stable_version')
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error::Failed to resolve stellar-cli version from crates.io"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Cache Stellar CLI binary
+        id: cache-stellar-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/stellar
+          key: stellar-cli-${{ runner.os }}-${{ steps.stellar-cli-version.outputs.version }}
       - name: Install Stellar CLI build dependencies
         # stellar-cli pulls in libdbus-sys and hidapi (hardware wallet
         # support) transitively, which need the dbus-1 and libudev system
         # libraries at build time; not preinstalled on ubuntu-latest runners.
+        if: steps.cache-stellar-cli.outputs.cache-hit != 'true'
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
       - name: Install Stellar CLI
+        if: steps.cache-stellar-cli.outputs.cache-hit != 'true'
         run: cargo install --locked stellar-cli
       - name: Verify contract addresses match on-chain bytecode
         # The script retries transient Soroban RPC failures internally

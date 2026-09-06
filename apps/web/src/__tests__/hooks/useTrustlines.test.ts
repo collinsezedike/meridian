@@ -82,6 +82,10 @@ function missingMusdcTrustlineHorizonResponse() {
   );
 }
 
+function missingUsdcTrustlineHorizonResponse() {
+  return new Response(JSON.stringify({ balances: [] }), { status: 200 });
+}
+
 beforeEach(() => {
   useWalletStore.setState({
     publicKey: KEY,
@@ -106,10 +110,19 @@ describe("useTrustlines", () => {
     expect(result).toBe(true);
   });
 
-  it("reports trustlines missing when mUSDC is absent", async () => {
+  it("reports trustlines present even when mUSDC's balance is absent (SEP-41 contract token, no classic trustline)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => missingMusdcTrustlineHorizonResponse())
+    );
+    const result = await hasRequiredTrustlines(KEY, "testnet");
+    expect(result).toBe(true);
+  });
+
+  it("reports trustlines missing when USDC is absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => missingUsdcTrustlineHorizonResponse())
     );
     const result = await hasRequiredTrustlines(KEY, "testnet");
     expect(result).toBe(false);
