@@ -999,16 +999,17 @@ export async function runMigrationKeeper(
     // Read the on-chain migration snapshot before findBestCandidate so the
     // snapshotted adapter can be evaluated alongside fresh candidates in
     // the same concurrent batch rather than in a separate post-hoc check
-    // (#699). The snapshotted adapter is passed as a "pinned" candidate:
-    // findBestCandidate evaluates it in the same Promise.allSettled,
-    // reusing the rate fetch and threshold comparison, and when the pinned
-    // candidate clears the threshold it wins unconditionally — completing
-    // the existing migration instead of resetting the ledger-gap cooldown.
+    // (#699). Only read when there are actual candidate adapters to
+    // evaluate — in steady state most vaults have no migration candidate,
+    // and the snapshot RPC call would be wasted (#705 review).
+    const hasCandidateAdapters = Object.entries(config.candidateAdapters).some(
+      ([, id]) => id !== vault.currentAdapterId
+    );
     let hasMatchingSnapshot = deps.submitMigration != null;
     let snapshotReadFailed = false;
     let pinned: PinnedCandidate | undefined;
 
-    if (!hasMatchingSnapshot) {
+    if (!hasMatchingSnapshot && hasCandidateAdapters) {
       try {
         const snapshot = (await simulateView(
           server as never,

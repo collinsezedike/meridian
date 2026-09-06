@@ -1688,6 +1688,65 @@ describe("runMigrationKeeper", () => {
     ]);
   });
 
+  // Coverage for the pinned-candidate rejection branch (#705 review):
+  // when the pinned adapter's rate fetch rejects, a CandidateEvaluationError
+  // must surface even if a non-pinned candidate would succeed.
+  it("surfaces CandidateEvaluationError when pinned candidate rejects, non-pinned winner does not slip through (#705)", async () => {
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
+
+    const configWithTwoCandidates: MigrationKeeperConfig = {
+      ...CONFIG,
+      candidateAdapters: {
+        defindex: "CDEFINDEXADAPTER",
+        blendv2: "CBLENDV2ADAPTER",
+      },
+    };
+
+    // Snapshot pins blendv2 as the in-progress migration target.
+    mockLiveAdapterAndActiveSnapshot(
+      DISCOVERED_VAULT.currentAdapterId,
+      "CBLENDV2ADAPTER"
+    );
+
+    // The pinned adapter (blendv2) throws; defindex would succeed
+    // but must NOT be selected because the pinned failure must block.
+    const rateSource = vi.fn(async ({ adapterId }: { adapterId: string }) => {
+      if (adapterId === "CBLENDADAPTER") return 500;
+      if (adapterId === "CBLENDV2ADAPTER")
+        throw new Error("RPC error: blendv2 rate fetch failed");
+      if (adapterId === "CDEFINDEXADAPTER") return 700; // 200 bps improvement
+      return null;
+    });
+
+    const result = await runMigrationKeeper(configWithTwoCandidates, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CSOMEPOOL",
+      sleep: vi.fn(),
+    });
+
+    // No migration should have been submitted: the pinned failure
+    // must not allow a non-pinned candidate to win.
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(result.migrations).toEqual([]);
+
+    // The failure must reference the pinned adapter, not the
+    // non-pinned candidate that would have won.
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]).toMatchObject({
+      vaultId: "meridian-usdc",
+      adapterId: "CBLENDV2ADAPTER",
+      protocol: "blendv2",
+      stage: "evaluate",
+    });
+  });
+
   it("skips submission when the deadline is reached during evaluation, not just before it started", async () => {
     // The deadline check at the top of the loop only catches a budget
     // that's already gone before this vault starts; evaluation itself can
