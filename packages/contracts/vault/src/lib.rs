@@ -271,6 +271,11 @@ impl MeridianVault {
             .persistent()
             .set(&principal_key, &(prev_principal + amount));
 
+        env.events().publish(
+            (symbol_short!("deposit"),),
+            (caller, amount, shares_to_mint),
+        );
+
         Ok(shares_to_mint)
     }
 
@@ -385,6 +390,9 @@ impl MeridianVault {
         if remaining == 0 {
             clear_position_records(&env, &caller);
         }
+
+        env.events()
+            .publish((symbol_short!("withdraw"),), (caller, shares, usdc_out));
 
         Ok(usdc_out)
     }
@@ -990,7 +998,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         contract, contractimpl, contracttype, panic_with_error, symbol_short,
-        testutils::{Address as _, Ledger as _},
+        testutils::{Address as _, Events, Ledger as _},
         token::{StellarAssetClient, TokenClient},
         Address, Env, Symbol,
     };
@@ -3193,5 +3201,53 @@ mod tests {
         let exact_floor = amount;
         let usdc_out = vault.withdraw(&user, &shares, &exact_floor);
         assert_eq!(usdc_out, amount);
+    }
+
+    /// Finds the single-topic event published under `topic` from `address`.
+    fn find_event(
+        env: &Env,
+        address: &Address,
+        topic: Symbol,
+    ) -> Option<(
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> {
+        env.events().all().into_iter().find(|e| {
+            e.0 == *address
+                && e.1.len() == 1
+                && soroban_sdk::TryIntoVal::<_, Symbol>::try_into_val(&e.1.get(0).unwrap(), env)
+                    .map(|t: Symbol| t == topic)
+                    .unwrap_or(false)
+        })
+    }
+
+    #[test]
+    fn deposit_publishes_event_with_caller_amount_and_shares() {
+        let (env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
+        let amount = 100_0000000_i128;
+
+        let shares = vault.deposit(&user, &amount, &0_i128);
+
+        let event = find_event(&env, &vault.address, symbol_short!("deposit"))
+            .expect("deposit event not found");
+        let data: (Address, i128, i128) =
+            soroban_sdk::TryIntoVal::try_into_val(&event.2, &env).unwrap();
+        assert_eq!(data, (user, amount, shares));
+    }
+
+    #[test]
+    fn withdraw_publishes_event_with_caller_shares_and_usdc_out() {
+        let (env, _admin, user, _usdc, _musdc, _adapter, vault) = setup();
+        let amount = 100_0000000_i128;
+        let shares = vault.deposit(&user, &amount, &0_i128);
+
+        let usdc_out = vault.withdraw(&user, &shares, &0_i128);
+
+        let event = find_event(&env, &vault.address, symbol_short!("withdraw"))
+            .expect("withdraw event not found");
+        let data: (Address, i128, i128) =
+            soroban_sdk::TryIntoVal::try_into_val(&event.2, &env).unwrap();
+        assert_eq!(data, (user, shares, usdc_out));
     }
 }

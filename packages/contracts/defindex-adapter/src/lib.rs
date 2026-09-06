@@ -200,10 +200,15 @@ impl MeridianDefindexAdapter {
             panic_with_error!(&env, ContractError::Overflow);
         }
 
-        match shares_after.checked_sub(shares_before) {
+        let delta = match shares_after.checked_sub(shares_before) {
             Some(delta) => delta,
             None => panic_with_error!(&env, ContractError::Overflow),
-        }
+        };
+
+        env.events()
+            .publish((symbol_short!("deposit"),), (amount, delta));
+
+        delta
     }
 
     /// Called by the vault to redeem `shares` dfTokens from the DeFindex vault.
@@ -243,6 +248,9 @@ impl MeridianDefindexAdapter {
         if usdc_out > 0 {
             TokenClient::new(&env, &usdc).transfer(&adapter, &recipient, &usdc_out);
         }
+
+        env.events()
+            .publish((symbol_short!("withdraw"),), (shares, recipient, usdc_out));
 
         usdc_out
     }
@@ -308,7 +316,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         contract, contractimpl, symbol_short,
-        testutils::Address as _,
+        testutils::{Address as _, Events},
         token::{StellarAssetClient, TokenClient},
         Address, Env,
     };
@@ -807,5 +815,56 @@ mod tests {
         let _ = ContractError::AlreadyInitialized;
         let _ = ContractError::Overflow;
         let _ = ContractError::NotInitialized;
+    }
+
+    /// Finds the single-topic event published under `topic` from `address`.
+    fn find_event(
+        env: &Env,
+        address: &Address,
+        topic: Symbol,
+    ) -> Option<(
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> {
+        env.events().all().into_iter().find(|e| {
+            e.0 == *address
+                && e.1.len() == 1
+                && soroban_sdk::TryIntoVal::<_, Symbol>::try_into_val(&e.1.get(0).unwrap(), env)
+                    .map(|t: Symbol| t == topic)
+                    .unwrap_or(false)
+        })
+    }
+
+    #[test]
+    fn deposit_publishes_event_with_amount_and_credited_shares() {
+        let (env, vault, usdc_id, adapter, _dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        let event = find_event(&env, &adapter.address, symbol_short!("deposit"))
+            .expect("deposit event not found");
+        let data: (i128, i128) = soroban_sdk::TryIntoVal::try_into_val(&event.2, &env).unwrap();
+        assert_eq!(data, (amount, shares));
+    }
+
+    #[test]
+    fn withdraw_publishes_event_with_shares_recipient_and_usdc_out() {
+        let (env, vault, usdc_id, adapter, _dfx) = setup();
+        let amount = 100_0000000_i128;
+
+        TokenClient::new(&env, &usdc_id).transfer(&vault, &adapter.address, &amount);
+        let shares = adapter.deposit(&amount);
+
+        let recipient = Address::generate(&env);
+        let usdc_out = adapter.withdraw(&shares, &recipient);
+
+        let event = find_event(&env, &adapter.address, symbol_short!("withdraw"))
+            .expect("withdraw event not found");
+        let data: (i128, Address, i128) =
+            soroban_sdk::TryIntoVal::try_into_val(&event.2, &env).unwrap();
+        assert_eq!(data, (shares, recipient, usdc_out));
     }
 }
