@@ -71,9 +71,13 @@ const FUNCTION_BUDGET_MS = 50_000;
 // slippage tolerance would accept a migration that loses an arbitrary
 // fraction of the vault's position to a rounding error, a stale rate read,
 // or a misbehaving adapter. 100 bps (1%) is a deliberately tight default;
-// operators can widen it via config, but the loader rejects 10_000.
+// operators can widen it via config, but the loader rejects anything above
+// the contract's own hard ceiling (MAX_ADMIN_SLIPPAGE_BPS in
+// packages/contracts/vault/src/lib.rs, #557): a value the contract itself
+// would reject with InvalidSlippageBps is caught at config time instead of
+// permanently breaking every subsequent migrate_adapter submission.
 const DEFAULT_MAX_SLIPPAGE_BPS = 100;
-const MAX_ALLOWED_SLIPPAGE_BPS = 9_999;
+const MAX_ALLOWED_SLIPPAGE_BPS = 500;
 
 // A minimum improvement floor avoids churning between two protocols whose
 // rates are within noise of each other: migrate_adapter costs a real
@@ -321,7 +325,7 @@ export function loadMigrationKeeperConfig(
   );
   if (maxSlippageBps > MAX_ALLOWED_SLIPPAGE_BPS) {
     throw new Error(
-      `MERIDIAN_MIGRATION_MAX_SLIPPAGE_BPS must be at most ${MAX_ALLOWED_SLIPPAGE_BPS} (10_000 is unlimited slippage and is never allowed in automated operation)`
+      `MERIDIAN_MIGRATION_MAX_SLIPPAGE_BPS must be at most ${MAX_ALLOWED_SLIPPAGE_BPS} (the contract's own MAX_ADMIN_SLIPPAGE_BPS ceiling; anything above it would make every migrate_adapter submission fail on-chain with InvalidSlippageBps)`
     );
   }
 
