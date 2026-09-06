@@ -271,8 +271,9 @@ describe("POST /api/v1/tx/deposit", () => {
 
   it("rejects a deposit request missing risk acknowledgement", async () => {
     const res = makeRes();
-    await depositHandler(
+    await txHandler(
       fakeReq({
+        query: { action: "deposit" },
         method: "POST",
         body: {
           walletAddress: PUBKEY,

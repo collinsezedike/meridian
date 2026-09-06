@@ -246,8 +246,8 @@ The previous vault predated four contract-touching PRs merged since the last cut
 
 **Old vault (superseded):**
 
-| Field               | Value                                                       |
-| ------------------- | ------------------------------------------------------------ |
+| Field               | Value                                                      |
+| ------------------- | ---------------------------------------------------------- |
 | Vault contract      | `CBOQTI3C7UHTBRHSF3AJEQYXDINJ354XRWIZKSEV6PFIEUSJF2YWZPME` |
 | Blend adapter       | `CCXB5BRVBFNPAN72PRODGFWKGGDHEHJMHJLC7G2OEQFF4PZNNO3C4XBH` |
 | mUSDC (share token) | `CAJASVPQ365EYUQ62Z54SRSZWJ4C7WJNDYXIYVWKLSRWJTTWET35JPYE` |
@@ -257,8 +257,8 @@ This contract is not deleted or disabled: Soroban has no such operation, it keep
 
 **New vault (current):**
 
-| Field               | Value                                                       |
-| ------------------- | ------------------------------------------------------------ |
+| Field               | Value                                                      |
+| ------------------- | ---------------------------------------------------------- |
 | Vault contract      | `CBNXROTWUVHNRRI2LRKHEXJXIWPJTOZOMMMMX7KNQEJAY5ZOGSM7LYZ7` |
 | Blend adapter       | `CB2GNYVHJ6O2QX2ZEP5EIHRBC26W6VE3APVPU3PD6JVQR5KQIVBOLALC` |
 | mUSDC (share token) | `CDJ6A3ISCVLZRHVUQC6SWVZDFMMXSK5I6XUUUO3FKJWCQSMXKOZK3YIO` |
