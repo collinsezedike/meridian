@@ -1688,10 +1688,45 @@ describe("runMigrationKeeper", () => {
     ]);
   });
 
-  // Coverage for the pinned-candidate rejection branch (#705 review):
-  // when the pinned adapter's rate fetch rejects, a CandidateEvaluationError
-  // must surface even if a non-pinned candidate would succeed.
-  it("surfaces CandidateEvaluationError when pinned candidate rejects, non-pinned winner does not slip through (#705)", async () => {
+  it("does not read the migration snapshot when no candidate clears the threshold (#705)", async () => {
+    const server = makeServer();
+    stellarMocks.getRpcServer.mockReturnValue(server);
+    const rateSource = vi.fn(async ({ adapterId }: { adapterId: string }) => {
+      if (adapterId === "CBLENDADAPTER") return 500;
+      return 510; // 10 bps is below CONFIG.minImprovementBps (50).
+    });
+
+    const result = await runMigrationKeeper(CONFIG, {
+      logger: logger(),
+      discoverVaults: async () => ({
+        vaults: [DISCOVERED_VAULT],
+        failures: [],
+      }),
+      rateSource,
+      resolveCandidatePool: async () => "CDEFINDEXPOOL",
+      sleep: vi.fn(),
+    });
+
+    expect(result.skipped).toEqual([
+      {
+        vaultId: "meridian-usdc",
+        reason: "no candidate clears the improvement threshold",
+      },
+    ]);
+    expect(server.sendTransaction).not.toHaveBeenCalled();
+    expect(stellarMocks.simulateView).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      "get_migration_snapshot"
+    );
+  });
+
+  // A failed candidate must not discard a healthy candidate that already
+  // succeeded in the same batch. The active snapshot's adapter failed, so
+  // it cannot qualify for preservation; the healthy fresh candidate is
+  // allowed to proceed instead of being blocked indefinitely.
+  it("does not let a failed pinned snapshot block a healthy non-pinned candidate (#705)", async () => {
     const server = makeServer();
     stellarMocks.getRpcServer.mockReturnValue(server);
     stellarMocks.waitForTransaction.mockResolvedValue({ ledger: 321 });
@@ -1710,8 +1745,8 @@ describe("runMigrationKeeper", () => {
       "CBLENDV2ADAPTER"
     );
 
-    // The pinned adapter (blendv2) throws; defindex would succeed
-    // but must NOT be selected because the pinned failure must block.
+    // The snapshotted adapter (blendv2) throws; defindex succeeds and
+    // remains a valid migration because its rate was already obtained.
     const rateSource = vi.fn(async ({ adapterId }: { adapterId: string }) => {
       if (adapterId === "CBLENDADAPTER") return 500;
       if (adapterId === "CBLENDV2ADAPTER")
@@ -1731,20 +1766,16 @@ describe("runMigrationKeeper", () => {
       sleep: vi.fn(),
     });
 
-    // No migration should have been submitted: the pinned failure
-    // must not allow a non-pinned candidate to win.
-    expect(server.sendTransaction).not.toHaveBeenCalled();
+    // begin_migration should be submitted for the healthy candidate.
+    expect(server.sendTransaction).toHaveBeenCalledOnce();
     expect(result.migrations).toEqual([]);
-
-    // The failure must reference the pinned adapter, not the
-    // non-pinned candidate that would have won.
-    expect(result.failures).toHaveLength(1);
-    expect(result.failures[0]).toMatchObject({
-      vaultId: "meridian-usdc",
-      adapterId: "CBLENDV2ADAPTER",
-      protocol: "blendv2",
-      stage: "evaluate",
-    });
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toMatchObject([
+      {
+        vaultId: "meridian-usdc",
+        reason: expect.stringContaining("begin_migration submitted"),
+      },
+    ]);
   });
 
   it("skips submission when the deadline is reached during evaluation, not just before it started", async () => {

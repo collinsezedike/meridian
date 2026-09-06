@@ -137,15 +137,19 @@ function clearsImprovementThreshold(
   return rate - currentRate >= minImprovementBps;
 }
 
-/** A candidate that may already have an on-chain migration snapshot. When
- *  `findBestCandidate` receives one, it evaluates the pinned candidate in
- *  the same concurrent batch as every other candidate. If the pinned
- *  candidate clears the improvement threshold, it is preferred over any
- *  other candidate regardless of improvement magnitude — completing the
- *  existing migration avoids resetting the ledger-gap cooldown (see #699). */
-interface PinnedCandidate {
-  adapterId: string;
+/** A successfully evaluated candidate, retained so the caller can prefer an
+ *  already-snapshotted adapter without fetching its rate a second time. */
+interface CandidateRate {
   protocol: string;
+  adapterId: string;
+  rate: number;
+}
+
+interface FindBestCandidateResult {
+  best: BestCandidate | null;
+  currentRate: number | null;
+  candidateRates: Map<string, CandidateRate>;
+  skipReason?: string;
 }
 
 export interface MigrationKeeperConfig {
@@ -543,20 +547,19 @@ async function findBestCandidate(
   resolveCandidatePool: (adapterId: string) => Promise<string>,
   logger: KeeperLogger,
   sleepFn: (ms: number) => Promise<void>,
-  deadlineAt: number,
-  /** An existing on-chain migration snapshot to evaluate alongside fresh
-   *  candidates in the same concurrent batch (#699). When the pinned
-   *  candidate clears the improvement threshold, it is preferred over
-   *  every other candidate — completing the existing migration avoids
-   *  resetting the ledger-gap cooldown. */
-  pinned?: PinnedCandidate
-): Promise<{ best: BestCandidate | null; skipReason?: string }> {
+  deadlineAt: number
+): Promise<FindBestCandidateResult> {
   // Nothing to compare against: don't pay for a retried rate lookup (up to
   // maxAttempts, with backoff) just to discover there was never a candidate
   // to evaluate. This is the documented default state today (no
   // MERIDIAN_ADAPTER_<PROTOCOL>_ID configured), not a rare edge case.
   if (Object.keys(config.candidateAdapters).length === 0) {
-    return { best: null, skipReason: "no candidate adapters configured" };
+    return {
+      best: null,
+      currentRate: null,
+      candidateRates: new Map(),
+      skipReason: "no candidate adapters configured",
+    };
   }
 
   // Only excludes the vault's literal current adapter, not same-protocol
@@ -569,25 +572,14 @@ async function findBestCandidate(
   // to compare regardless of what the current rate turns out to be, so
   // don't pay for that retried lookup only to discover there was never
   // anything to evaluate it against.
-  //
-  // When a pinned candidate is present it is evaluated in the same
-  // concurrent batch rather than as a separate post-hoc check, so that
-  // future paths needing to reason about "the current best vs. an existing
-  // on-chain commitment" reuse one generalized candidate-evaluation pass
-  // without duplicating rate fetches or threshold comparisons (#699).
-  //
-  // The pinned adapter is excluded from the regular `candidates` list so
-  // it is never evaluated twice: it appears once as a pinned entry (added
-  // below), not once as a regular candidate and once as pinned. When the
-  // snapshot adapter is not in the configured candidates at all,
-  // candidates is unchanged (no entry to de-duplicate).
   const candidates = Object.entries(config.candidateAdapters).filter(
-    ([, adapterId]) =>
-      adapterId !== vault.currentAdapterId && adapterId !== pinned?.adapterId
+    ([, adapterId]) => adapterId !== vault.currentAdapterId
   );
-  if (candidates.length === 0 && !pinned) {
+  if (candidates.length === 0) {
     return {
       best: null,
+      currentRate: null,
+      candidateRates: new Map(),
       skipReason: "every configured candidate is the vault's current adapter",
     };
   }
@@ -627,17 +619,20 @@ async function findBestCandidate(
     );
   }
   if (!isUsableRate(currentRate)) {
-    return { best: null, skipReason: "current rate unavailable" };
+    return {
+      best: null,
+      currentRate: null,
+      candidateRates: new Map(),
+      skipReason: "current rate unavailable",
+    };
   }
 
-  // Evaluated concurrently: regular candidates plus the pinned (snapshot)
-  // candidate when one exists. Each entry's pool resolution and rate
+  const candidateRates = new Map<string, CandidateRate>();
+
+  // Evaluated concurrently: every candidate's pool resolution and rate
   // lookup is independent of every other entry, so running them one at a
   // time would let the deadline budget get eaten by earlier entries before
-  // later ones are even attempted. Including the pinned candidate here
-  // rather than in a separate post-hoc block means its rate is fetched
-  // once, not twice, and the improvement threshold is compared in one
-  // logical place.
+  // later ones are even attempted.
   const evaluate = (protocol: string, adapterId: string) =>
     withKeeperRetry(
       async () => {
@@ -661,55 +656,16 @@ async function findBestCandidate(
       "migration-keeper"
     );
 
-  // Tag each entry with its kind and the mark that drives the preference
-  // rule below (pinned entries win when eligible, other entries compete
-  // by improvement magnitude).
-  type CandidateEntry = {
-    protocol: string;
-    adapterId: string;
-    pinned: boolean;
-  };
-  const entries: CandidateEntry[] = candidates.map(([protocol, adapterId]) => ({
-    protocol,
-    adapterId,
-    pinned: false,
-  }));
-  if (pinned) {
-    entries.push({
-      protocol: pinned.protocol,
-      adapterId: pinned.adapterId,
-      pinned: true,
-    });
-  }
-
   const settled = await Promise.allSettled(
-    entries.map(async (entry) => {
-      const result = await evaluate(entry.protocol, entry.adapterId);
+    candidates.map(async ([protocol, adapterId]) => {
+      const result = await evaluate(protocol, adapterId);
       return {
-        protocol: entry.protocol,
-        adapterId: entry.adapterId,
+        protocol,
+        adapterId,
         rate: result.value,
-        pinned: entry.pinned,
       };
     })
   );
-
-  // When a pinned candidate exists but its rate fetch failed, we cannot
-  // safely fall back to a non-pinned winner: the pinned entry represents
-  // an in-progress migration that must complete, and letting a transient
-  // RPC blip on the pinned adapter allow another candidate to win would
-  // reset the cooldown. Surface the failure so it is retried.
-  if (pinned) {
-    const pinnedIndex = entries.findIndex((e) => e.pinned);
-    const pinnedOutcome = pinnedIndex >= 0 ? settled[pinnedIndex] : undefined;
-    if (pinnedOutcome?.status === "rejected") {
-      throw new CandidateEvaluationError(
-        pinned.protocol,
-        pinned.adapterId,
-        pinnedOutcome.reason
-      );
-    }
-  }
 
   // A candidate that failed to evaluate must never discard a different
   // candidate that succeeded: an unrelated RPC blip on one protocol
@@ -717,19 +673,14 @@ async function findBestCandidate(
   // another. Only surface the failure if nothing usable came out of any
   // candidate at all.
   let best: BestCandidate | null = null;
-  // A pinned candidate that clears the threshold wins, full stop — the
-  // policy is "complete the existing migration rather than reset the
-  // cooldown", and the improvement delta between it and a different "best"
-  // is irrelevant because switching would restart the timer. The early
-  // `break` below prevents a higher-improvement non-pinned candidate from
-  // overriding a pinned candidate that also clears the threshold.
   let firstFailure:
     { protocol: string; adapterId: string; reason: unknown } | undefined;
   let anyRateKnown = false;
   for (let i = 0; i < settled.length; i++) {
     const outcome = settled[i];
-    const entry = entries[i];
-    if (!outcome || !entry) continue;
+    const target = candidates[i];
+    if (!outcome || !target) continue;
+    const [protocol, adapterId] = target;
     if (outcome.status === "rejected") {
       // Only the first rejection becomes the vault's reported
       // CandidateEvaluationError (KeeperFailure is per-vault, not
@@ -739,13 +690,13 @@ async function findBestCandidate(
       // first.
       logger.warn("[migration-keeper] candidate evaluation failed", {
         vaultId: vault.vaultId,
-        adapterId: entry.adapterId,
-        protocol: entry.protocol,
+        adapterId,
+        protocol,
         error: errorMessage(outcome.reason),
       });
       firstFailure ??= {
-        protocol: entry.protocol,
-        adapterId: entry.adapterId,
+        protocol,
+        adapterId,
         reason: outcome.reason,
       };
       continue;
@@ -753,6 +704,7 @@ async function findBestCandidate(
     const { rate } = outcome.value;
     if (!isUsableRate(rate)) continue;
     anyRateKnown = true;
+    candidateRates.set(adapterId, { protocol, adapterId, rate });
 
     const improvementBps = rate - currentRate;
     if (
@@ -760,33 +712,17 @@ async function findBestCandidate(
     )
       continue;
 
-    // Pinned candidate clearing the threshold wins unconditionally:
-    // completing the existing migration is the only way to reach
-    // migrate_adapter without resetting the cooldown, and the alternative
-    // of picking a higher-improvement candidate would overwrite the
-    // snapshot and restart the timer (see #699). The pinned candidate must
-    // not be discarded in favour of a non-pinned one even when the latter
-    // has a marginally higher improvement — "the existing migration
-    // survives" is the entire point of this mechanism.
-    if (entry.pinned) {
-      best = {
-        protocol: entry.protocol,
-        adapterId: entry.adapterId,
-        improvementBps,
-      };
-      break;
-    }
     if (!best || improvementBps > best.improvementBps) {
       best = {
-        protocol: entry.protocol,
-        adapterId: entry.adapterId,
+        protocol,
+        adapterId,
         improvementBps,
       };
     }
   }
 
   if (best) {
-    return { best };
+    return { best, currentRate, candidateRates };
   }
   // A failed candidate must never block a valid decision reached from a
   // different candidate, this applies just as much when that decision is
@@ -809,6 +745,8 @@ async function findBestCandidate(
   // compared when they weren't.
   return {
     best: null,
+    currentRate,
+    candidateRates,
     skipReason: anyRateKnown
       ? "no candidate clears the improvement threshold"
       : "no candidate rate was available to compare",
@@ -996,62 +934,7 @@ export async function runMigrationKeeper(
       });
     }
 
-    // Read the on-chain migration snapshot before findBestCandidate so the
-    // snapshotted adapter can be evaluated alongside fresh candidates in
-    // the same concurrent batch rather than in a separate post-hoc check
-    // (#699). Only read when there are actual candidate adapters to
-    // evaluate — in steady state most vaults have no migration candidate,
-    // and the snapshot RPC call would be wasted (#705 review).
-    const hasCandidateAdapters = Object.entries(config.candidateAdapters).some(
-      ([, id]) => id !== vault.currentAdapterId
-    );
-    let hasMatchingSnapshot = deps.submitMigration != null;
-    let snapshotReadFailed = false;
-    let pinned: PinnedCandidate | undefined;
-
-    if (!hasMatchingSnapshot && hasCandidateAdapters) {
-      try {
-        const snapshot = (await simulateView(
-          server as never,
-          vault.vaultContractId,
-          config.network.passphrase,
-          "get_migration_snapshot"
-        )) as { adapter: string } | null;
-        const snapshotAdapter = snapshot?.adapter ?? null;
-        if (snapshotAdapter && snapshotAdapter !== vault.currentAdapterId) {
-          const snapshotProtocol = Object.entries(
-            config.candidateAdapters
-          ).find(([, id]) => id === snapshotAdapter)?.[0];
-          if (snapshotProtocol) {
-            pinned = {
-              adapterId: snapshotAdapter,
-              protocol: snapshotProtocol,
-            };
-          }
-        }
-      } catch (err) {
-        snapshotReadFailed = isTransientKeeperError(err);
-      }
-    }
-
-    // If reading the on-chain snapshot failed, don't waste deadline/RPC
-    // budget evaluating candidates only to discard the result below.
-    if (snapshotReadFailed) {
-      failures.push({
-        vaultId: vault.vaultId,
-        vaultContractId: vault.vaultContractId,
-        adapterId: vault.currentAdapterId,
-        protocol: vault.currentProtocol,
-        stage: "evaluate",
-        attempts: 1,
-        transient: true,
-        error:
-          "could not read the migration snapshot; skipped rather than risk resetting an existing cooldown",
-      });
-      continue;
-    }
-
-    let evaluation: { best: BestCandidate | null; skipReason?: string };
+    let evaluation: FindBestCandidateResult;
     try {
       evaluation = await findBestCandidate(
         vault,
@@ -1060,8 +943,7 @@ export async function runMigrationKeeper(
         resolveCandidatePool,
         logger,
         sleepFn,
-        deadlineAt,
-        pinned
+        deadlineAt
       );
     } catch (err) {
       const { adapterId, protocol, attempts, transient } =
@@ -1094,7 +976,7 @@ export async function runMigrationKeeper(
       continue;
     }
 
-    const { best } = evaluation;
+    let { best } = evaluation;
 
     // Re-checked here, not just at the top of the loop: evaluation itself
     // can retry and consume most of the budget, and this is an
@@ -1118,6 +1000,65 @@ export async function runMigrationKeeper(
       });
       continue;
     }
+
+    // Read the snapshot only after a qualifying fresh candidate exists.
+    // In steady state no candidate clears the threshold, so this avoids
+    // one on-chain read per vault per run (#705) while preserving #699:
+    // the snapshotted adapter was already evaluated in the same concurrent
+    // candidate batch, and a still-qualifying snapshot is preferred here.
+    let hasMatchingSnapshot = deps.submitMigration != null;
+    let snapshotReadFailed = false;
+    if (!hasMatchingSnapshot) {
+      try {
+        const snapshot = (await simulateView(
+          server as never,
+          vault.vaultContractId,
+          config.network.passphrase,
+          "get_migration_snapshot"
+        )) as { adapter: string } | null;
+        const snapshotAdapter = snapshot?.adapter ?? null;
+        const snapshotCandidate =
+          snapshotAdapter === null
+            ? undefined
+            : evaluation.candidateRates.get(snapshotAdapter);
+        if (
+          snapshotAdapter !== null &&
+          snapshotAdapter !== vault.currentAdapterId &&
+          snapshotCandidate !== undefined &&
+          clearsImprovementThreshold(
+            snapshotCandidate.rate,
+            evaluation.currentRate ?? 0,
+            config.minImprovementBps
+          )
+        ) {
+          best = {
+            protocol: snapshotCandidate.protocol,
+            adapterId: snapshotCandidate.adapterId,
+            improvementBps:
+              snapshotCandidate.rate - (evaluation.currentRate ?? 0),
+          };
+          hasMatchingSnapshot = true;
+        }
+      } catch (err) {
+        snapshotReadFailed = isTransientKeeperError(err);
+      }
+    }
+
+    if (snapshotReadFailed) {
+      failures.push({
+        vaultId: vault.vaultId,
+        vaultContractId: vault.vaultContractId,
+        adapterId: best.adapterId,
+        protocol: best.protocol,
+        stage: "submit",
+        attempts: 1,
+        transient: true,
+        error:
+          "could not read the migration snapshot; skipped rather than risk resetting an existing cooldown",
+      });
+      continue;
+    }
+
     // Taken before anything is built: a plain "no record" read is not a
     // claim on the vault, so two concurrent invocations could otherwise both
     // pass the check above and both broadcast.
@@ -1156,19 +1097,6 @@ export async function runMigrationKeeper(
     // assertAdapterUnchanged inside submitMigrationTransaction only runs
     // on the real path.
     //
-    // Re-evaluated from best after findBestCandidate, which already
-    // evaluated the snapshotted adapter as a pinned candidate in the
-    // same concurrent batch (#699). When the pinned candidate won,
-    // best.adapterId already holds the snapshotted adapter's ID; when a
-    // non-pinned candidate won or no snapshot exists, the snapshot
-    // doesn't match and falls through to begin_migration below. The
-    // on-chain get_migration_snapshot read was moved to BEFORE
-    // findBestCandidate (see the pinned construction above) so the
-    // snapshotted adapter's rate is fetched once, not twice, and the
-    // improvement-threshold comparison is in one logical place.
-    hasMatchingSnapshot =
-      hasMatchingSnapshot || pinned?.adapterId === best.adapterId;
-
     if (!hasMatchingSnapshot) {
       try {
         await submitKeeperOperation(
