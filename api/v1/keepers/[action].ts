@@ -2,11 +2,13 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
   consoleLogger,
   isMigrationKeeperConfigured,
+  loadAlertKeeperConfig,
   loadBlendAccrualKeeperConfig,
   loadKeeperHeartbeatStore,
   loadMigrationKeeperConfig,
   recordKeeperHeartbeat,
   redactedErrorMessage,
+  runAlertKeeper,
   runBlendAccrualKeeper,
   runMigrationKeeper,
 } from "@meridian/stellar-sdk-helpers";
@@ -19,16 +21,19 @@ import {
   isCronSecretConfigured,
 } from "../../_lib/middleware.js";
 
-// Consolidated from three separate files (accrue/health/rebalance) to stay
-// under Vercel's per-deployment Serverless Functions cap. URL paths are
-// unchanged: /api/v1/keepers/accrue, /api/v1/keepers/health, and
-// /api/v1/keepers/rebalance all route here via the [action].ts dynamic
-// segment, with req.query.action set accordingly.
+// Consolidated from four separate files (accrue/health/rebalance/alert) to
+// stay under Vercel's per-deployment Serverless Functions cap. URL paths are
+// unchanged: /api/v1/keepers/accrue, /api/v1/keepers/health,
+// /api/v1/keepers/rebalance, and /api/v1/keepers/alert all route here via
+// the [action].ts dynamic segment, with req.query.action set accordingly.
 //
-// health is read-only and public, same as before; accrue/rebalance still
-// require the cron bearer token and are never CORS-gated, since they sign
-// and submit real transactions off a funded/admin account. That auth split
-// is preserved exactly as it was when these were separate files.
+// health is read-only and public, same as before; accrue/rebalance/alert
+// still require the cron bearer token and are never CORS-gated. accrue and
+// rebalance sign and submit real transactions off a funded/admin account;
+// alert signs nothing but still costs an RPC round trip per known vault plus
+// a webhook POST per unauthenticated probe, so it gets the same rate-limit
+// backstop. That auth split is preserved exactly as it was when these were
+// separate files.
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { action } = req.query;
 
@@ -41,7 +46,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(result.status).json(result.body);
   }
 
-  if (action !== "accrue" && action !== "rebalance") {
+  if (action !== "accrue" && action !== "rebalance" && action !== "alert") {
     return res.status(404).json({ error: "Unknown action" });
   }
 
@@ -50,13 +55,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  // No applyCors: cron-invoked, never browser-facing. But both sign and
-  // submit real transactions, unlike simple reads, so they still get a
-  // rate-limit backstop. Checked before auth, deliberately, even though
-  // that costs a Redis round trip on an unauthenticated probe: this is the
-  // volume-abuse backstop for *all* traffic, not just correctly
-  // authenticated traffic — if it only ran after a successful auth check,
-  // unauthenticated/wrong-token spam would be entirely unbounded.
+  // No applyCors: cron-invoked, never browser-facing. But all three sign or
+  // submit real transactions, or read/post on their behalf, unlike simple
+  // reads, so they still get a rate-limit backstop. Checked before auth,
+  // deliberately, even though that costs a Redis round trip on an
+  // unauthenticated probe: this is the volume-abuse backstop for *all*
+  // traffic, not just correctly authenticated traffic — if it only ran
+  // after a successful auth check, unauthenticated/wrong-token spam would
+  // be entirely unbounded.
   try {
     if (!(await checkRateLimit(req, res, { strict: true }))) return;
   } catch (err) {
@@ -92,6 +98,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(status).json(result);
     } catch (err) {
       console.error("[accrual-keeper] run failed:", err);
+      return res.status(500).json({ error: redactedErrorMessage(err) });
+    }
+  }
+
+  if (action === "alert") {
+    try {
+      const config = loadAlertKeeperConfig(process.env);
+      // Without a shared cursor store, a restart or a second concurrent
+      // invocation has no memory of what it already alerted on,
+      // reinstating exactly the replay this keeper exists to prevent.
+      // Reuses keeper-heartbeat.ts's generic numeric store rather than
+      // requiring a dedicated cursor store.
+      const cursorStore = loadKeeperHeartbeatStore(process.env, {
+        logger: consoleLogger,
+      });
+      const result = await runAlertKeeper(config, { cursorStore });
+      const status = result.failures.length > 0 ? 500 : 200;
+      return res.status(status).json(result);
+    } catch (err) {
+      console.error("[alert-keeper] run failed:", err);
       return res.status(500).json({ error: redactedErrorMessage(err) });
     }
   }

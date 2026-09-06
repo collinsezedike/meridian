@@ -238,6 +238,34 @@ This contract is not deleted or disabled — Soroban has no such operation, it k
 
 The admin is the same durable key as the two prior cutovers, kept across this one too. Deployed via `scripts/deploy-testnet.sh` with a fresh throwaway `DEPLOYER` and `ADMIN`/`ADMIN_KEY` set explicitly to that durable admin key, so the vault was signed and initialized in the same run rather than left briefly claimable. `get_total_assets()`, `get_pool()`, and `get_protocol()` confirmed resolving correctly on the new vault and its Blend adapter.
 
+### 2026-09-06: redeployed for the TTL, event, and migration-timelock changes (#701)
+
+The previous vault predated four contract-touching PRs merged since the last cutover: #704 (instance/position TTL management), #711 (event emission on deposit/withdraw), #705 (an off-chain migration-keeper fix, no contract change but confirms the pairing), and #710 (`MAX_ADMIN_SLIPPAGE_BPS` slippage cap and the `MIN_LEDGER_GAP` timelock extension from ~1 minute to ~1 day). None of these changed argument counts the way #604/#606 did, so the vault kept simulating deposits successfully, but shipping the security-relevant #557 fix (the longer timelock) live only once #701 completed the build-pipeline fix made this the natural point to redeploy rather than leave the fix undeployed indefinitely.
+
+**Pre-cutover status:** the old vault below held `get_total_assets() = 0`, no outstanding testnet deposits, so no withdrawal-announcement window was needed.
+
+**Old vault (superseded):**
+
+| Field               | Value                                                       |
+| ------------------- | ------------------------------------------------------------ |
+| Vault contract      | `CBOQTI3C7UHTBRHSF3AJEQYXDINJ354XRWIZKSEV6PFIEUSJF2YWZPME` |
+| Blend adapter       | `CCXB5BRVBFNPAN72PRODGFWKGGDHEHJMHJLC7G2OEQFF4PZNNO3C4XBH` |
+| mUSDC (share token) | `CAJASVPQ365EYUQ62Z54SRSZWJ4C7WJNDYXIYVWKLSRWJTTWET35JPYE` |
+| Admin               | `GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD` |
+
+This contract is not deleted or disabled: Soroban has no such operation, it keeps running exactly as deployed. There is no automatic migration or sweep of old positions into the new vault, but there were none to move at cutover time.
+
+**New vault (current):**
+
+| Field               | Value                                                       |
+| ------------------- | ------------------------------------------------------------ |
+| Vault contract      | `CBNXROTWUVHNRRI2LRKHEXJXIWPJTOZOMMMMX7KNQEJAY5ZOGSM7LYZ7` |
+| Blend adapter       | `CB2GNYVHJ6O2QX2ZEP5EIHRBC26W6VE3APVPU3PD6JVQR5KQIVBOLALC` |
+| mUSDC (share token) | `CDJ6A3ISCVLZRHVUQC6SWVZDFMMXSK5I6XUUUO3FKJWCQSMXKOZK3YIO` |
+| Admin               | `GDZX7DOZMVEZJSWPDIZCTSCAKW4LBB3UGNWYAG5YTCBL4JPMUPAWWEUD` |
+
+The admin is the same durable key as all three prior cutovers, kept across this one too. Deployed via `scripts/deploy-testnet.sh` with `DEPLOYER=cutover-deployer` (a pre-funded throwaway testnet identity) and `ADMIN`/`ADMIN_KEY` set explicitly to that durable admin key, built with `stellar-cli` v28.0.0, matching what `.github/workflows/verify-contract-addresses.yml` resolves at the time of this cutover. `extend_position_ttl`, `begin_migration`, `migrate_adapter`, and `on_transfer` all confirmed present in the deployed vault's exported function list, and `begin_migration`'s own doc text in that output already reflects the ~1-day timelock. `get_total_assets()`, `get_adapter()`, and the resulting Blend adapter's `get_pool()`/`get_protocol()` confirmed resolving correctly.
+
 ## Run the signing flow end-to-end
 
 With the contracts deployed and `known-pools.ts`/`constants.ts` updated:

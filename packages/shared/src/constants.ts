@@ -53,14 +53,15 @@ export const CONTRACT_ADDRESSES = {
     usdc: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
     // Stellar Asset Contract for Circle's testnet EURC (issuer: GB3Q6QDZYTHWT7...).
     eurc: "CCUUDM434BMZMYWYDITHFXHDMIVTGGD6T2I5UKNX5BSLXLW7HVR4MCGZ",
-    musdc: "CAJASVPQ365EYUQ62Z54SRSZWJ4C7WJNDYXIYVWKLSRWJTTWET35JPYE",
-    // Redeployed with stellar-cli v28.0.0 to match what
-    // verify-contract-addresses.yml rebuilds with; the previous vault
-    // (CC3WA7SSJOI7WJPLWEGHSK3GRD3PSQXAIOQTXQEHBXYIIVJFZR4ZVAYP) was built
-    // with an older CLI and its bytecode no longer matched current source.
-    // See apps/docs/operations/testnet-deployment.md's "Vault migration
-    // history" for the old address and its (empty) pre-cutover balance.
-    vault: "CBOQTI3C7UHTBRHSF3AJEQYXDINJ354XRWIZKSEV6PFIEUSJF2YWZPME",
+    musdc: "CDJ6A3ISCVLZRHVUQC6SWVZDFMMXSK5I6XUUUO3FKJWCQSMXKOZK3YIO",
+    // Redeployed for #701: the previous vault
+    // (CBOQTI3C7UHTBRHSF3AJEQYXDINJ354XRWIZKSEV6PFIEUSJF2YWZPME) predated
+    // #704/#705/#711/#710 (TTL management, event emission, migration-keeper
+    // fix, admin slippage cap and timelock), all landed after that vault was
+    // last deployed. See apps/docs/operations/testnet-deployment.md's "Vault
+    // migration history" for the old address and its (empty) pre-cutover
+    // balance.
+    vault: "CBNXROTWUVHNRRI2LRKHEXJXIWPJTOZOMMMMX7KNQEJAY5ZOGSM7LYZ7",
   },
   mainnet: {
     blend: {
