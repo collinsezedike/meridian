@@ -92,5 +92,31 @@
   "errorBoundary": {
     "title": "Une erreur s'est produite. Veuillez recharger la page.",
     "reload": "Recharger"
+  },
+
+  "status": {
+    "title": "État du contrat",
+    "subtitle": "Vérifiez ce qui est réellement déployé et en contrôle de ce coffre, sans lire le code source ni interroger le RPC directement.",
+    "network": "Réseau",
+    "addresses": {
+      "title": "Adresses des contrats",
+      "vault": "Coffre",
+      "adapter": "Adaptateur",
+      "musdc": "mUSDC",
+      "usdc": "USDC",
+      "eurc": "EURC",
+      "notDeployed": "Pas encore déployé",
+      "viewOnExplorer": "Voir sur l'explorateur"
+    },
+    "parameters": {
+      "title": "Paramètres du protocole",
+      "migrationCooldown": "Délai de migration",
+      "migrationCooldownValue": "{{ledgers}} ledgers (~1 minute)",
+      "note": "Constantes fixes du contrat, non configurables par l'admin. Vérifiez directement le code source du contrat plutôt que de vous fier uniquement à cette page."
+    },
+    "audit": {
+      "title": "Audit de sécurité",
+      "notYetAvailable": "Aucun audit de sécurité indépendant n'a encore été réalisé. Un rapport sera lié ici dès qu'il existera."
+    }
   }
 }
