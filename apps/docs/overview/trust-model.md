@@ -8,7 +8,7 @@ This page explains what the vault's admin key can and cannot do. It is deliberat
 - The admin-key-risk report in issue #557, which identified the original, unbounded slippage and no-timelock problems.
 - The incident-response runbook tracked as #721, which describes the operational steps to take if the key is suspected to be compromised.
 
-This page is about the *on-chain authority* that the admin key grants. It does not cover the web application's security model, the wallet UX, or the keeper infrastructure. Those are documented separately and should not be conflated with the key's authority.
+This page is about the _on-chain authority_ that the admin key grants. It does not cover the web application's security model, the wallet UX, or the keeper infrastructure. Those are documented separately and should not be conflated with the key's authority.
 
 ## What the admin key can do
 
