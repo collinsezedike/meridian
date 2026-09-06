@@ -79,6 +79,18 @@ describe("applyCors", () => {
     expect(handled).toBe(false);
     expect(res.ended).toBe(false);
   });
+
+  it("sets baseline security headers on every request", () => {
+    const res = fakeRes();
+    applyCors(fakeReq("GET"), res);
+    expect(res.headers["X-Content-Type-Options"]).toBe("nosniff");
+    expect(res.headers["X-Frame-Options"]).toBe("DENY");
+    expect(res.headers["Referrer-Policy"]).toBe(
+      "strict-origin-when-cross-origin"
+    );
+    expect(res.headers["Strict-Transport-Security"]).toContain("max-age=");
+    expect(res.headers["Content-Security-Policy"]).toBe("default-src 'none'");
+  });
 });
 
 // checkRateLimit ------------------------------------------------------------------
