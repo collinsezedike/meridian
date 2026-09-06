@@ -16,9 +16,28 @@ pub const MIG_ACTIVE: Symbol = symbol_short!("MIG_ACT");
 // storage serialisation for bool may behave unexpectedly.
 
 /// Minimum number of ledgers that must elapse between `begin_migration`
-/// and `migrate_adapter` so the new adapter's valuation has time to
-/// stabilise. At ~5 s per Stellar ledger close, 12 ledgers ≈ 1 minute.
-pub const MIN_LEDGER_GAP: u32 = 12;
+/// and `migrate_adapter`. This serves two distinct purposes at once: it
+/// gives the new adapter's valuation time to stabilise (the original
+/// purpose, issue #567), and it acts as a genuine timelock, giving
+/// observers or automated monitoring a window to notice and react to a
+/// migration before it can execute (issue #557). A short cooldown serves
+/// the first purpose but not the second: `migrate_adapter` can move the
+/// vault's entire position, and the only key required is the same
+/// unattended cron signer used for routine operations (see
+/// `apps/docs/operations/migration-keeper.md`), so the delay must be long
+/// enough for a human to actually respond to a compromised-key attempt,
+/// not merely long enough for a rate to settle. At ~5 s per Stellar ledger
+/// close, 17_280 ledgers ≈ 1 day.
+pub const MIN_LEDGER_GAP: u32 = 17_280;
+
+/// Hard ceiling on `migrate_adapter`'s caller-supplied `max_slippage_bps`,
+/// independent of and enforced in addition to `MIN_LEDGER_GAP`'s timelock
+/// (issue #557). `max_slippage_bps` was previously bounded only by its
+/// literal type range up to 10_000 (100%), so a single compromised admin
+/// key could authorize moving the entire vault position with zero loss
+/// protection. 500 bps (5%) is a starting point, not a value with any
+/// special significance; tune to the product's actual risk tolerance.
+pub const MAX_ADMIN_SLIPPAGE_BPS: u32 = 500;
 
 // Virtual shares/assets offset (OpenZeppelin ERC-4626 mitigation against the
 // first-depositor inflation attack). Share price is computed against
