@@ -244,21 +244,21 @@ describe("loadMigrationKeeperConfig", () => {
     );
   });
 
-  it("rejects an unlimited (10_000 bps) max slippage as never allowed in automated operation", () => {
+  it("rejects a slippage above the contract's own hard cap", () => {
     expect(() =>
       loadMigrationKeeperConfig({
         MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
-        MERIDIAN_MIGRATION_MAX_SLIPPAGE_BPS: "10000",
+        MERIDIAN_MIGRATION_MAX_SLIPPAGE_BPS: "501",
       })
-    ).toThrow(/never allowed in automated operation/);
+    ).toThrow(/InvalidSlippageBps/);
   });
 
-  it("accepts the max allowed slippage just below the unlimited value", () => {
+  it("accepts the max allowed slippage at the contract's hard cap", () => {
     const config = loadMigrationKeeperConfig({
       MERIDIAN_MIGRATION_KEEPER_SECRET_KEY: "S".repeat(56),
-      MERIDIAN_MIGRATION_MAX_SLIPPAGE_BPS: "9999",
+      MERIDIAN_MIGRATION_MAX_SLIPPAGE_BPS: "500",
     });
-    expect(config.maxSlippageBps).toBe(9999);
+    expect(config.maxSlippageBps).toBe(500);
   });
 
   it("defaults to a tight 100 bps slippage and 50 bps improvement threshold", () => {

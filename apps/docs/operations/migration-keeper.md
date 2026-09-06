@@ -199,10 +199,13 @@ rate source work, since both matter most once a second vault is likely).
 ## Two-Phase Migration (`begin_migration` / `migrate_adapter`)
 
 `migrate_adapter` requires an active `begin_migration` snapshot for the same
-target adapter, at least `MIN_LEDGER_GAP` ledgers old (~1 minute), before it
-will run. This closes a front-running window (issue #567): without it, an
-attacker could transiently inflate a candidate adapter's reported valuation
-right as a migration lands, then drain it once the funds arrive.
+target adapter, at least `MIN_LEDGER_GAP` ledgers old (~1 day as of #557;
+~1 minute before it), before it will run. This closes a front-running
+window (issue #567): without it, an attacker could transiently inflate a
+candidate adapter's reported valuation right as a migration lands, then
+drain it once the funds arrive. The longer gap (#557) also turns this into
+a genuine timelock: observers or automated monitoring get a real window to
+notice and react to a `begin_migration` call before funds can actually move.
 
 The keeper does not track this phase itself; the on-chain snapshot recorded
 by `begin_migration` (readable via `get_migration_snapshot`) is the only
@@ -223,14 +226,21 @@ chosen candidate:
    decide whether the cooldown has elapsed: if it hasn't, `migrate_adapter`
    itself rejects the call with `MigrationCooldownNotMet` during simulation
    (no fee, nothing sent), which is reported as a `failures` entry and
-   naturally retried on a later scheduled run. This is deliberately simple
-   rather than precise — `MIN_LEDGER_GAP` is ~1 minute and this keeper runs
-   on an hourly schedule, so the cooldown has always long since elapsed by
-   the run after `begin_migration` fired.
+   naturally retried on a later scheduled run.
 
-A migration to a given candidate therefore normally spans two scheduled
-runs: one that calls `begin_migration`, and the next that calls
-`migrate_adapter` once the on-chain snapshot is old enough.
+   This was deliberately simple rather than precise while `MIN_LEDGER_GAP`
+   was ~1 minute, since the cooldown had always long since elapsed by the
+   run after `begin_migration` fired. Now that it's ~1 day (#557), every
+   hourly run during that window hits the same rejection and reports it as
+   a `failures` entry, so a single migration currently produces roughly a
+   day's worth of expected-but-noisy failed runs before it can proceed.
+   Tracked as a follow-up to special-case `MigrationCooldownNotMet` as a
+   `skipped` outcome the same way a stale-adapter race already is.
+
+A migration to a given candidate therefore now normally spans roughly a
+day's worth of scheduled runs: the one that calls `begin_migration`, then
+repeated (currently failing) attempts, and finally the run where
+`migrate_adapter` succeeds once the on-chain snapshot is old enough.
 
 ## Retry And Failure Handling
 

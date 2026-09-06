@@ -122,7 +122,7 @@ stellar contract invoke --network testnet --source $DEPLOYER \
   --id $VAULT_ID -- migrate_adapter --new-adapter $NEW_ADAPTER_ID --max-slippage-bps 100
 ```
 
-`migrate_adapter` moves the vault's entire position from the old adapter to the new one atomically, comparing the value that lands on the new adapter against the old adapter's value before extraction and reverting if the difference exceeds `--max-slippage-bps` (basis points, max `10000`). Per-depositor bookkeeping is denominated in vault shares, not adapter shares, so it is left untouched — **no depositor has to withdraw first**. It fails with `SameAdapter` if the new adapter is the one already installed, and with `NoAdapterPosition` if the vault holds no adapter position at all (which is the zero-depositor case below).
+`migrate_adapter` moves the vault's entire position from the old adapter to the new one atomically, comparing the value that lands on the new adapter against the old adapter's value before extraction and reverting if the difference exceeds `--max-slippage-bps` (basis points, max `500` as of #557; previously `10000`). Per-depositor bookkeeping is denominated in vault shares, not adapter shares, so it is left untouched — **no depositor has to withdraw first**. It fails with `SameAdapter` if the new adapter is the one already installed, and with `NoAdapterPosition` if the vault holds no adapter position at all (which is the zero-depositor case below).
 
 ### Fresh vault, no depositors yet (`get_total_shares == 0`) — `set_adapter`
 
