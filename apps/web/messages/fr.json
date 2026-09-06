@@ -2,7 +2,6 @@
   "header": {
     "title": "Meridian"
   },
-
   "walletConnect": {
     "disconnect": "Déconnecter",
     "copyAddress": "Copier l'adresse",
@@ -13,7 +12,6 @@
     "chooseWallet": "Choisir un portefeuille",
     "installed": "Installé"
   },
-
   "vaultPanel": {
     "deposit": "Déposer",
     "withdraw": "Retirer",
@@ -32,7 +30,6 @@
     "waiting": "En attente de signature...",
     "positionsError": "Impossible de charger votre position. Les dépôts et retraits fonctionnent toujours."
   },
-
   "vaultActions": {
     "failedAssets": "Échec de l'ajout des actifs du coffre",
     "depositFailed": "Échec du dépôt",
@@ -45,14 +42,12 @@
     "walletFunded": "Portefeuille testnet financé",
     "faucetFailed": "Échec du financement du portefeuille testnet"
   },
-
   "common": {
     "connectWallet": "Connecter le portefeuille",
     "connecting": "Connexion...",
     "installWallet": "Installer {{name}}",
     "retry": "Réessayer"
   },
-
   "admin": {
     "title": "Tableau de bord admin",
     "connectPrompt": "Connectez un portefeuille administrateur autorisé pour voir le tableau de bord.",
@@ -80,7 +75,6 @@
       "loadError": "Impossible de charger l'état du coffre."
     }
   },
-
   "adminHistory": {
     "title": "Historique des actions admin",
     "subtitle": "Journal chronologique des appels d'administration du coffre",
@@ -88,9 +82,26 @@
     "empty": "Aucune action admin enregistrée pour l'instant",
     "viewTx": "Voir tx"
   },
-
   "errorBoundary": {
     "title": "Une erreur s'est produite. Veuillez recharger la page.",
     "reload": "Recharger"
+  },
+  "statusPage": {
+    "title": "Meridian",
+    "heading": "Statut du Système",
+    "description": "Vérifiez ce qui est déployé on-chain, consultez les paramètres actuels et l'historique des pauses.",
+    "backToApp": "Retour à l'app",
+    "vault": "Vault",
+    "musdc": "mUSDC",
+    "usdc": "USDC",
+    "eurc": "EURC",
+    "blendPool": "Blend Pool",
+    "defindexFactory": "Usine DeFindex",
+    "defindexVault": "Vault DeFindex",
+    "parameters": "Paramètres",
+    "pauseHistory": "Historique des Pauses",
+    "pauseHistoryPlaceholder": "L'historique des pauses apparaîtra ici une fois la surveillance des événements activée.",
+    "audit": "Rapport d'Audit",
+    "auditPlaceholder": "Aucun rapport d'audit disponible actuellement."
   }
 }

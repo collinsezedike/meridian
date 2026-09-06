@@ -78,9 +78,13 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {isAdminRoute() ? <AdminLogin />
-        : isStatusRoute() ? <StatusPage />
-        : <Dashboard />}
+      {isAdminRoute() ? (
+        <AdminLogin />
+      ) : isStatusRoute() ? (
+        <StatusPage />
+      ) : (
+        <Dashboard />
+      )}
       <Toasts />
     </QueryClientProvider>
   );
