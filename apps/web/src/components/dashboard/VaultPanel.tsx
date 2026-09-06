@@ -289,6 +289,7 @@ export function VaultPanel() {
             position={position}
             hasPosition={!!hasPosition}
             isDepositing={isDepositing}
+            walletAddress={publicKey}
             onSubmit={handleDeposit}
           />
         ) : (

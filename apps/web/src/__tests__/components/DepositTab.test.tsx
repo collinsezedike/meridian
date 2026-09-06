@@ -33,6 +33,39 @@ const onAmountChange = vi.fn();
 const onAmountKeyDown = vi.fn();
 const onSubmit = vi.fn();
 
+class InMemoryStorage implements Storage {
+  private readonly values = new Map<string, string>();
+
+  get length() {
+    return this.values.size;
+  }
+
+  clear() {
+    this.values.clear();
+  }
+
+  getItem(key: string) {
+    return this.values.get(key) ?? null;
+  }
+
+  key(index: number) {
+    return Array.from(this.values.keys())[index] ?? null;
+  }
+
+  removeItem(key: string) {
+    this.values.delete(key);
+  }
+
+  setItem(key: string, value: string) {
+    this.values.set(key, value);
+  }
+}
+
+Object.defineProperty(window, "localStorage", {
+  value: new InMemoryStorage(),
+  configurable: true,
+});
+
 function renderDepositTab(
   overrides: Partial<Parameters<typeof DepositTab>[0]> = {}
 ) {
@@ -53,6 +86,7 @@ function renderDepositTab(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
 });
 
 describe("DepositTab", () => {
@@ -115,5 +149,68 @@ describe("DepositTab", () => {
     });
 
     expect(onAmountChange).toHaveBeenCalledWith("42");
+  });
+
+  it("shows the one-time risk disclosure for a new wallet", () => {
+    renderDepositTab({ amount: "25", walletAddress: "GA7NEW" });
+
+    expect(screen.getByTestId("deposit-risk-disclosure")).toBeDefined();
+    expect(
+      screen.getByText("vaultPanel.riskDisclosure.smartContractRisk")
+    ).toBeDefined();
+    expect(
+      screen.getByText("vaultPanel.riskDisclosure.adapterRisk")
+    ).toBeDefined();
+    expect(screen.getByTestId("vault-deposit-submit")).toHaveProperty(
+      "disabled",
+      true
+    );
+  });
+
+  it("persists risk acknowledgement per wallet after acceptance", () => {
+    const { unmount } = renderDepositTab({
+      amount: "25",
+      walletAddress: "GA7NEW",
+    });
+    fireEvent.click(screen.getByTestId("deposit-risk-acknowledgement"));
+
+    expect(
+      window.localStorage.getItem("meridian.deposit-risk-disclosure:GA7NEW")
+    ).toBe("true");
+    expect(screen.queryByTestId("deposit-risk-disclosure")).toBeNull();
+    expect(screen.getByTestId("vault-deposit-submit")).toHaveProperty(
+      "disabled",
+      false
+    );
+    unmount();
+
+    renderDepositTab({ amount: "25", walletAddress: "GA7NEW" });
+    expect(screen.queryByTestId("deposit-risk-disclosure")).toBeNull();
+  });
+
+  it("uses an independent acknowledgement for another wallet", () => {
+    const firstRender = renderDepositTab({
+      amount: "25",
+      walletAddress: "GA7NEW",
+    });
+    fireEvent.click(screen.getByTestId("deposit-risk-acknowledgement"));
+    firstRender.unmount();
+
+    renderDepositTab({ amount: "25", walletAddress: "GB8OTHER" });
+    expect(screen.getByTestId("deposit-risk-disclosure")).toBeDefined();
+  });
+
+  it("does not show the disclosure after a wallet already has a position", () => {
+    window.localStorage.removeItem(
+      "meridian.deposit-risk-disclosure:GA7NEW"
+    );
+    renderDepositTab({
+      amount: "25",
+      walletAddress: "GA7NEW",
+      hasPosition: true,
+      position: POSITION,
+    });
+
+    expect(screen.queryByTestId("deposit-risk-disclosure")).toBeNull();
   });
 });
