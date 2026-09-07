@@ -43,7 +43,11 @@ fi
 # the same change: a stale RPC URL fails loudly on the first call, but a
 # stale-but-still-valid passphrase would sign transactions for the wrong
 # network without any error at all.
-RPC_URL="https://mainnet.sorobanrpc.com"
+# Overridable via env: no single public mainnet RPC is guaranteed reliable
+# for submission (as opposed to simple reads), so a run that keeps timing
+# out at the same step can retry against a different provider without
+# editing this file. See https://sorobanrpc.com for other options.
+RPC_URL="${RPC_URL:-https://mainnet.sorobanrpc.com}"
 NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
 
 # DEPLOYER must be set in the environment and funded with real XLM: there is
