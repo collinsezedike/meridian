@@ -21,6 +21,11 @@ set -euo pipefail
 # checklist all live there, not here.
 #
 # Usage: bash scripts/deploy-mainnet.sh
+#
+# If a run fails partway through (e.g. a network timeout after blend-adapter
+# or mUSDC already deployed), rerun with VAULT_SALT set to the value printed
+# earlier as "VAULT_SALT (save this...)" so the retry reserves the same
+# vault address instead of stranding those already-deployed contracts.
 
 # The allow-lists below use associative arrays (bash 4+). macOS ships bash
 # 3.2 by default (Apple stopped bundling GPLv3 bash), where `declare -A`
