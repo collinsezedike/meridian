@@ -69,11 +69,11 @@ export const CONTRACT_ADDRESSES = {
   },
   mainnet: {
     blend: {
-      // Mainnet Blend pool addresses are resolved at runtime via DeFiLlama pool
-      // UUIDs in KNOWN_POOLS (packages/stellar-sdk-helpers/src/known-pools.ts).
-      // A single pool address is not sufficient; each ranked pool has its own
-      // contract. Populate per-pool addresses here before enabling mainnet tx building.
-      pool: "",
+      // Blend mainnet USDC pool (Fixed V2), the pool meridian's mainnet vault
+      // is wired to. Other ranked pools still resolve via DeFiLlama pool
+      // UUIDs in KNOWN_POOLS (packages/stellar-sdk-helpers/src/known-pools.ts)
+      // rather than a hardcoded address here.
+      pool: "CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD",
     },
     defindex: {
       factory: "",
@@ -83,8 +83,11 @@ export const CONTRACT_ADDRESSES = {
     usdc: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
     // Stellar Asset Contract for Circle's mainnet EURC (issuer: GDHU6WRG4IEQ...).
     eurc: "CDTKPWPLOURQA2SGTKTUQOWRCBZEORB4BWBOMJ3D3ZTQQSGE5F6JBQLV",
-    musdc: "",
-    vault: "",
+    musdc: "CDNQXOWKOCWB4YVK33HACZ2O2OL7C7ZZ37AJRWZDZQ2QK52NYW7ATDFS",
+    // The blend-adapter wired to this vault is
+    // CADWOVTT5KUFFSTIQ3T5XPAQISEDQYPMSJ4CEU2CRGOBKA5QP4BRROBJ, discoverable
+    // at runtime via vault.get_adapter() rather than tracked separately here.
+    vault: "CCJZCEF47TMOA6ECPQD5LZZ2H75YX53FUEZJQZSJLGK4TWGXQZG2KODU",
   },
 } as const;
 
@@ -96,7 +99,11 @@ export const STELLAR_NETWORKS = {
   },
   mainnet: {
     network: "mainnet" as const,
-    rpcUrl: "https://soroban-mainnet.stellar.org",
+    // Unlike testnet, the Stellar Development Foundation does not run a
+    // public mainnet RPC. This is a third-party public endpoint (see
+    // https://sorobanrpc.com for others); revisit before relying on it for
+    // anything beyond occasional CLI use, e.g. own infra or a paid provider.
+    rpcUrl: "https://mainnet.sorobanrpc.com",
     passphrase: "Public Global Stellar Network ; September 2015",
   },
 };
