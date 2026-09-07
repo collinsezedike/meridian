@@ -38,7 +38,7 @@ fi
 # the same change: a stale RPC URL fails loudly on the first call, but a
 # stale-but-still-valid passphrase would sign transactions for the wrong
 # network without any error at all.
-RPC_URL="https://soroban-mainnet.stellar.org"
+RPC_URL="https://mainnet.sorobanrpc.com"
 NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
 
 # DEPLOYER must be set in the environment and funded with real XLM: there is
@@ -75,15 +75,18 @@ declare -A ALLOWED_USDC_IDS=(
   ["CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75"]="Circle mainnet USDC"
 )
 
-# Empty on purpose: no mainnet Blend pool contract address has been
-# independently reviewed and checked into this repo yet (KNOWN_POOLS.mainnet
-# only carries DeFiLlama pool UUIDs for APY ranking, not contract addresses;
-# CONTRACT_ADDRESSES.mainnet.blend.pool is still ""). Add the reviewed pool
-# address here, with a comment naming which Blend pool it is, before it can
-# be used by this script. Refusing to run with an empty allow-list is the
-# intended behavior, not a bug: it means "nobody has reviewed one yet",
-# which is a stronger guarantee than accepting whatever BLEND_POOL_ID names.
-declare -A ALLOWED_BLEND_POOL_IDS=()
+# Verified two ways before being added here: (1) listed as "Fixed V2" in
+# Blend's own blend-utils GitHub repo (mainnet.contracts.json), and (2)
+# independently confirmed on-chain via a real mainnet transaction
+# (7f19f3af498839bb9deb558fc38b199464044400087b93bd8bd7ac69d79dcf6f) whose
+# raw XDR was decoded directly: it calls submit() on this exact contract
+# address, and its asset_balance_changes show a real USDC transfer landing
+# at this same address. CONTRACT_ADDRESSES.mainnet.blend.pool is still "":
+# add the address there too once this pool is actually used for a
+# deployment, not before.
+declare -A ALLOWED_BLEND_POOL_IDS=(
+  ["CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD"]="Blend mainnet USDC pool (Fixed V2)"
+)
 
 : "${USDC_ID:?USDC_ID env var required: must match an entry in ALLOWED_USDC_IDS below}"
 if [ -z "${ALLOWED_USDC_IDS[$USDC_ID]:-}" ]; then

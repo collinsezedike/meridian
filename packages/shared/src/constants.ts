@@ -96,7 +96,11 @@ export const STELLAR_NETWORKS = {
   },
   mainnet: {
     network: "mainnet" as const,
-    rpcUrl: "https://soroban-mainnet.stellar.org",
+    // Unlike testnet, the Stellar Development Foundation does not run a
+    // public mainnet RPC. This is a third-party public endpoint (see
+    // https://sorobanrpc.com for others); revisit before relying on it for
+    // anything beyond occasional CLI use, e.g. own infra or a paid provider.
+    rpcUrl: "https://mainnet.sorobanrpc.com",
     passphrase: "Public Global Stellar Network ; September 2015",
   },
 };
